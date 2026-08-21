@@ -426,9 +426,19 @@ Participants are spread **through the index**, not taken off the front:
 particles are ordered by angle, so the first 62% of them is a 62% arc and the
 shape would be drawn by one side of the ring with the other side left empty.
 
-A shared glyph also draws much smaller. The perimeter cannot go outside the
-containment wall — that is what the wall is — so the only way to have a ring
-around a word is for the word to fit inside one.
+The free particles **part rather than surround**. A ring big enough to encircle
+a word has to be as wide as the word is long, which means an enormous circle
+around a small piece of text — so the top half arches over it and the bottom
+half under it, and the word can stay small. The arch peaks in the middle because
+`1 - e²` is 1 there and 0 at the ends, which is the shape a brow makes, and the
+gap is measured from the shape's own half height so a tall emoji pushes them
+further out than a line of text does.
+
+Walked along the arc, not taken from the cosine of the angle: uniform angles are
+not uniform in x, and the first version piled a third of the field into two
+lumps at the tips. The membrane fades on those particles as the shape forms —
+it is radial, so left on it reels the two halves back into the circle they were
+just talked out of.
 
 Everything the audio does now exists in two versions, one damped and one not. A
 particle holding the shape wants its motion damped or the letters smear; a

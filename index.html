@@ -1221,6 +1221,7 @@ let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
    and a diagonal, so the same number puts its corners off screen and into the
    containment wall, which then fights the formation for them. */
 let form3d = false, formHasN = false, formS = 0.42;
+let formHY = 1;                    // the shape's half height, for clearing it
 let formE = null;                  // vertex-index pairs, when the source was a mesh
 let wireT = 0, wireAt = 0;         // the mesh grows in a beat after the cloud lands
 let formCountWas = 0;
@@ -2241,6 +2242,8 @@ function setFormation(spec, seconds) {
     const p = pts[Math.min(pts.length - 1, Math.floor((j * pts.length) / take))];
     formOn[i] = 1;
     if (asMenu) menuGroup[i] = asMenu.groups[j];
+    if (j === 0) formHY = 0;
+    formHY = Math.max(formHY, Math.abs(p[1]));
     formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
     fnx[i] = p[3] || 0; fny[i] = p[4] || 0; fnz[i] = p[5] || 0;
   }
@@ -2485,11 +2488,6 @@ function loop() {
          moves the target has to move `surf` with it or it is simply sprung
          back to where it would have been. */
       let ringMul = 1;
-      // the free particles go to the rim while a shape holds. Left where they
-      // were they sit on top of the letters at the same size and colour, which
-      // reads as two drawings fighting rather than a shape with a field round it
-      if (!held && formT > 0.002 && !isCore)
-        ringMul *= 1 + (maxR * 0.78 / Math.max(1, ringR) - 1) * formT;
       if (ringR > maxR) ringR = maxR;
       // bloom 1 = original (sine swings through zero, target crosses centre)
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
@@ -2517,11 +2515,34 @@ function loop() {
          out as one thick restless band. Damped in proportion to how much muse
          is running. */
       ringR *= ringMul;
-      const bl = cfg.bloom * (1 - mu * 0.8);
+      // bloom scatters a target across radii, which is depth on a ring and just
+      // noise on an arc
+      const bl = cfg.bloom * (1 - mu * 0.8) * (held ? 1 : 1 - formT * 0.85);
       const sqx = 1 - bl + bl * Math.sin(frame / cfg.rateX * i);
       const sqy = 1 - bl + bl * Math.cos(frame / cfg.rateY * i);
       let tx = cx + ux * ringR * sqx * ex;
       let ty = cy + uy * ringR * sqy * ey;
+      /* The free particles part rather than surround. A ring big enough to
+         encircle a word has to be as wide as the word is long, which means a
+         huge circle round a small piece of text -- so the top half arches over
+         it and the bottom half under it, and the word can stay small. The
+         arch peaks in the middle because (1 - ux^2) is 1 there and 0 at the
+         ends, which is the shape a brow makes. */
+      if (!held && formT > 0.002 && !isCore) {
+        /* Walked along the arc, not taken from cos of the angle. cos bunches
+           hard at both ends -- uniform angles are not uniform in x -- and the
+           first version piled a third of the field into two lumps at the tips.
+           Index maps straight to position instead: first half above, second
+           half below, evenly across. */
+        const two = (i * 2) / n;
+        const lower = two >= 1;
+        const e = (lower ? two - 1 : two) * 2 - 1;          // -1 .. 1 along the arc
+        const clear = formHY * scale * formS + scale * 0.055;
+        const arcX = cx + e * maxR * 0.95;
+        const arcY = cy + (lower ? 1 : -1) * (clear + (1 - e * e) * maxR * 0.30);
+        tx += (arcX - tx) * formT;
+        ty += (arcY - ty) * formT;
+      }
       if (fT > 0.002) {
         tx += (cx + formX[i] * scale * formS - tx) * fT;
         ty += (cy + formY[i] * scale * formS - ty) * fT;
@@ -2546,7 +2567,10 @@ function loop() {
       const am = Math.sqrt(ax * ax + ay * ay);
       if (am > maxF) { ax = ax / am * maxF; ay = ay / am * maxF; }
 
-      const mb = held ? memb : membFree, kk2 = held ? kick : kickFree;
+      /* Radial, so it cannot hold an arc -- left on, it reels the two halves
+         back into the circle they were just talked out of. It fades on the free
+         particles as the shape forms and comes back with them. */
+      const mb = held ? memb : membFree * (1 - formT), kk2 = held ? kick : kickFree;
       if (!isCore && (mb > 0.001 || kk2 > 0.01)) {
         const rx = px[i] - cx, ry = py[i] - cy;
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
