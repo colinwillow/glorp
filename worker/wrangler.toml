@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Variables set in the Cloudflare dashboard survive a CLI deploy. Without this,
+# `wrangler deploy` deletes anything not listed below -- which would wipe an
+# ORB_PERSONA edited from a phone the next time anyone deploys from a laptop.
+keep_vars = true
+
 # The API key is a secret, never a var:
 #   npx wrangler secret put ANTHROPIC_API_KEY
 #

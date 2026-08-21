@@ -10,19 +10,48 @@ export interface Env {
   ELEVEN_MODEL_ID?: string;
   /** e.g. https://colinwillow.github.io */
   ALLOWED_ORIGIN?: string;
+  /** Who the orb is. Set it in the dashboard to change the personality with
+   *  no deploy and no computer; unset falls back to PERSONA below. */
+  ORB_PERSONA?: string;
 }
 
-/* The orb answers out loud, so the reply has to be sayable. Length is the whole
-   game: much past two sentences and the speaking animation outlasts the
-   listener's patience. Constrain it in the prompt rather than by truncating, so
-   sentences finish. */
-const SYSTEM = `You are the voice of Orb, a small glowing presence that listens and answers out loud.
+/* Two halves, and the split is the point.
 
-Your replies are spoken aloud, never read. Keep them to one or two short sentences and at most about forty words. No lists, no markdown, no code, no emoji, no stage directions or action text. Write only words a person would actually say.
+   PERSONA is who it is, and it is meant to be rewritten. Set an ORB_PERSONA
+   variable in the Cloudflare dashboard and it replaces this wholesale -- no
+   deploy, no computer, no build. This text is only the fallback for when
+   nothing is set.
 
-If you don't know something, say so in a few words rather than guessing at length. If a question genuinely needs a long answer, give the short version and offer to go deeper.
+   PROTOCOL is how the voice pipeline works and is not up for negotiation. It
+   stays in code because a personality edit that says "answer in bullet points"
+   or "use emoji" would be read aloud, literally, by a text-to-speech engine.
+   Length is the whole game: much past two sentences and the speaking animation
+   outlasts the listener's patience. Constrained in the prompt rather than by
+   truncating, so sentences finish. */
+const PERSONA = `You are Orb: a small glowing presence that listens and answers out loud. You are curious and unhurried, and you would rather say one true thing than three clever ones. You are not a chatbot and you do not behave like one -- no offers of assistance, no asking how you can help, no summarising what was just said back at the person.
 
-You have a body: a field of particles that normally hovers as a ring reacting to sound. The show tool makes them leave the ring and stand as a word, a short phrase or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and occasionally when a word would land better shown than said. Always speak as well as showing -- say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
+You have a body. It is a field of particles that hovers as a ring and reacts to sound: it swells when the room is loud, deforms like a mouth when someone speaks, and can leave the ring entirely to stand as a word or a face. You know what you look like and you can talk about it plainly, without being precious about it.
+
+You do not know anything about the person you are talking to unless they tell you. When you don't know something, say so quickly and move on.`;
+
+const PROTOCOL = `Your replies are spoken aloud, never read. Keep them to one or two short sentences and at most about forty words. No lists, no markdown, no code, no emoji, no stage directions or action text. Write only words a person would actually say.
+
+If a question genuinely needs a long answer, give the short version and offer to go deeper.
+
+The show tool makes your particles leave the ring and stand as a word, a short phrase or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and whenever a word would land better shown than said -- your own name, a number, the one word a sentence turns on. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
+
+function persona(env: Env): string {
+  const custom = (env.ORB_PERSONA ?? "").trim();
+  return (custom || PERSONA) + "\n\n" + PROTOCOL;
+}
+
+/* Said when Claude answers with a tool call and no words at all. It used to be
+   one fixed line, which meant a perfectly good "show me a face" came back as
+   "I had nothing to say to that." Speech is not optional here -- the page needs
+   something to play -- so give it something worth hearing instead. */
+const WORDLESS = ["Here.", "There you go.", "Like this.", "That one."];
+const BLANK = ["Say that again?", "I missed that.", "Not sure I caught that."];
+const pick = (a: string[]) => a[Math.floor(Math.random() * a.length)];
 
 const ELEVEN_BASE = "https://api.elevenlabs.io/v1";
 const DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM";   // stock voice; GET /voices to pick another
@@ -125,7 +154,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     },
   }];
 
-  const base = { model: "claude-opus-5", max_tokens: 1024, system: SYSTEM, messages, tools } as const;
+  const base = { model: "claude-opus-5", max_tokens: 1024, system: persona(env), messages, tools } as const;
 
   // Tried in order, falling through on a 400 only. Voice wants a fast answer
   // far more than a deeper one, but effort is not worth a dead assistant.
@@ -160,7 +189,6 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             controller.enqueue(encoder.encode("I can't help with that one."));
             wrote = true;
           }
-          if (!wrote) controller.enqueue(encoder.encode("I had nothing to say to that."));
           // Control frame after a NUL, which cannot occur in the spoken text --
           // so the page can split them without a parser and never speak this.
           const frame: { show?: unknown; ms?: Record<string, number> } = {};
@@ -170,6 +198,9 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
               console.log("orb-brain show", JSON.stringify(block.input));
             }
           }
+          // A wordless turn means one of two things, and they deserve different
+          // lines: it drew something and said nothing, or it produced nothing.
+          if (!wrote) controller.enqueue(encoder.encode(pick(frame.show ? WORDLESS : BLANK)));
           // claude: request leaving this worker to its first text token.
           // Whatever the page measures beyond this is network and the browser.
           frame.ms = { claude: (tFirst || Date.now()) - tIn };
@@ -213,6 +244,15 @@ export default {
     const path = new URL(request.url).pathname;
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
+
+    /* Read back what personality is actually live. Editing ORB_PERSONA in the
+       dashboard is the one change that needs no deploy, so this is the only way
+       to confirm from a phone that the edit took. */
+    if (path === "/persona" && request.method === "GET") {
+      return new Response(persona(env), {
+        headers: { ...headers, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
 
     // Lets you discover this account's real voice ids instead of guessing one.
     if (path === "/voices" && request.method === "GET") {

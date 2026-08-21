@@ -61,8 +61,51 @@ waiting for the full sentence.
 routes it through an analyser, so the speaking state is driven by the real
 voice rather than a scripted syllable clock.
 
-The system prompt is in `src/index.ts`. It is written for speech: one or two
-sentences, no markdown, no lists, no emoji. Change it there.
+`GET /persona` returns the system prompt that is actually live, so an edit can
+be confirmed from a phone.
+
+## Who it is
+
+Nothing about the orb is emergent. It knows its name because `src/index.ts`
+tells it, in a system prompt sent with every single request — text the person
+talking never sees, which the model reads as *who it is* rather than as
+something someone said to it. "I'm Orb" and "a field of particles" are those
+sentences coming back in its own words. Anything it says about itself that is
+**not** in that prompt is improvised, and should not be believed.
+
+The prompt is deliberately two halves:
+
+- **`PERSONA`** — who it is. Meant to be rewritten.
+- **`PROTOCOL`** — how the voice pipeline works. Not up for negotiation, and
+  kept in code: a personality that says "answer in bullet points" or "use
+  emoji" gets read aloud, literally, by a text-to-speech engine.
+
+### Changing the personality without deploying anything
+
+Set an **`ORB_PERSONA`** variable in the Cloudflare dashboard — Workers &
+Pages → `orb-brain` → Settings → Variables and Secrets → Add. Whatever is in
+it replaces `PERSONA` wholesale; `PROTOCOL` is still appended. Save takes
+effect on the next question. No terminal, no build, no computer. `GET /persona`
+confirms what took.
+
+It is a plain text field with room for a few thousand characters, so it can
+hold real detail — how it talks, what it cares about, what it should never say,
+facts about whoever owns it. That is all a "custom agent" is: a paragraph of
+text in front of the conversation. There is no training and no memory beyond
+the twenty messages the page sends each turn.
+
+`keep_vars = true` in `wrangler.toml` is what stops a later `wrangler deploy`
+from deleting that variable. Do not add `ORB_PERSONA` to `wrangler.toml` — the
+file would then win over the dashboard on every deploy, which is exactly the
+thing being avoided.
+
+### Changing the code without a computer
+
+Connect the Worker to the repo once: Workers & Pages → `orb-brain` → Settings →
+**Build** → Connect to Git → this repo, with **root directory** `worker`. After
+that every push to `main` deploys the Worker on its own. The dashboard's inline
+editor is not an option here — this Worker has an npm dependency and needs a
+build step.
 
 ## Choices worth knowing
 
@@ -71,8 +114,12 @@ sentences, no markdown, no lists, no emoji. Change it there.
   than quick ones.
 - `max_tokens: 1024` — deliberately small. This gets spoken aloud, and a long
   reply means a long speaking animation.
-- Refusal fallbacks are on. A policy decline re-runs the turn on a fallback
-  model inside the same call rather than returning nothing.
+- A refusal is caught and turned into one short sayable line, rather than
+  reaching the page as an empty stream.
+- A wordless turn gets a line too, and which line depends on why. Claude can
+  answer with only a `show` call and no text; that used to come back as "I had
+  nothing to say to that", which was a lie about a perfectly good answer. A
+  turn that drew something says so; a genuinely empty one asks you to repeat.
 - Errors are caught and turned into something sayable, so a failure never
   leaves the orb stuck mid-state with nothing to say.
 
