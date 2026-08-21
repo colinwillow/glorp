@@ -14,6 +14,8 @@
   canvas{display:block;width:100%;height:100%;touch-action:none}
   #hud{position:fixed;left:14px;top:calc(14px + env(safe-area-inset-top));
     font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:#4A4A4A;pointer-events:none}
+  #meter{position:fixed;left:14px;top:calc(32px + env(safe-area-inset-top));
+    font-size:10px;letter-spacing:.1em;color:#3E4A38;pointer-events:none;white-space:pre}
   #tr{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;display:flex;gap:7px}
   button{background:rgba(15,15,15,.85);border:1px solid #262626;color:#7A7A7A;
     font-family:inherit;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
@@ -23,22 +25,37 @@
   #err{position:fixed;top:calc(52px + env(safe-area-inset-top));right:14px;left:14px;
     max-width:340px;margin-left:auto;background:rgba(40,16,16,.94);border:1px solid #4A2020;
     color:#D89A94;font-size:11.5px;line-height:1.55;padding:11px 13px;border-radius:6px;display:none}
-  #panel{position:fixed;top:calc(50px + env(safe-area-inset-top));right:14px;left:14px;
-    max-width:380px;margin-left:auto;background:rgba(13,13,13,.95);border:1px solid #262626;
-    border-radius:8px;padding:15px;max-height:76vh;overflow-y:auto;display:none;
-    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
-  .grp{margin-bottom:16px}
+  /* bottom sheet — the orb stays visible above it while you tune */
+  #panel{position:fixed;left:0;right:0;bottom:0;
+    background:rgba(10,10,10,.93);border-top:1px solid #2A2A2A;
+    border-radius:14px 14px 0 0;padding:12px 16px calc(16px + env(safe-area-inset-bottom));
+    max-height:42vh;overflow-y:auto;display:none;
+    -webkit-overflow-scrolling:touch;touch-action:pan-y;
+    -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);
+    box-shadow:0 -14px 40px rgba(0,0,0,.55)}
+  #panel::before{content:"";display:block;width:34px;height:3px;border-radius:2px;
+    background:#333;margin:0 auto 12px}
+  @media (min-width:900px){
+    #panel{left:auto;right:14px;bottom:14px;width:370px;border-radius:10px;
+      border:1px solid #2A2A2A;max-height:78vh}
+  }
+  .grp{margin-bottom:13px}
   .grp>h3{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:#C8F49A;
     margin-bottom:10px;opacity:.75;font-weight:400}
-  .sl{margin-bottom:12px}
-  .sl .t{display:flex;justify-content:space-between;font-size:10.5px;letter-spacing:.08em;
-    text-transform:uppercase;color:#6B6B6B;margin-bottom:5px}
+  .sl{margin-bottom:9px}
+  .sl .t{display:flex;justify-content:space-between;font-size:10px;letter-spacing:.08em;
+    text-transform:uppercase;color:#6B6B6B;margin-bottom:2px}
   .sl .t b{color:#C8F49A;font-weight:400}
-  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:2px;
-    background:#2A2A2A;outline:none;border-radius:2px}
-  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
-    border-radius:50%;background:#C8F49A;cursor:pointer}
-  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+  /* touch-action:none is what lets you DRAG the thumb on iOS instead of
+     only tapping the track — without it Safari claims the gesture. */
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:26px;
+    background:transparent;outline:none;touch-action:none;margin:0}
+  input[type=range]::-webkit-slider-runnable-track{height:2px;background:#2E2E2E;border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;
+    margin-top:-10px;border-radius:50%;background:#C8F49A;cursor:pointer;
+    box-shadow:0 1px 5px rgba(0,0,0,.6)}
+  input[type=range]::-moz-range-track{height:2px;background:#2E2E2E;border-radius:2px}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
     background:#C8F49A;border:none;cursor:pointer}
   #row{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1E1E1E}
 </style>
@@ -46,6 +63,7 @@
 <body>
 <canvas id="c"></canvas>
 <div id="hud">— fps</div>
+<div id="meter"></div>
 <div id="tr">
   <button id="micBtn">enable mic</button>
   <button id="frzBtn" style="display:none">freeze</button>
@@ -59,10 +77,11 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:2383, radius:0.30, rateX:20000, rateY:10000,
+  count:2383, radius:0.30, rateX:20000, rateY:10000, bloom:1.0, fit:1.35,
   speedLo:10, speedHi:20, forceRatio:0.05, fleeRadius:100, fleeMult:2,
-  rmsGain:1.1, specGain:0.55, membrane:0.5,
-  turbGain:1.0, impulseGain:1.4, hueGain:1.0, attack:0.45, release:0.06,
+  rmsGain:0.9, specGain:1.1, membrane:0.35, ellipse:0.5,
+  falloffGain:1.5, turbGain:1.2, impulseGain:2.0, hueGain:1.6,
+  attack:0.5, release:0.045,
   sizeHi:26, falloff:100, trail:0.39, rK:3, gK:10, bK:1, base:150
 };
 const cfg = Object.assign({}, DEFAULTS);
@@ -76,14 +95,18 @@ const SPEC = [
     ["rmsGain","rms → size",0,4,0.05],
     ["specGain","spectrum → ring",0,2.5,0.05],
     ["membrane","membrane",0,3,0.05],
+    ["falloffGain","rms → colour split",0,4,0.05],
     ["turbGain","sibilance → turbulence",0,4,0.1],
     ["impulseGain","onset → impulse",0,5,0.1],
-    ["hueGain","centroid → hue",0,3,0.05],
+    ["hueGain","centroid → hue",0,4,0.05],
+    ["ellipse","centroid → ellipse",0,1.5,0.05],
     ["attack","attack",0.05,1,0.01],
     ["release","release",0.01,0.5,0.01]]],
   ["form", [
     ["count","count",200,6000,1],
-    ["radius","radius",0.1,0.6,0.01],
+    ["radius","radius",0.05,0.6,0.01],
+    ["bloom","bloom",0,1,0.01],
+    ["fit","fit to screen",0.5,1.2,0.01],
     ["rateX","rate x",2000,60000,500],
     ["rateY","rate y",2000,60000,500]]],
   ["motion", [
@@ -152,6 +175,7 @@ const errBox = document.getElementById("err");
 const micBtn = document.getElementById("micBtn");
 const frzBtn = document.getElementById("frzBtn");
 const hud = document.getElementById("hud");
+const meter = document.getElementById("meter");
 let micState = "idle";
 
 micBtn.onclick = async () => {
@@ -223,8 +247,12 @@ function analyse() {
       if (diff > 0) flux += diff;
       A.prev[i] = val;
     }
-    const centroid = cd > 0.001 ? cn / cd / N : 0;
-    drive.hue += (centroid * 3.2 - drive.hue) * 0.04;
+    let centroid = cd > 0.001 ? cn / cd / N : 0;
+    // speech centroid lives around 0.03-0.25 normalised; stretch it so the
+    // mapping actually uses its full range instead of the bottom tenth
+    centroid = (centroid - 0.03) / 0.20;
+    if (centroid < 0) centroid = 0; else if (centroid > 1) centroid = 1;
+    drive.hue += (centroid - drive.hue) * 0.06;
     drive.turbulence += (Math.min(1, zcr * 26) - drive.turbulence) * 0.16;
     drive.impulse = Math.max(drive.impulse * 0.86, Math.min(1, flux * 0.05));
   } else if (A) {
@@ -272,7 +300,9 @@ function seedNear(cnt, spawnR) {
   }
 }
 
-const LUT_N = 96, LUT_LO = -90, LUT_HI = 40, lut = new Array(LUT_N);
+const LUT_N = 96;
+let LUT_LO = -90, LUT_HI = 40;
+const lut = new Array(LUT_N);
 function toRgb(cr, cg, cb, hueShift) {
   cr /= 255; cg /= 255; cb /= 255;
   const mx = Math.max(cr, cg, cb), mn = Math.min(cr, cg, cb), dd = mx - mn;
@@ -329,12 +359,26 @@ function loop() {
     seededFor = n;
   }
 
-  const shift = Math.round(drive.hue * cfg.hueGain * 60);
-  if (shift !== lastShift) { buildLut(shift); lastShift = shift; }
-
   const fr2 = cfg.fleeRadius * cfg.fleeRadius;
   const hasMouse = mx > -9000;
   const gScale = 1 + drive.scale * cfg.rmsGain;
+  const maxR = Math.min(W, H) * 0.5 * cfg.fit;
+
+  // falloff / sizeHi were absolute px, which is why desktop looked nothing
+  // like mobile. Normalise against a 400px reference short edge.
+  const k = scale / 400;
+  const falloffPx = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
+  const sizeHiPx = cfg.sizeHi * k;
+  const radCap = 22 * k;
+
+  const shift = Math.round(drive.hue * cfg.hueGain * 90);
+  const lo = -3.4 * sizeHiPx;
+  if (shift !== lastShift || lo !== LUT_LO) {
+    LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
+  }
+  const ecc = (drive.hue - 0.5) * 2 * cfg.ellipse;   // bright → wide, dark → tall
+  const ex = 1 + ecc * 0.45;
+  const ey = 1 - ecc * 0.45;
   const turb = drive.turbulence * cfg.turbGain;
   const kick = drive.impulse * cfg.impulseGain;
 
@@ -344,11 +388,14 @@ function loop() {
     physAcc -= STEP; steps++; frame++;
     for (let i = 0; i < n; i++) {
       const band = (i * BANDS / n) | 0;
-      const ringR = baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain;
-      const sqx = Math.sin(frame / cfg.rateX * i);
-      const sqy = Math.cos(frame / cfg.rateY * i);
-      const tx = cx + bx[i] * ringR * sqx;
-      const ty = cy + by[i] * ringR * sqy;
+      let ringR = baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain;
+      if (ringR > maxR) ringR = maxR;
+      // bloom 1 = original (sine swings through zero, target crosses centre)
+      // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
+      const sqx = 1 - cfg.bloom + cfg.bloom * Math.sin(frame / cfg.rateX * i);
+      const sqy = 1 - cfg.bloom + cfg.bloom * Math.cos(frame / cfg.rateY * i);
+      const tx = cx + bx[i] * ringR * sqx * ex;
+      const ty = cy + by[i] * ringR * sqy * ey;
       const maxF = mSpd[i] * cfg.forceRatio;
 
       const ddx = tx - px[i], ddy = ty - py[i];
@@ -365,7 +412,8 @@ function loop() {
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         const b2 = ((th / TAU) * BANDS) | 0;
-        const surf = baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain;
+        let surf = baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain;
+        if (surf > maxR) surf = maxR;
         const push = (surf - rd) * 0.02 * cfg.membrane;
         ax += (rx / rd) * push; ay += (ry / rd) * push;
         if (kick > 0.01) { ax += (rx / rd) * kick * 1.6; ay += (ry / rd) * kick * 1.6; }
@@ -401,12 +449,12 @@ function loop() {
   for (let i = 0; i < n; i++) {
     const ox = cx - px[i], oy = cy - py[i];
     const distMag = Math.sqrt(ox * ox + oy * oy);
-    const size = (1 - distMag / cfg.falloff) * cfg.sizeHi;
+    const size = (1 - distMag / falloffPx) * sizeHiPx;
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
     let rad = Math.abs(size) * 0.5;
-    if (rad > 22) rad = 22;
+    if (rad > radCap) rad = radCap;
     if (rad > 0.2) {
       ctx.beginPath();
       ctx.arc(px[i], py[i], rad, 0, 6.2832);
@@ -426,6 +474,9 @@ function loop() {
   acc += dt; frames++;
   if (acc > 500) {
     hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " + micState;
+    const f2 = (x) => x.toFixed(2);
+    meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
+                        "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse);
     acc = 0; frames = 0;
   }
   requestAnimationFrame(loop);
