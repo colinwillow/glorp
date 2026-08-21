@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orb</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:#0B0B0B;overflow:hidden;
+    font-family:'DM Mono',ui-monospace,monospace;-webkit-tap-highlight-color:transparent}
+  canvas{display:block;width:100%;height:100%;touch-action:none}
+  #hud{position:fixed;left:14px;top:calc(14px + env(safe-area-inset-top));
+    font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:#4A4A4A;pointer-events:none}
+  #tr{position:fixed;top:calc(12px + env(safe-area-inset-top));right:14px;display:flex;gap:7px}
+  button{background:rgba(15,15,15,.85);border:1px solid #262626;color:#7A7A7A;
+    font-family:inherit;font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    padding:7px 12px;border-radius:4px;cursor:pointer}
+  button:hover,button:focus-visible{border-color:#C8F49A;color:#E8FFD2}
+  button.on{color:#C8F49A;border-color:#C8F49A}
+  #err{position:fixed;top:calc(52px + env(safe-area-inset-top));right:14px;left:14px;
+    max-width:340px;margin-left:auto;background:rgba(40,16,16,.94);border:1px solid #4A2020;
+    color:#D89A94;font-size:11.5px;line-height:1.55;padding:11px 13px;border-radius:6px;display:none}
+  #panel{position:fixed;top:calc(50px + env(safe-area-inset-top));right:14px;left:14px;
+    max-width:380px;margin-left:auto;background:rgba(13,13,13,.95);border:1px solid #262626;
+    border-radius:8px;padding:15px;max-height:76vh;overflow-y:auto;display:none;
+    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+  .grp{margin-bottom:16px}
+  .grp>h3{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:#C8F49A;
+    margin-bottom:10px;opacity:.75;font-weight:400}
+  .sl{margin-bottom:12px}
+  .sl .t{display:flex;justify-content:space-between;font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;color:#6B6B6B;margin-bottom:5px}
+  .sl .t b{color:#C8F49A;font-weight:400}
+  input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:2px;
+    background:#2A2A2A;outline:none;border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+    border-radius:50%;background:#C8F49A;cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;
+    background:#C8F49A;border:none;cursor:pointer}
+  #row{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1E1E1E}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">— fps</div>
+<div id="tr">
+  <button id="micBtn">enable mic</button>
+  <button id="frzBtn" style="display:none">freeze</button>
+  <button id="tuneBtn">tune</button>
+</div>
+<div id="err"></div>
+<div id="panel"></div>
+
+<script>
+"use strict";
+const BANDS = 64, TAU = Math.PI * 2;
+
+const DEFAULTS = {
+  count:2383, radius:0.30, rateX:20000, rateY:10000,
+  speedLo:10, speedHi:20, forceRatio:0.05, fleeRadius:100, fleeMult:2,
+  rmsGain:1.1, specGain:0.55, membrane:0.5,
+  turbGain:1.0, impulseGain:1.4, hueGain:1.0, attack:0.45, release:0.06,
+  sizeHi:26, falloff:100, trail:0.39, rK:3, gK:10, bK:1, base:150
+};
+const cfg = Object.assign({}, DEFAULTS);
+
+/* the only channel audio has into physics */
+const drive = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+
+/* ---------------- controls ---------------- */
+const SPEC = [
+  ["audio drive", [
+    ["rmsGain","rms → size",0,4,0.05],
+    ["specGain","spectrum → ring",0,2.5,0.05],
+    ["membrane","membrane",0,3,0.05],
+    ["turbGain","sibilance → turbulence",0,4,0.1],
+    ["impulseGain","onset → impulse",0,5,0.1],
+    ["hueGain","centroid → hue",0,3,0.05],
+    ["attack","attack",0.05,1,0.01],
+    ["release","release",0.01,0.5,0.01]]],
+  ["form", [
+    ["count","count",200,6000,1],
+    ["radius","radius",0.1,0.6,0.01],
+    ["rateX","rate x",2000,60000,500],
+    ["rateY","rate y",2000,60000,500]]],
+  ["motion", [
+    ["speedLo","speed lo",1,30,0.5],
+    ["speedHi","speed hi",1,40,0.5],
+    ["forceRatio","force ratio",0.005,0.3,0.005],
+    ["fleeRadius","flee radius",0,400,10],
+    ["fleeMult","flee mult",0,6,0.1]]],
+  ["size & colour", [
+    ["sizeHi","size hi",2,80,1],
+    ["falloff","falloff",20,600,5],
+    ["trail","trail",0.02,1,0.01],
+    ["rK","red k",-20,20,0.5],
+    ["gK","green k",-20,20,0.5],
+    ["bK","blue k",-20,20,0.5],
+    ["base","base",0,255,5]]]
+];
+
+const panel = document.getElementById("panel");
+const readouts = {};
+SPEC.forEach(([title, rows]) => {
+  const g = document.createElement("div"); g.className = "grp";
+  g.innerHTML = "<h3>" + title + "</h3>";
+  rows.forEach(([key, label, min, max, step]) => {
+    const d = document.createElement("div"); d.className = "sl";
+    d.innerHTML = '<div class="t"><span>' + label + '</span><b></b></div>';
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.min = min; inp.max = max; inp.step = step; inp.value = cfg[key];
+    const out = d.querySelector("b"); out.textContent = cfg[key];
+    readouts[key] = out;
+    inp.addEventListener("input", () => { cfg[key] = parseFloat(inp.value); out.textContent = inp.value; });
+    d.appendChild(inp); g.appendChild(d);
+  });
+  panel.appendChild(g);
+});
+const row = document.createElement("div"); row.id = "row";
+row.innerHTML = '<button id="rst">reset</button><button id="cpy">copy preset</button><button id="bars" class="on">hide bars</button>';
+panel.appendChild(row);
+
+document.getElementById("tuneBtn").onclick = (e) => {
+  const open = panel.style.display !== "block";
+  panel.style.display = open ? "block" : "none";
+  e.target.textContent = open ? "hide" : "tune";
+};
+document.getElementById("rst").onclick = () => {
+  Object.assign(cfg, DEFAULTS);
+  panel.querySelectorAll("input").forEach((inp, i) => {
+    const key = SPEC.flatMap(s => s[1])[i][0];
+    inp.value = cfg[key]; readouts[key].textContent = cfg[key];
+  });
+};
+document.getElementById("cpy").onclick = (e) => {
+  navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
+  e.target.textContent = "copied"; setTimeout(() => e.target.textContent = "copy preset", 1400);
+};
+let showBars = true;
+document.getElementById("bars").onclick = (e) => {
+  showBars = !showBars;
+  e.target.textContent = showBars ? "hide bars" : "show bars";
+  e.target.classList.toggle("on", showBars);
+};
+
+/* ---------------- audio ---------------- */
+let A = null, frozen = false;
+const errBox = document.getElementById("err");
+const micBtn = document.getElementById("micBtn");
+const frzBtn = document.getElementById("frzBtn");
+const hud = document.getElementById("hud");
+let micState = "idle";
+
+micBtn.onclick = async () => {
+  micState = "asking"; micBtn.textContent = "…";
+  errBox.style.display = "none";
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      throw new Error("getUserMedia unavailable — needs https or localhost");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+    });
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    await ac.resume();
+    const an = ac.createAnalyser();
+    an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
+    ac.createMediaStreamSource(stream).connect(an);
+    A = { ac, an, stream,
+      freq:new Uint8Array(an.frequencyBinCount),
+      prev:new Float32Array(an.frequencyBinCount),
+      time:new Float32Array(an.fftSize) };
+    micState = "live";
+    micBtn.style.display = "none";
+    frzBtn.style.display = "";
+    analyse();
+  } catch (e) {
+    micState = "denied";
+    micBtn.textContent = "retry mic";
+    errBox.style.display = "block";
+    errBox.textContent = (e.name || "Error") + ": " + (e.message || String(e));
+  }
+};
+frzBtn.onclick = () => {
+  frozen = !frozen;
+  frzBtn.textContent = frozen ? "frozen" : "freeze";
+  frzBtn.classList.toggle("on", frozen);
+};
+
+function analyse() {
+  if (A && !frozen) {
+    A.an.getByteFrequencyData(A.freq);
+    A.an.getFloatTimeDomainData(A.time);
+
+    let sum = 0, zc = 0, last = A.time[0];
+    for (let i = 0; i < A.time.length; i++) {
+      const s = A.time[i]; sum += s * s;
+      if ((s >= 0) !== (last >= 0)) zc++;
+      last = s;
+    }
+    const rms = Math.sqrt(sum / A.time.length);
+    const zcr = zc / A.time.length;
+
+    const k = rms > drive.scale ? cfg.attack : cfg.release;
+    drive.scale += (Math.min(1, rms * 6) - drive.scale) * k;
+
+    const N = A.freq.length;
+    for (let b = 0; b < BANDS; b++) {
+      const lo = Math.floor(Math.pow(b / BANDS, 2) * N);
+      const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / BANDS, 2) * N));
+      let acc = 0;
+      for (let i = lo; i < hi; i++) acc += A.freq[i];
+      const bandVal = acc / (hi - lo) / 255;
+      drive.spectrum[b] += (bandVal - drive.spectrum[b]) * 0.35;
+    }
+    let cn = 0, cd = 0, flux = 0;
+    for (let i = 0; i < N; i++) {
+      const val = A.freq[i] / 255;
+      cn += i * val; cd += val;
+      const diff = val - A.prev[i];
+      if (diff > 0) flux += diff;
+      A.prev[i] = val;
+    }
+    const centroid = cd > 0.001 ? cn / cd / N : 0;
+    drive.hue += (centroid * 3.2 - drive.hue) * 0.04;
+    drive.turbulence += (Math.min(1, zcr * 26) - drive.turbulence) * 0.16;
+    drive.impulse = Math.max(drive.impulse * 0.86, Math.min(1, flux * 0.05));
+  } else if (A) {
+    drive.impulse *= 0.9;
+  }
+  requestAnimationFrame(analyse);
+}
+
+/* ---------------- physics + render ---------------- */
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d", { alpha:false });
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+let W = 0, H = 0, cx = 0, cy = 0, scale = 1;
+
+function resize() {
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W / 2; cy = H / 2; scale = Math.min(W, H);
+  ctx.fillStyle = "#0B0B0B"; ctx.fillRect(0, 0, W, H);
+}
+resize();
+window.addEventListener("resize", resize);
+
+const MAX = 6000;
+const px = new Float32Array(MAX), py = new Float32Array(MAX);
+const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+const bx = new Float32Array(MAX), by = new Float32Array(MAX);
+const mSpd = new Float32Array(MAX);
+
+function buildBase(cnt) {
+  for (let i = 0; i < cnt; i++) {
+    const a = (i / cnt) * TAU;
+    bx[i] = Math.cos(a); by[i] = Math.sin(a);
+  }
+}
+let seeded = false;
+function seedNear(cnt, spawnR) {
+  for (let i = 0; i < cnt; i++) {
+    const a = Math.random() * TAU;
+    const r = spawnR * (0.2 + Math.random() * 0.9);
+    px[i] = cx + Math.cos(a) * r; py[i] = cy + Math.sin(a) * r;
+    vx[i] = vy[i] = 0;
+  }
+}
+
+const LUT_N = 96, LUT_LO = -90, LUT_HI = 40, lut = new Array(LUT_N);
+function toRgb(cr, cg, cb, hueShift) {
+  cr /= 255; cg /= 255; cb /= 255;
+  const mx = Math.max(cr, cg, cb), mn = Math.min(cr, cg, cb), dd = mx - mn;
+  const l = (mx + mn) / 2;
+  const s = dd === 0 ? 0 : dd / (1 - Math.abs(2 * l - 1));
+  let h = 0;
+  if (dd !== 0) {
+    if (mx === cr) h = ((cg - cb) / dd) % 6;
+    else if (mx === cg) h = (cb - cr) / dd + 2;
+    else h = (cr - cg) / dd + 4;
+  }
+  h = (h * 60 + hueShift + 360) % 360;
+  const c2 = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c2 * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c2 / 2;
+  let R = 0, G = 0, B = 0;
+  if (h < 60) { R = c2; G = x; } else if (h < 120) { R = x; G = c2; }
+  else if (h < 180) { G = c2; B = x; } else if (h < 240) { G = x; B = c2; }
+  else if (h < 300) { R = x; B = c2; } else { R = c2; B = x; }
+  return "rgb(" + (((R + m) * 255) | 0) + "," + (((G + m) * 255) | 0) + "," + (((B + m) * 255) | 0) + ")";
+}
+function buildLut(hueShift) {
+  const cl = (ch) => (ch < 0 ? 0 : ch > 255 ? 255 : ch);
+  for (let i = 0; i < LUT_N; i++) {
+    const size = LUT_LO + (i / (LUT_N - 1)) * (LUT_HI - LUT_LO);
+    lut[i] = toRgb(cl(size * cfg.rK + cfg.base), cl(size * cfg.gK + cfg.base), cl(size * cfg.bK + cfg.base), hueShift);
+  }
+}
+
+let mx = -9999, my = -9999;
+const onMove = (e) => { const t = e.touches ? e.touches[0] : e; mx = t.clientX; my = t.clientY; };
+const onLeave = () => { mx = my = -9999; };
+["pointermove","touchstart","touchmove"].forEach(ev =>
+  canvas.addEventListener(ev, onMove, { passive:true }));
+["pointerup","pointercancel","pointerleave","touchend","touchcancel"].forEach(ev =>
+  canvas.addEventListener(ev, onLeave));
+
+let frame = 0, lastT = performance.now(), acc = 0, frames = 0;
+let seededFor = 0, physAcc = 0, lastShift = -999;
+const STEP = 1000 / 60;
+
+function loop() {
+  const n = Math.min(MAX, Math.round(cfg.count));
+  const now = performance.now();
+  let dt = now - lastT; lastT = now;
+  if (dt > 250) dt = 250;
+
+  const baseR = cfg.radius * scale;
+
+  if (seededFor !== n) {
+    buildBase(n);
+    for (let i = 0; i < n; i++) mSpd[i] = cfg.speedLo + Math.random() * (cfg.speedHi - cfg.speedLo);
+    if (!seeded) { seedNear(n, baseR); seeded = true; }
+    seededFor = n;
+  }
+
+  const shift = Math.round(drive.hue * cfg.hueGain * 60);
+  if (shift !== lastShift) { buildLut(shift); lastShift = shift; }
+
+  const fr2 = cfg.fleeRadius * cfg.fleeRadius;
+  const hasMouse = mx > -9000;
+  const gScale = 1 + drive.scale * cfg.rmsGain;
+  const turb = drive.turbulence * cfg.turbGain;
+  const kick = drive.impulse * cfg.impulseGain;
+
+  physAcc += dt;
+  let steps = 0;
+  while (physAcc >= STEP && steps < 4) {
+    physAcc -= STEP; steps++; frame++;
+    for (let i = 0; i < n; i++) {
+      const band = (i * BANDS / n) | 0;
+      const ringR = baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain;
+      const sqx = Math.sin(frame / cfg.rateX * i);
+      const sqy = Math.cos(frame / cfg.rateY * i);
+      const tx = cx + bx[i] * ringR * sqx;
+      const ty = cy + by[i] * ringR * sqy;
+      const maxF = mSpd[i] * cfg.forceRatio;
+
+      const ddx = tx - px[i], ddy = ty - py[i];
+      const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
+      let spd = mSpd[i];
+      if (dd < 500) spd = (dd / 100) * mSpd[i];
+      let ax = (ddx / dd) * spd - vx[i];
+      let ay = (ddy / dd) * spd - vy[i];
+      const am = Math.sqrt(ax * ax + ay * ay);
+      if (am > maxF) { ax = ax / am * maxF; ay = ay / am * maxF; }
+
+      if (cfg.membrane > 0.001) {
+        const rx = px[i] - cx, ry = py[i] - cy;
+        const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
+        let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
+        const b2 = ((th / TAU) * BANDS) | 0;
+        const surf = baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain;
+        const push = (surf - rd) * 0.02 * cfg.membrane;
+        ax += (rx / rd) * push; ay += (ry / rd) * push;
+        if (kick > 0.01) { ax += (rx / rd) * kick * 1.6; ay += (ry / rd) * kick * 1.6; }
+      }
+
+      if (turb > 0.01) {
+        ax += (Math.random() - 0.5) * turb * 2.4;
+        ay += (Math.random() - 0.5) * turb * 2.4;
+      }
+
+      if (hasMouse) {
+        const fx = mx - px[i], fy = my - py[i];
+        const fd2 = fx * fx + fy * fy;
+        if (fd2 < fr2 && fd2 > 0.01) {
+          const fd = Math.sqrt(fd2);
+          let sx = -(fx / fd) * mSpd[i] - vx[i];
+          let sy = -(fy / fd) * mSpd[i] - vy[i];
+          const sm = Math.sqrt(sx * sx + sy * sy);
+          if (sm > maxF) { sx = sx / sm * maxF; sy = sy / sm * maxF; }
+          ax += sx * cfg.fleeMult; ay += sy * cfg.fleeMult;
+        }
+      }
+
+      vx[i] += ax; vy[i] += ay;
+      px[i] += vx[i]; py[i] += vy[i];
+    }
+  }
+
+  ctx.fillStyle = "rgba(11,11,11," + cfg.trail + ")";
+  ctx.fillRect(0, 0, W, H);
+
+  const span = LUT_HI - LUT_LO;
+  for (let i = 0; i < n; i++) {
+    const ox = cx - px[i], oy = cy - py[i];
+    const distMag = Math.sqrt(ox * ox + oy * oy);
+    const size = (1 - distMag / cfg.falloff) * cfg.sizeHi;
+    let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
+    if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
+    ctx.fillStyle = lut[li];
+    let rad = Math.abs(size) * 0.5;
+    if (rad > 22) rad = 22;
+    if (rad > 0.2) {
+      ctx.beginPath();
+      ctx.arc(px[i], py[i], rad, 0, 6.2832);
+      ctx.fill();
+    }
+  }
+
+  if (showBars) {
+    const bw = W / BANDS;
+    ctx.fillStyle = "rgba(200,244,154,0.30)";
+    for (let b = 0; b < BANDS; b++) {
+      const h = drive.spectrum[b] * 46;
+      if (h > 0.5) ctx.fillRect(b * bw + 0.5, H - h, bw - 1, h);
+    }
+  }
+
+  acc += dt; frames++;
+  if (acc > 500) {
+    hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " + micState;
+    acc = 0; frames = 0;
+  }
+  requestAnimationFrame(loop);
+}
+buildLut(0);
+loop();
+</script>
+</body>
+</html>
