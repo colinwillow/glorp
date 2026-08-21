@@ -38,7 +38,7 @@ const PROTOCOL = `Your replies are spoken aloud, never read. Keep them to one or
 
 If a question genuinely needs a long answer, give the short version and offer to go deeper.
 
-The show tool makes your particles leave the ring and stand as a word, a short phrase or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and whenever a word would land better shown than said -- your own name, a number, the one word a sentence turns on. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
+The show tool makes your particles leave the ring and stand as a word, a short phrase, an emoji or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and whenever a word would land better shown than said -- your own name, a number, the one word a sentence turns on. It can also set off a firework, which is for good news and nothing else. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
 
 function persona(env: Env): string {
   const custom = (env.ORB_PERSONA ?? "").trim();
@@ -142,14 +142,29 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Make the orb's particles leave their ring and stand as something on screen for a few seconds, then return. " +
-      "Give either text (a short word or phrase, about ten characters at most -- longer will not read) or shape.",
+      "Do something with the orb's particles. Give exactly one of text, shape or shell. " +
+      "text and shape make the particles leave their ring and stand as something for a few seconds, then return. " +
+      "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
+      "or anything worth setting off. Never use a shell for an ordinary answer.",
     input_schema: {
       type: "object",
       properties: {
-        text: { type: "string", description: "A short word or phrase to spell out." },
+        text: {
+          type: "string",
+          description:
+            "A short word or phrase to spell out, about ten characters at most -- longer will not read. " +
+            "A single emoji works too and draws as itself.",
+        },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
-        seconds: { type: "number", description: "How long to hold it. 2 to 15, default 5." },
+        shell: {
+          type: "string",
+          enum: ["peony", "ring", "willow", "palm", "shock"],
+          description:
+            "A firework. peony is a gold ball with radial streaks, the everyday celebration. " +
+            "ring opens as a clean cyan circle. willow is heavy and orange and droops. " +
+            "palm throws seven thick green fingers. shock is one brief enormous pink blast.",
+        },
+        seconds: { type: "number", description: "How long to hold a text or shape. 2 to 15, default 5." },
       },
     },
   }];

@@ -61,6 +61,11 @@ waiting for the full sentence.
 routes it through an analyser, so the speaking state is driven by the real
 voice rather than a scripted syllable clock.
 
+The `show` tool takes exactly one of `text` (a word, a short phrase, or a single
+emoji), `shape` (`face`), or `shell` (a firework: `peony`, `ring`, `willow`,
+`palm`, `shock`). The page routes all three through one entry point, so the
+brain reaches the same effects a spoken trigger word does.
+
 `GET /persona` returns the system prompt that is actually live, so an edit can
 be confirmed from a phone.
 
