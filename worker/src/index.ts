@@ -60,39 +60,72 @@ export default {
 
     const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
-    // Streamed so the orb can start speaking on the first token instead of
-    // waiting for the whole reply -- that latency is the difference between a
-    // conversation and a lookup.
-    const makeStream = () => client.beta.messages.stream({
+    /* Streamed so the orb can start speaking on the first token instead of
+       waiting for the whole reply -- that latency is the difference between a
+       conversation and a lookup.
+
+       Tried in order, falling through on a 400. Beta features and effort are
+       both worth having but neither is worth a dead assistant, and an empty
+       400 body says nothing about which parameter was rejected -- so let the
+       worker find out and log it rather than guessing across deploys. */
+    const base = {
       model: "claude-opus-5",
       max_tokens: 1024, // deliberately short: this gets spoken, not read
       system: SYSTEM,
       messages,
-      thinking: { type: "adaptive" },
-      // Voice wants an answer back fast far more than it wants a deeper one.
-      // Raise to "high" if you would rather have considered replies than quick ones.
-      output_config: { effort: "low" },
-      betas: ["server-side-fallback-2026-06-01"],
-      fallbacks: [{ model: "claude-opus-4-8" }],
-    });
+    } as const;
+
+    const attempts: Array<{ label: string; run: () => ReturnType<typeof client.messages.stream> }> = [
+      {
+        // Voice wants an answer back fast far more than a deeper one.
+        label: "effort:low",
+        run: () => client.messages.stream({ ...base, output_config: { effort: "low" } }),
+      },
+      {
+        label: "plain",
+        run: () => client.messages.stream({ ...base }),
+      },
+    ];
 
     const encoder = new TextEncoder();
-    let streamRef: ReturnType<typeof makeStream> | null = null;
     const out = new ReadableStream<Uint8Array>({
       async start(controller) {
-        try {
-          streamRef = makeStream();
-          for await (const event of streamRef) {
-            if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-              controller.enqueue(encoder.encode(event.delta.text));
+        let lastError: unknown = null;
+        for (const attempt of attempts) {
+          try {
+            const stream = attempt.run();
+            let wrote = false;
+            for await (const event of stream) {
+              if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+                controller.enqueue(encoder.encode(event.delta.text));
+                wrote = true;
+              }
             }
+            // A policy decline arrives as HTTP 200 with no text, which would
+            // leave the orb stuck in its speaking state. Give it something to say.
+            const final = await stream.finalMessage();
+            if (final.stop_reason === "refusal") {
+              controller.enqueue(encoder.encode("I can't help with that one."));
+              wrote = true;
+            }
+            if (!wrote) controller.enqueue(encoder.encode("I had nothing to say to that."));
+            console.log("orb-brain ok via", attempt.label);
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error;
+            const st = (error as { status?: number })?.status;
+            console.error("orb-brain attempt failed", attempt.label, st,
+              (error as { message?: string })?.message,
+              JSON.stringify((error as { error?: unknown })?.error ?? null),
+              (error as { requestID?: string })?.requestID);
+            // Only a 400 is worth downgrading for; anything else is real.
+            if (st !== 400) break;
           }
-          // A policy decline arrives as HTTP 200 with no text, which would leave
-          // the orb silently stuck in its speaking state. Give it something to say.
-          const final = await streamRef.finalMessage();
-          if (final.stop_reason === "refusal") {
-            controller.enqueue(encoder.encode("I can't help with that one."));
-          }
+        }
+
+        try {
+          if (lastError) throw lastError;
         } catch (error) {
           // Say something human, but never swallow the detail -- a generic
           // "something went wrong" is indistinguishable from every other
