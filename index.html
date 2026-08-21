@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Orb</title>
+<title>Glorb</title>
 <meta name="theme-color" content="#0B0B0B">
-<meta name="description" content="An audio-reactive orb you can talk to.">
+<meta name="description" content="Glorb: an audio-reactive orb you can talk to.">
 <!-- Added to the home screen it launches without Safari chrome, which is the
      point: full bleed, dark status bar, no browser furniture over the field. -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Orb">
+<meta name="apple-mobile-web-app-title" content="Glorb">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="manifest" href="manifest.webmanifest">
@@ -100,7 +100,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
   count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
-  shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18,
+  shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
@@ -125,7 +125,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, core:0, coreR:0.18, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -136,7 +136,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, core:0, coreR:0.18, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -468,7 +468,7 @@ async function ask(text) {
 }
 
 /* The other half of duet. A trigger word inside the reply wins outright -- it
-   says "I'm Orb" and spells ORB, it says congratulations and the sky goes up --
+   says "I'm Glorb" and spells GLORB, says congratulations and the sky goes up --
    and otherwise the longest word carrying any weight stands in for the
    sentence. Timed to where that word actually falls, so the picture and the
    voice land together instead of the picture leading by a sentence. */
@@ -727,6 +727,7 @@ const SPEC = [
     ["fit","fit to screen",0.5,1.2,0.01],
     ["contain","contain",0.3,1,0.02],
     ["shape","shape",0,8,0.01],
+    ["drift","resting drift",0,1.5,0.01],
     ["core","core share",0,0.6,0.01],
     ["coreR","core radius",0.05,0.6,0.01],
     ["rateX","rate x",2000,60000,500],
@@ -1281,8 +1282,10 @@ const TRIGGERS = {
   party:{shell:"palm"},
   celebrate:{shell:"ring"},
   boom:{shell:"shock"}, blast:{shell:"shock"},
-  fireworks:{show:[["peony",0],["ring",620],["palm",1240],["willow",1900]]},
-  finale:{show:[["shock",0],["peony",520],["palm",1040],["ring",1560],["willow",2100]]},
+  // a display is worth watching only if each break is a different silhouette
+  fireworks:{show:[["peony",0],["nova",760],["valentine",1520],["pinwheel",2280],["willow",3060]]},
+  finale:{show:[["shock",0],["palm",560],["nova",1120],["valentine",1680],
+                ["pinwheel",2240],["ring",2800],["peony",3400]]},
   // things
   fire:{text:"\u{1F525}"}, star:{text:"\u2B50"}, sun:{text:"\u2600\uFE0F"},
   moon:{text:"\u{1F319}"}, music:{text:"\u{1F3B5}"}, eyes:{text:"\u{1F440}"},
@@ -1291,7 +1294,8 @@ const TRIGGERS = {
   // words that read better spelled
   face:{shape:"face"}, hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"},
   yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
-  stop:{text:"STOP"}, orb:{text:"ORB"}, help:{text:"HELP"}, nice:{text:"NICE"}
+  stop:{text:"STOP"}, help:{text:"HELP"}, nice:{text:"NICE"},
+  glorb:{text:"GLORB"}, orb:{text:"GLORB"}
 };
 
 /* ---------------- shells ----------------
@@ -1307,6 +1311,8 @@ const TRIGGERS = {
      up       upward bias, so it arcs instead of only spreading
      drag     air. What makes a star slow and hang before it falls
      hue      degrees of rotation on the whole palette: the shell's colour
+     form     optional. Packs the stars into a shape on the way out
+     swirl    optional. Tangential speed, which turns a shell into a pinwheel
      star     drawn radius. Everywhere else in this program a dot's size comes
               from its distance, which for a shell is backwards -- the further
               out a star gets the fatter it draws, until the whole thing is one
@@ -1314,6 +1320,59 @@ const TRIGGERS = {
      trail    overrides cfg.trail. Lower smears longer, which is the streak
    speed, up, gravity and star are all in reference units against a 400px short
    edge, like falloff and sizeHi, so a shell is the same shell on a phone. */
+/* A pattern shell. A real one packs its stars into a shape inside the casing,
+   so the wall of light that comes out is a heart or a star and not a circle.
+   Same trick: scale each star's launch speed by a radius function of its own
+   angle, and the expanding front carries the outline out with it. Normalised to
+   an average of 1, so giving a shell a shape does not also change its size. */
+const FORMS = (() => {
+  const norm = (t) => {
+    let s = 0;
+    for (let i = 0; i < t.length; i++) s += t[i];
+    const m = s / t.length || 1;
+    for (let i = 0; i < t.length; i++) t[i] /= m;
+    return t;
+  };
+  const fromFn = (fn) => {
+    const t = new Float32Array(SHAPE_N);
+    for (let i = 0; i < SHAPE_N; i++) t[i] = fn((i / SHAPE_N) * TAU);
+    return norm(t);
+  };
+  /* The classic parametric heart, binned by angle. A cardioid is the easy polar
+     answer and is not heart-shaped enough -- no cleft at the top. Screen y grows
+     downward, hence the flip, or it lands point-up.
+
+     Centred on its own bounding box first, and that is the whole trick. The
+     curve's origin sits up near the cleft, not in the middle of the figure, so
+     r measured from it runs 5 at the top lobes and 17 at the point: taken raw
+     it fires a spike upward and a flat sheet downward, which is what the first
+     attempt did. */
+  const P = [];
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (let i = 0; i < 24000; i++) {
+    const t = (i / 24000) * TAU;
+    const x = 16 * Math.pow(Math.sin(t), 3);
+    const y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+    P.push(x, y);
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  const ox = (x0 + x1) / 2, oy = (y0 + y1) / 2;
+  const heart = new Float32Array(SHAPE_N);
+  for (let i = 0; i < P.length; i += 2) {
+    const x = P[i] - ox, y = P[i + 1] - oy;
+    let a = Math.atan2(y, x); if (a < 0) a += TAU;
+    let k = ((a / TAU) * SHAPE_N) | 0; if (k >= SHAPE_N) k = SHAPE_N - 1;
+    const r = Math.sqrt(x * x + y * y);
+    if (r > heart[k]) heart[k] = r;      // outermost hit wins: the curve doubles back
+  }
+  for (let pass = 0; pass < 2; pass++)   // two passes, so a gap at index 0 fills too
+    for (let i = 0; i < SHAPE_N; i++)
+      if (!heart[i]) heart[i] = heart[(i + SHAPE_N - 1) % SHAPE_N];
+
+  return { heart: norm(heart), star: fromFn(SHAPES[5]), hex: fromFn(SHAPES[4]) };
+})();
+
 const SHELLS = {
   peony:  { speed:[3.6, 8.6], shell:0.3,  spokes:0, up:2.2, gravity:0.045, drag:0.030,
             hue:110, star:2.4, trail:0.26, flash:0.55, sparkle:0.9, dur:2400 },
@@ -1324,7 +1383,18 @@ const SHELLS = {
   palm:   { speed:[6.4, 9.8], shell:0.85, spokes:7, up:2.8, gravity:0.055, drag:0.026,
             hue:170, star:2.9, trail:0.18, flash:0.50, sparkle:0.4, dur:2600 },
   shock:  { speed:[12.5, 14], shell:1,    spokes:0, up:0,   gravity:0.020, drag:0.075,
-            hue:55,  star:3.4, trail:0.38, flash:0.85, sparkle:0,   dur:1600 }
+            hue:55,  star:3.4, trail:0.38, flash:0.85, sparkle:0,   dur:1600 },
+
+  // shaped: one speed, or the outline blurs into a cloud before it reads
+  /* Shaped shells hang rather than fall: gravity is what rounds an outline off,
+     because the top of the figure sags toward the middle within half a second.
+     A shorter trail too -- the smear that flatters a peony fills a heart in. */
+  valentine: { speed:[8.0, 8.6], shell:1, spokes:0, up:0.8, gravity:0.008, drag:0.020,
+               form:"heart", hue:30, star:2.5, trail:0.34, flash:0.5, sparkle:0.5, dur:3000 },
+  nova:      { speed:[8.2, 8.8], shell:1, spokes:0, up:0.8, gravity:0.008, drag:0.020,
+               form:"star", hue:325, star:2.4, trail:0.32, flash:0.55, sparkle:0.8, dur:2800 },
+  pinwheel:  { speed:[7.4, 8.0], shell:1, spokes:0, up:0.5, gravity:0.010, drag:0.024,
+               swirl:0.75, hue:135, star:2.3, trail:0.30, flash:0.45, sparkle:0.3, dur:2900 }
 };
 
 /* A ring reads at 400 particles; a sky full of sparks does not. Borrowed for
@@ -1345,6 +1415,7 @@ function fireShell(name) {
   }
 
   const kk = scale / 400;           // same reference short edge as falloff and sizeHi
+  const form = s.form ? FORMS[s.form] : null;
   for (let i = 0; i < n; i++) {
     // borrowed stars have never been anywhere: start them at the mortar
     if (i >= prev) { px[i] = cx + (Math.random() - 0.5) * 8; py[i] = cy + (Math.random() - 0.5) * 8; }
@@ -1353,9 +1424,18 @@ function fireShell(name) {
       : Math.random() * TAU;
     // sqrt, or a filled ball crowds at the centre instead of spreading evenly by area
     const f = s.shell + (1 - s.shell) * Math.sqrt(Math.random());
-    const sp = (s.speed[0] + (s.speed[1] - s.speed[0]) * f) * kk;
+    let sp = (s.speed[0] + (s.speed[1] - s.speed[0]) * f) * kk;
+    if (form) {
+      let t = a % TAU; if (t < 0) t += TAU;
+      let k = ((t / TAU) * SHAPE_N) | 0; if (k >= SHAPE_N) k = SHAPE_N - 1;
+      // raised, not used flat. The heart's own radius only spans 0.44 to 1.28
+      // and at that contrast the shell reads as a circle with a dent in it.
+      sp *= Math.pow(form[k], 1.8);
+    }
     vx[i] = Math.cos(a) * sp;
     vy[i] = Math.sin(a) * sp - s.up * kk;
+    // tangential, so the whole shell turns as it opens
+    if (s.swirl) { vx[i] -= Math.sin(a) * sp * s.swirl; vy[i] += Math.cos(a) * sp * s.swirl; }
   }
 
   firing.s = s; firing.name = name;
@@ -1536,7 +1616,14 @@ function loop() {
 
   const fr2 = cfg.fleeRadius * cfg.fleeRadius;
   const hasMouse = mx > -9000;
-  const gScale = 1 + drive.scale * cfg.rmsGain;
+  /* A resting orb that holds one shape forever reads as a screensaver. Two slow
+     sines with periods that do not divide into each other, so it wanders rather
+     than ticks -- and it fades out the moment anything is actually happening,
+     because drift is what the orb does when nothing else is asking. */
+  const tt = now / 1000;
+  const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1);
+  const wander = rest * (0.62 * Math.sin(tt / 7.3) + 0.38 * Math.sin(tt / 11.9 + 1.7));
+  const gScale = (1 + drive.scale * cfg.rmsGain) * (1 + rest * 0.05 * Math.sin(tt / 9.1));
   const maxR = Math.min(W, H) * 0.5 * cfg.fit;
 
   // falloff / sizeHi were absolute px, which is why desktop looked nothing
@@ -1569,7 +1656,7 @@ function loop() {
   const softSpan = Math.max(0.02, 1 - cfg.contain);
   const wall = 3.5 * k;
 
-  const sIdx = cfg.shape + drive.hue * cfg.shapeGain;
+  const sIdx = cfg.shape + drive.hue * cfg.shapeGain + wander;
   const mKey = Math.round(sIdx * 128);
   if (mKey !== lastMorph) { buildShapeLut(mKey / 128); lastMorph = mKey; }
 

@@ -1,4 +1,4 @@
-# Orb
+# Glorb
 
 A voice you can talk to, drawn as a particle field. Single HTML file, no build
 step, no dependencies. The optional brain and voice live in `worker/`.
@@ -293,8 +293,31 @@ decay make of it, which is why `congratulations` and `boom` do not look alike.
 | `birthday` | willow | orange, slow and heavy, long drooping arcs that hang and fall |
 | `party` | palm | green, seven thick fingers instead of a cloud |
 | `boom` `blast` | shock | hot pink, one enormous fast shockwave, brief |
-| `fireworks` | four in sequence | peony, ring, palm, willow, 620 ms apart |
-| `finale` | five in sequence | opens on the shock |
+| `fireworks` | five in sequence | peony, nova, valentine, pinwheel, willow |
+| `finale` | seven in sequence | opens on the shock |
+
+Three of them are **pattern shells**, reachable by `/show` or by the brain. A
+real pattern shell packs its stars into a shape inside the casing, so the wall
+of light that comes out is a figure rather than a circle — and the trick here is
+the same one: scale each star's launch speed by a radius function of its own
+angle, and the expanding front carries the outline out with it.
+
+| shell | shape |
+| --- | --- |
+| `valentine` | a heart, hot pink |
+| `nova` | a five-pointed star, violet |
+| `pinwheel` | a ring given tangential speed, so it opens turning |
+
+Two things the heart needed that the star did not. It is **centred on its own
+bounding box** first: the parametric heart's origin sits up near the cleft, not
+in the middle of the figure, so radius measured from it runs 5 at the top lobes
+and 17 at the point — taken raw it fires a spike upward and a flat sheet down.
+And the radius is **raised to a power** before use; the heart's own range is
+only 0.66 to 1.39, and at that contrast it reads as a circle with a dent in it.
+
+Shaped shells also hang rather than fall — gravity is what rounds an outline
+off, because the top of the figure sags toward the middle inside half a second
+— and they read best early, around 400–700 ms, before the front disperses.
 
 Each shell is nine numbers: speed range, whether every star leaves at the same
 speed (a ring) or across the range (a ball), how many spokes, upward bias,
@@ -357,6 +380,7 @@ value that was current at the time.
 | `hueGain` | At 2.55 the centroid rotates the palette ~230°, enough that green and purple swap. Lower it if the negative-space ring should read consistently. |
 | `attack` / `release` | Fast attack, slow release. Equal values look like a VU meter. |
 | `count` | Not just density — it sets the top of the index range, so it changes the wave's character. |
+| `drift` | How far the resting silhouette wanders on its own. Two slow sines whose periods do not divide into each other, so it drifts rather than ticks; it fades out the moment level rises, because drift is what the orb does when nothing else is asking. 0 holds one shape, which is what the older presets pin. |
 
 ---
 
