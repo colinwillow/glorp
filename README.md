@@ -221,14 +221,14 @@ Three ways in:
 
 - **Trigger words.** Say one of the words in `TRIGGERS` and the matching shape
   forms. `happy` draws 😀, `love` draws ❤️, `fire` draws 🔥, `hello` spells
-  HELLO. Forty-four words across feelings, celebrations, objects, and short
-  words that read better spelled than pictured.
-- **Celebrations burst first.** `congratulations`, `birthday`, `party`,
-  `fireworks`, `celebrate`, `boom` throw the whole field outward under gravity,
-  then let it fall back into the glyph 1.2 s later. The explosion is the point;
-  the glyph is the landing.
+  HELLO. Around forty words across feelings, objects, and short words that read
+  better spelled than pictured.
+- **Celebrations are not drawings at all.** Nobody wants a picture of a
+  firework. Those hand off to a **shell** — see below.
 - **The brain's `show` tool**, when it decides a shape says it better than a
   sentence, and `echo` mode, which spells every word it hears.
+- **`/show <thing>`** in the tune panel, which takes a word, `face`, a shell
+  name, or any trigger word — so a shell can be watched without saying it.
 
 ### Why emoji read at all
 
@@ -251,6 +251,55 @@ heart as an outline.
 One particle per sampled point, so the count follows the drawing: ❤️ samples to
 about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
 duration and hands them back after.
+
+---
+
+## Shells
+
+A celebration is not a picture of a firework, it is one. Nothing is drawn: the
+field is thrown outward and the pattern is whatever the launch geometry and the
+decay make of it, which is why `congratulations` and `boom` do not look alike.
+
+| word | shell | what it does |
+| --- | --- | --- |
+| `congratulations` `congrats` `yay` `woohoo` `bravo` | peony | gold, a filled ball with radial streaks |
+| `celebrate` | ring | cyan, every star at one speed so it opens as a clean expanding circle |
+| `birthday` | willow | orange, slow and heavy, long drooping arcs that hang and fall |
+| `party` | palm | green, seven thick fingers instead of a cloud |
+| `boom` `blast` | shock | hot pink, one enormous fast shockwave, brief |
+| `fireworks` | four in sequence | peony, ring, palm, willow, 620 ms apart |
+| `finale` | five in sequence | opens on the shock |
+
+Each shell is nine numbers: speed range, whether every star leaves at the same
+speed (a ring) or across the range (a ball), how many spokes, upward bias,
+gravity, drag, hue rotation, star size, trail length. All of the distances are
+in reference units against a 400 px short edge, like `falloff` and `sizeHi`, so
+a shell is the same shell on a phone.
+
+Three things had to be switched **off** for any of it to work, and each one was
+found by measuring rather than by reading:
+
+- **The membrane.** It is a spring toward the ring surface, and at rest it is
+  the strongest force in the program — a star 300 px out gets nearly 2 px/frame
+  of inward pull. The first shells expanded, sprang back, and hung on the
+  silhouette as a hollow outline. It comes off with the ring, cubed back in over
+  the last stretch so the stars stream home instead of snapping there.
+- **Distance-based dot size.** Everywhere else, a dot's size comes from how far
+  it is from centre, which for a shell is exactly backwards: the further out a
+  star gets the fatter it draws, until the explosion is one opaque blob. A star
+  is a star — fixed and small.
+- **The core.** It normally sits out the ring and holds. Let it sit out a shell
+  too and a fifth of the field stays home as a bright lump in the middle of the
+  explosion.
+
+Coming home needed its own fix. Force does not do it: the field ends up hanging
+low and the ring takes the better part of ten seconds to gather it. Position is
+eased toward the ring directly for 1.6 s instead — the same reason formations
+snap. And handing the borrowed particles back is not just drawing fewer of them:
+a particle's ring slot is its index over the count, so dropping 1800 to 400
+leaves every survivor pointing at the same narrow arc, and the orb re-forms as a
+bunch on one side. Keep one particle in every `prev/n` and each survivor is
+already standing near its new slot.
 
 ---
 

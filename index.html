@@ -769,8 +769,11 @@ say.addEventListener("keydown", (e) => {
   // /show <thing> forms it directly -- lets the formation be tuned without
   // spending a round trip through the brain on every attempt
   if (text.toLowerCase().startsWith("/show")) {
-    const what = text.slice(5).trim();
-    setFormation(/^face$/i.test(what) ? { shape:"face" } : { text: what || "?" }, 6);
+    const what = text.slice(5).trim(), key = what.toLowerCase();
+    setFormation(SHELLS[key] ? { shell:key }
+               : TRIGGERS[key] ? TRIGGERS[key]
+               : /^face$/i.test(what) ? { shape:"face" }
+               : { text: what || "?" }, 6);
     caption(null, "showing: " + (what || "?"));
     return;
   }
@@ -1212,8 +1215,8 @@ function faceGlyph() {
    matching a word never needed one.
 
    Emoji are glyphs, so the sampler already draws them -- the whole set is
-   vocabulary for free. burst is the one thing a still shape cannot do: throw
-   everything outward under gravity first, then assemble. */
+   vocabulary for free. Celebrations are the exception: nobody wants a picture
+   of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
   // feelings
   happy:{text:"\u{1F600}"}, smile:{text:"\u{1F600}"}, smiley:{text:"\u{1F600}"},
@@ -1224,14 +1227,15 @@ const TRIGGERS = {
   love:{text:"\u2764\uFE0F"}, heart:{text:"\u2764\uFE0F"},
   cool:{text:"\u{1F60E}"}, wow:{text:"\u{1F62E}"},
   wink:{text:"\u{1F609}"}, think:{text:"\u{1F914}"},
-  // celebrations throw the field first, then land on the glyph
-  congratulations:{text:"\u{1F389}", burst:true},
-  congrats:{text:"\u{1F389}", burst:true},
-  birthday:{text:"\u{1F382}", burst:true},
-  party:{text:"\u{1F389}", burst:true},
-  fireworks:{text:"\u2728", burst:true},
-  celebrate:{text:"\u{1F389}", burst:true},
-  boom:{text:"\u{1F4A5}", burst:true},
+  // celebrations are explosions, not pictures -- a different shell each
+  congratulations:{shell:"peony"}, congrats:{shell:"peony"},
+  yay:{shell:"peony"}, woohoo:{shell:"peony"}, bravo:{shell:"peony"},
+  birthday:{shell:"willow"},
+  party:{shell:"palm"},
+  celebrate:{shell:"ring"},
+  boom:{shell:"shock"}, blast:{shell:"shock"},
+  fireworks:{show:[["peony",0],["ring",620],["palm",1240],["willow",1900]]},
+  finale:{show:[["shock",0],["peony",520],["palm",1040],["ring",1560],["willow",2100]]},
   // things
   fire:{text:"\u{1F525}"}, star:{text:"\u2B50"}, sun:{text:"\u2600\uFE0F"},
   moon:{text:"\u{1F319}"}, music:{text:"\u{1F3B5}"}, eyes:{text:"\u{1F440}"},
@@ -1243,17 +1247,111 @@ const TRIGGERS = {
   stop:{text:"STOP"}, orb:{text:"ORB"}, help:{text:"HELP"}, nice:{text:"NICE"}
 };
 
-/* A shell, not a shove: everything gets outward speed with an upward bias, then
-   falls under gravity while the ring's pull is held back so it cannot simply
-   reel them in. */
-let burstUntil = 0;
-function fireBurst() {
-  const n = Math.min(MAX, Math.round(cfg.count));
-  burstUntil = performance.now() + 1500;
+/* ---------------- shells ----------------
+   A celebration is not a picture of a firework, it is one. Nothing is drawn
+   here: the field is thrown outward and the pattern is whatever the launch
+   geometry and the decay make of it. Which is why congratulations and boom do
+   not look alike -- same particles, different physics.
+
+     speed    how fast stars leave, min..max
+     shell    1 puts every star at one speed, which opens as a clean expanding
+              ring; 0 spreads them across the range, which fills the ball in
+     spokes   0 for a cloud, N for N thick fingers
+     up       upward bias, so it arcs instead of only spreading
+     drag     air. What makes a star slow and hang before it falls
+     hue      degrees of rotation on the whole palette: the shell's colour
+     star     drawn radius. Everywhere else in this program a dot's size comes
+              from its distance, which for a shell is backwards -- the further
+              out a star gets the fatter it draws, until the whole thing is one
+              opaque blob. A star is a star: fixed and small
+     trail    overrides cfg.trail. Lower smears longer, which is the streak
+   speed, up, gravity and star are all in reference units against a 400px short
+   edge, like falloff and sizeHi, so a shell is the same shell on a phone. */
+const SHELLS = {
+  peony:  { speed:[3.6, 8.6], shell:0.3,  spokes:0, up:2.2, gravity:0.045, drag:0.030,
+            hue:110, star:2.4, trail:0.26, flash:0.55, sparkle:0.9, dur:2400 },
+  ring:   { speed:[7.6, 8.3], shell:1,    spokes:0, up:1.2, gravity:0.030, drag:0.034,
+            hue:245, star:2.1, trail:0.20, flash:0.50, sparkle:0.5, dur:2600 },
+  willow: { speed:[2.8, 5.8], shell:0.6,  spokes:0, up:3.6, gravity:0.090, drag:0.010,
+            hue:88,  star:2.7, trail:0.13, flash:0.45, sparkle:0.7, dur:3200 },
+  palm:   { speed:[6.4, 9.8], shell:0.85, spokes:7, up:2.8, gravity:0.055, drag:0.026,
+            hue:170, star:2.9, trail:0.18, flash:0.50, sparkle:0.4, dur:2600 },
+  shock:  { speed:[12.5, 14], shell:1,    spokes:0, up:0,   gravity:0.020, drag:0.075,
+            hue:55,  star:3.4, trail:0.38, flash:0.85, sparkle:0,   dur:1600 }
+};
+
+/* A ring reads at 400 particles; a sky full of sparks does not. Borrowed for
+   the shell and handed back once it has settled, same bargain formations make. */
+const SHELL_N = 1800;
+const firing = { s:null, name:"", until:0, flashAt:0, flashRgb:"255,255,255", was:0 };
+
+function fireShell(name) {
+  const s = SHELLS[name] || SHELLS.peony;
+  const now = performance.now();
+  formWant = 0; formUntil = 0;      // a shell and a glyph cannot both own the field
+
+  const prev = Math.min(MAX, Math.round(cfg.count));
+  const n = Math.min(MAX, Math.max(prev, SHELL_N));
+  if (n > prev) {
+    if (!firing.was) firing.was = cfg.count;
+    cfg.count = n; syncPanel();
+  }
+
+  const kk = scale / 400;           // same reference short edge as falloff and sizeHi
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * TAU, sp = 5 + Math.random() * 11;
+    // borrowed stars have never been anywhere: start them at the mortar
+    if (i >= prev) { px[i] = cx + (Math.random() - 0.5) * 8; py[i] = cy + (Math.random() - 0.5) * 8; }
+    const a = s.spokes
+      ? (Math.floor(Math.random() * s.spokes) / s.spokes) * TAU + (Math.random() - 0.5) * 0.34
+      : Math.random() * TAU;
+    // sqrt, or a filled ball crowds at the centre instead of spreading evenly by area
+    const f = s.shell + (1 - s.shell) * Math.sqrt(Math.random());
+    const sp = (s.speed[0] + (s.speed[1] - s.speed[0]) * f) * kk;
     vx[i] = Math.cos(a) * sp;
-    vy[i] = Math.sin(a) * sp - 4.5;
+    vy[i] = Math.sin(a) * sp - s.up * kk;
+  }
+
+  firing.s = s; firing.name = name;
+  firing.until = now + s.dur;
+  firing.flashAt = now;
+  // the palette's far colour rotated the way the shell rotates it, but pale:
+  // a saturated wash reads as a filter over the scene, a pale one as light
+  firing.flashRgb = toRgb(255, 168, 255, s.hue).slice(4, -1);
+  return true;
+}
+
+/* Successive breaks, which is the whole difference between a firework and a
+   fireworks display. Each one re-fires the field, so they land as separate
+   detonations rather than one long smear. */
+function fireShow(seq) {
+  for (const [nm, at] of seq) {
+    if (at) setTimeout(() => fireShell(nm), at);
+    else fireShell(nm);
+  }
+  return true;
+}
+
+/* Shrinking the field is not just drawing fewer of them. A particle's ring slot
+   is its index over the count, so going from 1800 back to 400 leaves every
+   survivor pointing at the same narrow arc it used to own, and the orb re-forms
+   as a bunch on one side. Keep one particle in every prev/n instead: the same
+   field with holes in it, each survivor already standing near its new slot. */
+function handBack(was) {
+  const prev = Math.min(MAX, Math.round(cfg.count));
+  const n = Math.min(MAX, Math.round(was));
+  for (let i = 0; i < n && n < prev; i++) {
+    const j = (i * prev / n) | 0;      // j >= i, so nothing is read after it is written
+    px[i] = px[j]; py[i] = py[j]; vx[i] = vx[j]; vy[i] = vy[j];
+  }
+  cfg.count = was; syncPanel();
+}
+
+function updateShell() {
+  // Late, because the stars need a moment to cross back. Hand the borrowed ones
+  // back while they are still spread and they wink out where they float, which
+  // reads as half the sky going dark at once rather than as a shell ending.
+  if (firing.was && performance.now() > firing.until + 1200) {
+    handBack(firing.was); firing.was = 0;
   }
 }
 let echoOn = false, echoSeen = 0, lastLive = "";
@@ -1283,12 +1381,9 @@ function feedWords(finalText, interimText) {
 }
 
 function setFormation(spec, seconds) {
-  if (spec && spec.burst) {
-    fireBurst();
-    // let it fly before it assembles; the explosion is the point
-    setTimeout(() => setFormation({ text: spec.text, shape: spec.shape }, seconds), 1200);
-    return true;
-  }
+  // one entry point, so /show and the brain's show tool reach the shells too
+  if (spec && spec.show) return fireShow(spec.show);
+  if (spec && spec.shell) return fireShell(spec.shell);
   const pts = spec && spec.shape === "face" ? faceGlyph()
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
   if (!pts.length) return false;
@@ -1329,7 +1424,7 @@ function updateFormation(dt) {
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
     formT = 0; formLabel = "";
-    if (formCountWas) { cfg.count = formCountWas; formCountWas = 0; syncPanel(); }
+    if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
 
@@ -1354,8 +1449,26 @@ function loop() {
   // states write drive before anything reads it
   updateState(dt);
   updateFormation(dt);
+  updateShell();
 
   const baseR = cfg.radius * scale;
+
+  /* The ring cannot be allowed to reel a shell back in. Even at a tenth of its
+     strength it wins: drag kills the outward velocity within a second, and from
+     then on the only force left is the ring, so the explosion collapses onto
+     the silhouette and hangs there as a hollow outline. Off entirely while the
+     shell flies, cubed back in over the last stretch so the stars stream home
+     rather than snapping there. */
+  const since = now - firing.until;            // negative while a shell is up
+  const bs = firing.s && since < 0 ? firing.s : null;
+  const back = bs ? Math.max(0, 1 + since / 900) : 1;
+  const pull = bs ? back * back * back : 1;
+  /* Coming home is the other half of the problem, and force does not solve it:
+     the field ends up hanging low and the ring needs the better part of ten
+     seconds to gather it, long after the bang is over. Steering cannot hit a
+     mark in time -- the same reason formations snap -- so ease position toward
+     the ring directly for a moment instead. */
+  const homeT = (!bs && firing.s && since < 1600) ? 1 - since / 1600 : 0;
 
   if (seededFor !== n) {
     buildBase(n);
@@ -1413,7 +1526,7 @@ function loop() {
   const mKey = Math.round(sIdx * 128);
   if (mKey !== lastMorph) { buildShapeLut(mKey / 128); lastMorph = mKey; }
 
-  const shift = Math.round(drive.hue * cfg.hueGain * 90);
+  const shift = Math.round(drive.hue * cfg.hueGain * 90) + (bs ? bs.hue : 0);
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
@@ -1438,10 +1551,14 @@ function loop() {
   const fex = Math.max(0.15, 1 + sEcc * 0.45);
   const fey = Math.max(0.15, 1 - sEcc * 0.45) * (1 + drive.scale * cfg.splitJaw);
 
-  const bursting = performance.now() < burstUntil;
   const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
   const turb = drive.turbulence * cfg.turbGain * hold;
-  const kick = drive.impulse * cfg.impulseGain * hold;
+  const kick = drive.impulse * cfg.impulseGain * hold * pull;
+  /* The membrane is a spring toward the ring surface, and at rest it is the
+     strongest thing in here -- a star 300px out gets nearly 2px/frame of inward
+     pull, which is why the first shells expanded, sprang back, and hung on the
+     silhouette. It has to come off with the ring, not just be outrun. */
+  const memb = cfg.membrane * hold * pull;
 
   physAcc += dt;
   let steps = 0;
@@ -1450,8 +1567,10 @@ function loop() {
     for (let i = 0; i < n; i++) {
       // the core sits out the ring entirely: no spectrum, no shape, no membrane
       // and no kick, so it holds while the silhouette works. It still breathes,
-      // because gScale is loudness.
-      const isCore = pr[i] < cfg.core;
+      // because gScale is loudness. It does not sit out a shell, though --
+      // everything launches, or a fifth of the field stays home as a bright
+      // lump in the middle of the explosion.
+      const isCore = !bs && pr[i] < cfg.core;
       let ringR;
       if (isCore) {
         ringR = baseR * gScale * cfg.coreR;
@@ -1473,7 +1592,7 @@ function loop() {
       }
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5) * (bursting ? 0.08 : 1);
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5) * pull;
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -1484,13 +1603,13 @@ function loop() {
       const am = Math.sqrt(ax * ax + ay * ay);
       if (am > maxF) { ax = ax / am * maxF; ay = ay / am * maxF; }
 
-      if (!isCore && (cfg.membrane > 0.001 || kick > 0.01)) {
+      if (!isCore && (memb > 0.001 || kick > 0.01)) {
         const rx = px[i] - cx, ry = py[i] - cy;
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
 
-        if (cfg.membrane * hold > 0.001) {
+        if (memb > 0.001) {
           const b2 = ((th / TAU) * BANDS) | 0;
           // sample the shape at the current angle too, otherwise the membrane
           // pulls everything back onto a circle and sands the corners off
@@ -1500,7 +1619,7 @@ function loop() {
           const elx = ey * (rx / rd), ely = ex * (ry / rd);
           surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
           if (surf > maxR) surf = maxR;
-          const push = (surf - rd) * 0.02 * cfg.membrane * hold;
+          const push = (surf - rd) * 0.02 * memb;
           ax += (rx / rd) * push; ay += (ry / rd) * push;
         }
 
@@ -1526,7 +1645,13 @@ function loop() {
         }
       }
 
-      if (bursting) ay += 0.30;   // what makes it fall rather than just spread
+      if (bs) {
+        // fades out as the ring takes over, or a shell leaves the whole field
+        // sitting low and it spends the next five seconds climbing back
+        ay += bs.gravity * k * (1 - back);
+        // air. Drag is why a star decelerates and hangs at the top of its arc
+        if (bs.drag) { ax -= vx[i] * bs.drag; ay -= vy[i] * bs.drag; }
+      }
 
       if (turb > 0.01) {
         ax += (Math.random() - 0.5) * turb * 2.4;
@@ -1548,6 +1673,11 @@ function loop() {
 
       vx[i] += ax; vy[i] += ay;
       px[i] += vx[i]; py[i] += vy[i];
+
+      if (homeT > 0) {
+        px[i] += (tx - px[i]) * 0.06 * homeT;
+        py[i] += (ty - py[i]) * 0.06 * homeT;
+      }
 
       /* Steering cannot hit a mark that only exists for 400 ms: these
          particles travel 1-3 px a frame, so by the time they arrive the word
@@ -1586,7 +1716,7 @@ function loop() {
     }
   }
 
-  ctx.fillStyle = "rgba(11,11,11," + cfg.trail + ")";
+  ctx.fillStyle = "rgba(11,11,11," + (bs ? bs.trail : cfg.trail) + ")";
   ctx.fillRect(0, 0, W, H);
 
   const span = LUT_HI - LUT_LO;
@@ -1616,12 +1746,33 @@ function loop() {
     // A formation throws particles far from centre, where size is very negative
     // and dots are largest -- exactly the wrong place for legibility. Thin them
     // while a shape is holding so the glyph reads instead of blooming shut.
-    let rad = Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
+    let rad = bs ? bs.star * k : Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
+    // stars twinkle. Without this a shell is a smooth cloud, which is the one
+    // thing a firework never looks like
+    if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
     if (rad > radCap) rad = radCap;
     if (rad > 0.2) {
       ctx.beginPath();
       ctx.arc(px[i], py[i], rad, 0, 6.2832);
       ctx.fill();
+    }
+  }
+
+  /* The detonation itself. Every other loud moment in this program is the orb
+     getting bigger; a break has to read as light, not size. Radial and growing,
+     not a flat fill -- covering the frame evenly reads as a colour filter over
+     the scene rather than as something igniting in the middle of it. */
+  if (bs) {
+    const f = 1 - (now - firing.flashAt) / 170;
+    if (f > 0) {
+      const R = Math.min(W, H) * (0.16 + 0.55 * (1 - f));
+      const g2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+      const a = f * f * bs.flash;
+      g2.addColorStop(0, "rgba(" + firing.flashRgb + "," + a + ")");
+      g2.addColorStop(0.55, "rgba(" + firing.flashRgb + "," + a * 0.45 + ")");
+      g2.addColorStop(1, "rgba(" + firing.flashRgb + ",0)");
+      ctx.fillStyle = g2;
+      ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
     }
   }
 
@@ -1638,7 +1789,8 @@ function loop() {
   if (acc > 500) {
     hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " +
                       state + (manual ? " (held)" : "") +
-                      (formLabel ? " · " + formLabel : "");
+                      (formLabel ? " · " + formLabel : "") +
+                      (bs ? " · " + firing.name : "");
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
