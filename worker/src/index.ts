@@ -47,6 +47,17 @@ export default {
       return new Response("body must be { messages: [...] }", { status: 400, headers });
     }
 
+    /* Check the secret before handing it to the SDK. Passing undefined makes
+       the SDK fall through to its whole credential-resolution chain and report
+       "Could not resolve authentication method", which reads like a code bug
+       rather than the one-line fix it is. */
+    if (!env.ANTHROPIC_API_KEY) {
+      return new Response(
+        "No API key on this Worker. Run: npx wrangler secret put ANTHROPIC_API_KEY",
+        { status: 500, headers: { ...headers, "content-type": "text/plain; charset=utf-8" } }
+      );
+    }
+
     const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
     // Streamed so the orb can start speaking on the first token instead of
