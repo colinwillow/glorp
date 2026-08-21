@@ -77,7 +77,7 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:570, radius:0.16, rateX:23000, rateY:6500, bloom:1.0, fit:1.19,
+  count:570, radius:0.16, rateX:23000, rateY:6500, bloom:1.0, fit:1.19, contain:0.86,
   speedLo:3.5, speedHi:19.5, forceRatio:0.045, fleeRadius:100, fleeMult:1.8,
   rmsGain:1.15, specGain:0.65, membrane:0.35, ellipse:0.45,
   falloffGain:1.7, turbGain:1.6, impulseGain:2.7, hueGain:2.55,
@@ -107,6 +107,7 @@ const SPEC = [
     ["radius","radius",0.05,0.6,0.01],
     ["bloom","bloom",0,1,0.01],
     ["fit","fit to screen",0.5,1.2,0.01],
+    ["contain","contain",0.3,1,0.02],
     ["rateX","rate x",2000,60000,500],
     ["rateY","rate y",2000,60000,500]]],
   ["motion", [
@@ -284,6 +285,7 @@ const px = new Float32Array(MAX), py = new Float32Array(MAX);
 const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
 const bx = new Float32Array(MAX), by = new Float32Array(MAX);
 const mSpd = new Float32Array(MAX);
+const bnd = new Float32Array(MAX);
 
 function buildBase(cnt) {
   for (let i = 0; i < cnt; i++) {
@@ -355,7 +357,12 @@ function loop() {
 
   if (seededFor !== n) {
     buildBase(n);
-    for (let i = 0; i < n; i++) mSpd[i] = cfg.speedLo + Math.random() * (cfg.speedHi - cfg.speedLo);
+    for (let i = 0; i < n; i++) {
+      mSpd[i] = cfg.speedLo + Math.random() * (cfg.speedHi - cfg.speedLo);
+      // each particle gets its own wall radius, so a saturated orb rests in a
+      // fuzzy band instead of tracing the containment ellipse as a hard edge
+      bnd[i] = 0.84 + Math.random() * 0.16;
+    }
     if (!seeded) { seedNear(n, baseR); seeded = true; }
     seededFor = n;
   }
@@ -371,6 +378,16 @@ function loop() {
   const falloffPx = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
   const sizeHiPx = cfg.sizeHi * k;
   const radCap = 22 * k * cfg.dot;
+
+  // Containment. `fit` only clamps the target ring; momentum, the onset kick
+  // and turbulence still throw particles well past it. This is a positional
+  // wall, so the orb can explode to the viewport edge and never through it.
+  // Ellipse matches the viewport aspect (a phone gets its full height), inset
+  // by the largest dot we can draw so blobs don't clip on the edge.
+  const hx = Math.max(20, W * 0.5 - radCap);
+  const hy = Math.max(20, H * 0.5 - radCap);
+  const softSpan = Math.max(0.02, 1 - cfg.contain);
+  const wall = 3.5 * k;
 
   const shift = Math.round(drive.hue * cfg.hueGain * 90);
   const lo = -3.4 * sizeHiPx;
@@ -440,6 +457,30 @@ function loop() {
 
       vx[i] += ax; vy[i] += ay;
       px[i] += vx[i]; py[i] += vy[i];
+
+      // q is the position in wall units: 1.0 is exactly on the boundary.
+      // Names are w-prefixed so they never collide with the membrane block's
+      // rx/ry/rd if a transpiler flattens the block scopes.
+      const bi = bnd[i];
+      const qx = (px[i] - cx) / (hx * bi), qy = (py[i] - cy) / (hy * bi);
+      const q = Math.sqrt(qx * qx + qy * qy);
+      if (q > cfg.contain) {
+        const wx = px[i] - cx, wy = py[i] - cy;
+        const wd = Math.sqrt(wx * wx + wy * wy) || 0.0001;
+        const wnx = wx / wd, wny = wy / wd;
+        // quadratic ramp — barely there at the soft edge, firm at the wall
+        let over = (q - cfg.contain) / softSpan; if (over > 1) over = 1;
+        const pull = over * over * wall;
+        vx[i] -= wnx * pull; vy[i] -= wny * pull;
+        if (q > 1) {
+          // hard stop. Project back onto the ellipse and drop only the
+          // outward velocity — tangential motion survives, so particles graze
+          // along the wall instead of piling up dead against it.
+          px[i] = cx + (qx / q) * hx * bi; py[i] = cy + (qy / q) * hy * bi;
+          const vn = vx[i] * wnx + vy[i] * wny;
+          if (vn > 0) { vx[i] -= wnx * vn; vy[i] -= wny * vn; }
+        }
+      }
     }
   }
 
