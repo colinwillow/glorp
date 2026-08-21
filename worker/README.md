@@ -23,12 +23,43 @@ in `localStorage`.
 Before going public, set `ALLOWED_ORIGIN` in `wrangler.toml` to the page's
 origin. Left as `*`, any site on the internet can spend your tokens through it.
 
+## Giving it a voice (optional)
+
+Get a key from elevenlabs.io, then add it as a second secret:
+
+```bash
+npx wrangler secret put ELEVENLABS_API_KEY
+```
+
+or, if terminal paste mangles it, set it in the dashboard under
+**Workers & Pages -> orb-brain -> Settings -> Variables and Secrets**.
+
+Without this key `/speak` returns 501 and the orb mouths a scripted reply in
+silence. Everything else still works.
+
+To choose a voice, `GET /voices` on the Worker lists what the account actually
+has -- open the URL with `/voices` on the end in a browser. Put the id you want
+in `wrangler.toml`:
+
+```toml
+[vars]
+ELEVEN_VOICE_ID = "..."
+ELEVEN_MODEL_ID = "eleven_turbo_v2_5"   # low-latency tier
+```
+
+If either id is wrong, ElevenLabs' own error is passed straight through to the
+page rather than swallowed.
+
 ## What it does
 
 `POST /` with `{"messages": [...]}` — the Anthropic messages array, sent whole
 each turn, since the API is stateless. It replies with the answer as a plain
 text stream, so the orb can start its mouth on the first clause instead of
 waiting for the full sentence.
+
+`POST /speak` with `{"text": "..."}` returns audio/mpeg. The page plays it and
+routes it through an analyser, so the speaking state is driven by the real
+voice rather than a scripted syllable clock.
 
 The system prompt is in `src/index.ts`. It is written for speech: one or two
 sentences, no markdown, no lists, no emoji. Change it there.

@@ -216,6 +216,13 @@ function srcThinking(t) {
 }
 
 function srcSpeaking(t) {
+  // Real audio when there is any; the syllable clock only covers its absence.
+  if (ttsPlaying) {
+    srcD.scale = tts.scale; srcD.hue = tts.hue;
+    srcD.turbulence = tts.turbulence; srcD.impulse = tts.impulse;
+    srcD.spectrum.set(tts.spectrum);
+    return;
+  }
   /* A syllable clock, not a noise generator. Each slot gets an envelope, a
      vowel and a chance of being a pause, so the rhythm reads as speech. The
      vowel drives hue, which is the centroid channel -- so the mouth widens and
@@ -251,6 +258,7 @@ function srcSpeaking(t) {
 
 function updateState(dt) {
   stateT += dt; blendT += dt;
+  analyseTts();
 
   if (!manual) {
     // barge-in: voice wins from any state, so it can be interrupted mid-sentence
@@ -326,9 +334,11 @@ const brain = {
   busy: false
 };
 
+let lastAsked = "";
 function caption(said, said2) {
+  if (said !== null) lastAsked = said;
   cap.innerHTML = "";
-  if (said) { const b = document.createElement("b"); b.textContent = said; cap.appendChild(b); }
+  if (lastAsked) { const b = document.createElement("b"); b.textContent = lastAsked; cap.appendChild(b); }
   if (said2) cap.appendChild(document.createTextNode(said2));
 }
 
@@ -358,10 +368,6 @@ async function ask(text) {
       if (done) break;
       full += dec.decode(value, { stream:true });
       caption(text, full);
-      // start the mouth on the first clause rather than waiting for the full
-      // reply -- that wait is the difference between a conversation and a query
-      planSpeech(full);
-      if (state !== "speaking" && full.length > 12) setState("speaking");
     }
     brain.history.push({ role:"assistant", content: full });
   } catch (err) {
@@ -371,8 +377,122 @@ async function ask(text) {
   }
 
   brain.busy = false;
-  planSpeech(full);
-  if (state !== "speaking") setState("speaking");
+  /* Hold in thinking until the voice is ready, so the mouth starts when the
+     sound does. Mouthing early and letting audio catch up puts the two out of
+     step, which reads worse than the wait. */
+  const spoke = await playReply(full);
+  if (!spoke) planSpeech(full);
+  setState("speaking");
+}
+
+/* ---------------- voice out ----------------
+   The reply is played AND analysed. Once real audio exists there is no reason
+   to keep guessing at syllables: the speaking state reads the same five
+   channels off its own voice that listening reads off the microphone, which is
+   what the drive seam was for. The scripted plan stays as the fallback for
+   when no voice is configured or the request fails. */
+let ttsCtx = null, ttsAn = null, ttsSrc = null, ttsFreq = null, ttsTime = null, ttsPrev = null;
+let ttsPlaying = false;
+const tts = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+
+// Built on a real click, because Safari will not start an AudioContext
+// anywhere else -- and by the time the reply lands we are long past the gesture.
+function ensureTtsCtx() {
+  if (!ttsCtx) {
+    ttsCtx = new (window.AudioContext || window.webkitAudioContext)();
+    ttsAn = ttsCtx.createAnalyser();
+    ttsAn.fftSize = 2048; ttsAn.smoothingTimeConstant = 0.62;
+    ttsAn.connect(ttsCtx.destination);
+    ttsFreq = new Uint8Array(ttsAn.frequencyBinCount);
+    ttsPrev = new Float32Array(ttsAn.frequencyBinCount);
+    ttsTime = new Float32Array(ttsAn.fftSize);
+  }
+  if (ttsCtx.state === "suspended") ttsCtx.resume();
+}
+
+function analyseTts() {
+  if (!ttsPlaying || !ttsAn) return;
+  ttsAn.getByteFrequencyData(ttsFreq);
+  ttsAn.getFloatTimeDomainData(ttsTime);
+
+  let sum = 0, zc = 0, last = ttsTime[0];
+  for (let i = 0; i < ttsTime.length; i++) {
+    const v = ttsTime[i]; sum += v * v;
+    if ((v >= 0) !== (last >= 0)) zc++;
+    last = v;
+  }
+  const rms = Math.sqrt(sum / ttsTime.length);
+  const zcr = zc / ttsTime.length;
+
+  // No adaptive floor here: this is a clean rendered file, not a room.
+  const db = 20 * Math.log10(rms + 1e-7);
+  let lvl = (db + 52) / 34;
+  if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
+  const k = lvl > tts.scale ? cfg.attack : cfg.release;
+  tts.scale += (lvl - tts.scale) * k;
+
+  const N = ttsFreq.length;
+  for (let b = 0; b < BANDS; b++) {
+    const lo = Math.floor(Math.pow(b / BANDS, 2) * N);
+    const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / BANDS, 2) * N));
+    let acc = 0;
+    for (let i = lo; i < hi; i++) acc += ttsFreq[i];
+    tts.spectrum[b] += (acc / (hi - lo) / 255 - tts.spectrum[b]) * 0.35;
+  }
+  let cn = 0, cd = 0, flux = 0;
+  for (let i = 0; i < N; i++) {
+    const val = ttsFreq[i] / 255;
+    cn += i * val; cd += val;
+    const diff = val - ttsPrev[i];
+    if (diff > 0) flux += diff;
+    ttsPrev[i] = val;
+  }
+  let centroid = cd > 0.001 ? cn / cd / N : 0;
+  centroid = (centroid - 0.03) / 0.20;
+  if (centroid < 0) centroid = 0; else if (centroid > 1) centroid = 1;
+  const g = Math.min(1, Math.max(0, (tts.scale - cfg.gateFloor) / 0.12));
+  tts.hue += (centroid * g - tts.hue) * 0.06;
+  tts.turbulence += (Math.min(1, zcr * 26) * g - tts.turbulence) * 0.16;
+  tts.impulse = Math.max(tts.impulse * 0.86, Math.min(1, flux * 0.05) * g);
+}
+
+async function playReply(text) {
+  if (!brain.url) return false;
+  try {
+    const res = await fetch(new URL("/speak", brain.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    if (!res.ok) {
+      // 501 just means no voice key is set; anything else is worth showing
+      if (res.status !== 501) caption(null, "voice: " + (await res.text()).slice(0, 160));
+      return false;
+    }
+    // A non-audio 200 -- an error page, a redirect, an HTML shell -- otherwise
+    // fails deep inside decodeAudioData as "Unable to decode audio data",
+    // which says nothing about what actually came back.
+    const ctype = res.headers.get("content-type") || "";
+    if (!/audio|octet-stream/i.test(ctype)) {
+      caption(null, "voice: expected audio, got " + (ctype || "no content-type"));
+      return false;
+    }
+    ensureTtsCtx();
+    const audio = await ttsCtx.decodeAudioData(await res.arrayBuffer());
+    if (ttsSrc) { try { ttsSrc.stop(); } catch (e) {} }
+    ttsSrc = ttsCtx.createBufferSource();
+    ttsSrc.buffer = audio;
+    ttsSrc.connect(ttsAn);
+    ttsSrc.onended = () => { ttsPlaying = false; };
+    plan = null;                          // real audio outranks the guess
+    planMs = audio.duration * 1000;
+    ttsPlaying = true;
+    ttsSrc.start();
+    return true;
+  } catch (err) {
+    caption(null, "voice failed: " + err.message);
+    return false;
+  }
 }
 
 /* Recognition is the browser's, not ours -- no key, no proxy. Safari on iOS
@@ -387,6 +507,7 @@ function toggleSTT() {
     talkBtn.classList.remove("on"); talkBtn.textContent = "talk";
     caption("", "mic off"); return;
   }
+  ensureTtsCtx();
   if (!SR) { caption("", "this browser has no speech recognition (needs Chrome, or Safari 14.5+)"); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
@@ -509,7 +630,7 @@ say.type = "text"; say.placeholder = "or type a message and press enter";
 say.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   const text = say.value.trim();
-  if (text) { say.value = ""; ask(text); }
+  if (text) { say.value = ""; ensureTtsCtx(); ask(text); }
 });
 sgrp.appendChild(say);
 
