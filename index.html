@@ -101,6 +101,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 const DEFAULTS = {
   count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
+  depth:1.0, spin:0.34, tilt:0.16,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
@@ -125,7 +126,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -136,7 +137,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -728,6 +729,9 @@ const SPEC = [
     ["contain","contain",0.3,1,0.02],
     ["shape","shape",0,8,0.01],
     ["drift","resting drift",0,1.5,0.01],
+    ["depth","depth",0,1.5,0.01],
+    ["spin","spin / sec",-1.2,1.2,0.02],
+    ["tilt","camera tilt",-0.8,0.8,0.02],
     ["core","core share",0,0.6,0.01],
     ["coreR","core radius",0.05,0.6,0.01],
     ["rateX","rate x",2000,60000,500],
@@ -809,7 +813,9 @@ say.addEventListener("keydown", (e) => {
   // spending a round trip through the brain on every attempt
   if (text.toLowerCase().startsWith("/show")) {
     const what = text.slice(5).trim(), key = what.toLowerCase();
-    setFormation(SHELLS[key] ? { shell:key }
+    if (SOLIDS[key]) setFormation({ solid:key }, 12);
+    else if (/^model /i.test(what)) showModel(what.slice(6).trim(), 14);
+    else setFormation(SHELLS[key] ? { shell:key }
                : TRIGGERS[key] ? TRIGGERS[key]
                : /^face$/i.test(what) ? { shape:"face" }
                : { text: what || "?" }, 6);
@@ -1114,6 +1120,16 @@ const MAX = 6000;
 const px = new Float32Array(MAX), py = new Float32Array(MAX);
 const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
 const bx = new Float32Array(MAX), by = new Float32Array(MAX);
+/* Depth, bolted on rather than designed in, and deliberately so. Every tuned
+   thing in here -- size from distance, the colour split, trails, containment,
+   the shells -- is 2D and works. z is a fourth number that is zero for all of
+   it: the ring is flat, a glyph is flat, a shell is flat, and with z at zero
+   the projection is the identity and the distance is the old distance. It only
+   becomes non-zero when something 3D asks for it. */
+const pz = new Float32Array(MAX), vz = new Float32Array(MAX);
+const zbuf = new Float32Array(MAX);
+const ord = new Int32Array(MAX);
+for (let i = 0; i < MAX; i++) ord[i] = i;
 const mSpd = new Float32Array(MAX);
 const bnd = new Float32Array(MAX);
 const pr = new Float32Array(MAX);
@@ -1130,7 +1146,7 @@ function seedNear(cnt, spawnR) {
     const a = Math.random() * TAU;
     const r = spawnR * (0.2 + Math.random() * 0.9);
     px[i] = cx + Math.cos(a) * r; py[i] = cy + Math.sin(a) * r;
-    vx[i] = vy[i] = 0;
+    vx[i] = vy[i] = 0; pz[i] = vz[i] = 0;
   }
 }
 
@@ -1175,7 +1191,16 @@ function buildLut(hueShift) {
    formation is a lerp rather than a mode switch: the physics, the colours and
    the audio reactivity all keep running underneath it. */
 const formX = new Float32Array(MAX), formY = new Float32Array(MAX);
+const formZ = new Float32Array(MAX);
+/* The camera orbits; the world does not. Physics runs in an unrotated frame
+   and rotation happens once, at draw, which is why nothing upstream had to
+   learn about it. */
+const view = { yaw: 0, pitch: 0, deep: false };
 let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
+/* A glyph is flat and fills the frame edge to edge; a solid has a third axis
+   and a diagonal, so the same number puts its corners off screen and into the
+   containment wall, which then fights the formation for them. */
+let form3d = false, formS = 0.42;
 let formCountWas = 0;
 
 /* Draw it, read the pixels back, keep the lit ones. One mechanism covers every
@@ -1240,6 +1265,151 @@ function sampleGlyphs(str) {
   return pts;
 }
 
+/* ---------------- solids ----------------
+   Particles do not need topology, only positions. That is the whole reason this
+   works at all: a mesh, a glyph and a ring are the same kind of thing to the
+   field -- a list of places to be -- and the difference between them is only
+   how the list was made. Everything here returns points in roughly [-1,1]. */
+const SOLIDS = {
+  sphere: (n) => {
+    // Fibonacci, not lat/long: even by area, so the poles do not clot
+    const p = [], g = Math.PI * (3 - Math.sqrt(5));
+    for (let i = 0; i < n; i++) {
+      const y = 1 - (i / (n - 1)) * 2, r = Math.sqrt(Math.max(0, 1 - y * y)), a = g * i;
+      p.push([Math.cos(a) * r, y, Math.sin(a) * r]);
+    }
+    return p;
+  },
+  cube: (n) => {
+    const p = [], per = Math.ceil(n / 6);
+    for (let f = 0; f < 6; f++)
+      for (let i = 0; i < per; i++) {
+        const u = Math.random() * 2 - 1, v = Math.random() * 2 - 1;
+        p.push(f === 0 ? [u, v, 1] : f === 1 ? [u, v, -1] : f === 2 ? [u, 1, v]
+             : f === 3 ? [u, -1, v] : f === 4 ? [1, u, v] : [-1, u, v]);
+      }
+    return p;
+  },
+  torus: (n) => {
+    const p = [], R = 0.72, r = 0.28;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * TAU, b = Math.random() * TAU;
+      p.push([(R + r * Math.cos(b)) * Math.cos(a), r * Math.sin(b),
+              (R + r * Math.cos(b)) * Math.sin(a)]);
+    }
+    return p;
+  },
+  helix: (n) => {
+    const p = [], turns = 3.5;
+    for (let i = 0; i < n; i++) {
+      const t = i / n, a = t * TAU * turns;
+      const w = 0.13 * Math.sqrt(Math.random());
+      const wa = Math.random() * TAU;
+      p.push([Math.cos(a) * 0.8 + Math.cos(wa) * w, t * 2 - 1 + Math.sin(wa) * w,
+              Math.sin(a) * 0.8]);
+    }
+    return p;
+  }
+};
+
+/* Centre on the bounding box and scale the longest axis to 1. Without this a
+   model exported in millimetres, or modelled off-origin, arrives somewhere off
+   screen at a thousand times the size -- and it is never obvious which. */
+function fitPoints(p) {
+  if (!p.length) return p;
+  const lo = [1e30, 1e30, 1e30], hi = [-1e30, -1e30, -1e30];
+  for (const q of p) for (let d = 0; d < 3; d++) {
+    if (q[d] < lo[d]) lo[d] = q[d];
+    if (q[d] > hi[d]) hi[d] = q[d];
+  }
+  let m = 0;
+  for (let d = 0; d < 3; d++) m = Math.max(m, hi[d] - lo[d]);
+  const k = m > 1e-9 ? 2 / m : 1;
+  return p.map((q) => [(q[0] - (lo[0] + hi[0]) / 2) * k,
+                       (q[1] - (lo[1] + hi[1]) / 2) * k,
+                       (q[2] - (lo[2] + hi[2]) / 2) * k]);
+}
+
+/* OBJ, because it is a text format a person can read and forty lines can parse,
+   with no dependency and no build step -- which is the whole bargain this file
+   is built on. Vertices alone are enough if the file is already a point cloud;
+   with faces, points are scattered across the triangles by area, or every dense
+   corner of the mesh gets the same number of particles as every flat wall. */
+function sampleObj(text, want) {
+  const V = [], T = [];
+  for (const line of text.split("\n")) {
+    const c = line.charCodeAt(0);
+    if (c === 118 && line[1] === " ") {                       // "v "
+      const q = line.split(/\s+/);
+      V.push([+q[1], +q[2], +q[3]]);
+    } else if (c === 102 && line[1] === " ") {                // "f "
+      const q = line.trim().split(/\s+/).slice(1)
+        .map((w) => { const j = parseInt(w, 10); return j < 0 ? V.length + j : j - 1; });
+      for (let i = 1; i + 1 < q.length; i++) T.push([q[0], q[i], q[i + 1]]);   // fan
+    }
+  }
+  if (!V.length) return [];
+  if (!T.length) return fitPoints(V.slice(0, want));
+
+  const area = [];
+  let total = 0;
+  for (const [a, b, c] of T) {
+    const A = V[a], B = V[b], C = V[c];
+    if (!A || !B || !C) { area.push(0); continue; }
+    const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
+    const vx2 = C[0] - A[0], vy2 = C[1] - A[1], vz2 = C[2] - A[2];
+    const nx = uy * vz2 - uz * vy2, ny = uz * vx2 - ux * vz2, nz = ux * vy2 - uy * vx2;
+    const s = Math.sqrt(nx * nx + ny * ny + nz * nz) / 2;
+    area.push(s); total += s;
+  }
+  const cum = [];
+  let run = 0;
+  for (const s of area) { run += s; cum.push(run / (total || 1)); }
+
+  const out = [];
+  for (let i = 0; i < want; i++) {
+    /* One draw, then a binary search for where it lands. Drawing inside the
+       search -- findIndex(c => c >= Math.random()) -- reads fine and is a
+       different function entirely: a fresh number per element, which stops at
+       the first small cumulative weight that happens to beat it and piles every
+       sample onto the first few triangles. */
+    const rr = Math.random();
+    let lo = 0, hi = cum.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < rr) lo = mid + 1; else hi = mid; }
+    const [a, b, c] = T[lo];
+    const A = V[a], B = V[b], C = V[c];
+    if (!A || !B || !C) continue;
+    // uniform over a triangle: fold the square back across the diagonal
+    let u = Math.random(), v = Math.random();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    out.push([A[0] + u * (B[0] - A[0]) + v * (C[0] - A[0]),
+              A[1] + u * (B[1] - A[1]) + v * (C[1] - A[1]),
+              A[2] + u * (B[2] - A[2]) + v * (C[2] - A[2])]);
+  }
+  return fitPoints(out);
+}
+
+const modelCache = {};
+async function showModel(src, seconds) {
+  const key = src.toLowerCase();
+  if (!modelCache[key]) {
+    caption(null, "loading " + src + "…");
+    try {
+      const res = await fetch(/^https?:|\.obj$/i.test(src) ? src : "models/" + src + ".obj");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      modelCache[key] = sampleObj(await res.text(), 2400);
+      if (!modelCache[key].length) throw new Error("no vertices in it");
+    } catch (err) {
+      delete modelCache[key];
+      caption(null, "model: " + err.message);
+      return false;
+    }
+  }
+  const ok = setFormation({ points: modelCache[key], label: src }, seconds);
+  if (ok) caption(null, "showing " + src + " · " + modelCache[key].length + " points");
+  return ok;
+}
+
 function faceGlyph() {
   const pts = [];
   for (let i = 0; i < 90; i++) {                    // head
@@ -1295,7 +1465,11 @@ const TRIGGERS = {
   face:{shape:"face"}, hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"},
   yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
   stop:{text:"STOP"}, help:{text:"HELP"}, nice:{text:"NICE"},
-  glorb:{text:"GLORB"}, orb:{text:"GLORB"}
+  glorb:{text:"GLORB"}, orb:{text:"GLORB"},
+  // solids, which is where depth actually shows
+  sphere:{solid:"sphere"}, ball:{solid:"sphere"}, cube:{solid:"cube"},
+  box:{solid:"cube"}, torus:{solid:"torus"}, donut:{solid:"torus"},
+  helix:{solid:"helix"}, spiral:{solid:"helix"}, knot:{model:"knot"}
 };
 
 /* ---------------- shells ----------------
@@ -1501,6 +1675,7 @@ function feedWords(finalText, interimText) {
     const word = w[i].replace(/[^a-z0-9']/gi, "");
     if (!word) continue;
     const trig = TRIGGERS[word.toLowerCase()];
+    if (trig && (trig.solid || trig.model)) { setFormation(trig, 10); continue; }
     if (trig) setFormation(trig, cfg.flashMs / 1000);
     else if (echoMode && word.length > 1) setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
   }
@@ -1508,12 +1683,20 @@ function feedWords(finalText, interimText) {
 }
 
 function setFormation(spec, seconds) {
-  // one entry point, so /show and the brain's show tool reach the shells too
+  // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
-  const pts = spec && spec.shape === "face" ? faceGlyph()
+  if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
+  /* Everything arrives here as a list of places to be. A glyph, a face, a
+     procedural solid and a mesh off disk differ only in how the list was made
+     -- which is why depth cost the formation system one extra column. */
+  const pts = spec && spec.points ? spec.points
+            : spec && spec.solid ? fitPoints(SOLIDS[spec.solid](1800))
+            : spec && spec.shape === "face" ? faceGlyph()
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
   if (!pts.length) return false;
+  form3d = pts[0].length > 2;
+  formS = form3d ? 0.29 : 0.42;
 
   /* Particles are indexed by angle around the ring, so ordering the targets by
      angle too means the ring unfolds into the shape instead of scrambling
@@ -1535,12 +1718,13 @@ function setFormation(spec, seconds) {
   const n = Math.min(MAX, want);
   for (let i = 0; i < n; i++) {
     const p = pts[Math.floor((i / n) * pts.length)];
-    formX[i] = p[0]; formY[i] = p[1];
+    formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
   }
   formN = n;
   formWant = 1;
   formUntil = performance.now() + Math.max(1, Math.min(30, seconds || 5)) * 1000;
-  formLabel = spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
+  formLabel = spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
+            : spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
   return true;
 }
 
@@ -1550,7 +1734,7 @@ function updateFormation(dt) {
   const rate = 1 - Math.pow(1 - 0.045, dt / 16.67);
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
-    formT = 0; formLabel = "";
+    formT = 0; formLabel = ""; form3d = false; view.yaw = 0;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
@@ -1620,6 +1804,15 @@ function loop() {
      sines with periods that do not divide into each other, so it wanders rather
      than ticks -- and it fades out the moment anything is actually happening,
      because drift is what the orb does when nothing else is asking. */
+  /* Only ever turning while there is something with depth to look at. A
+     spinning flat ring is just a ring that wobbles. */
+  view.deep = form3d && formT > 0.002;
+  if (view.deep) view.yaw += cfg.spin * (dt / 1000) * TAU * 0.25;
+  view.pitch += ((view.deep ? cfg.tilt : 0) - view.pitch) * 0.04;
+  // an easing curve never actually reaches zero, and a residual pitch leaves a
+  // residual perspective on a field that is supposed to be exactly flat
+  if (!view.deep && Math.abs(view.pitch) < 0.002) view.pitch = 0;
+
   const tt = now / 1000;
   const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1);
   const wander = rest * (0.62 * Math.sin(tt / 7.3) + 0.38 * Math.sin(tt / 11.9 + 1.7));
@@ -1721,9 +1914,16 @@ function loop() {
       let tx = cx + bx[i] * ringR * sqx * ex;
       let ty = cy + by[i] * ringR * sqy * ey;
       if (formT > 0.002 && i < formN) {
-        tx += (cx + formX[i] * scale * 0.42 - tx) * formT;
-        ty += (cy + formY[i] * scale * 0.42 - ty) * formT;
+        tx += (cx + formX[i] * scale * formS - tx) * formT;
+        ty += (cy + formY[i] * scale * formS - ty) * formT;
       }
+      /* z has no shape, no membrane, no wall and no mouse: it is only ever
+         pulled toward a target, so one damped spring is the entire model. Its
+         target is zero unless a 3D formation is holding, which is what keeps
+         the flat orb exactly as flat as it was. */
+      const tz = formT > 0.002 && i < formN ? formZ[i] * scale * formS * formT : 0;
+      vz[i] += (tz - pz[i]) * 0.020 - vz[i] * 0.20;
+      pz[i] += vz[i];
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
       const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5) * pull;
@@ -1822,6 +2022,7 @@ function loop() {
         const k2 = cfg.snap * formT;
         px[i] += (tx - px[i]) * k2;
         py[i] += (ty - py[i]) * k2;
+        pz[i] += (tz - pz[i]) * k2;
       }
 
       // q is the position in wall units: 1.0 is exactly on the boundary.
@@ -1855,8 +2056,34 @@ function loop() {
 
   const span = LUT_HI - LUT_LO;
   const shaped = cfg.splitShape > 0.001;
-  for (let i = 0; i < n; i++) {
-    const ox = px[i] - cx, oy = py[i] - cy;
+
+  /* One rotation and one divide per particle, and both are the identity while
+     z is zero -- which is every frame that is not holding a model. FOC is far
+     enough back that perspective reads as depth rather than as a fisheye. */
+  const deep = view.deep;
+  const cyw = Math.cos(view.yaw), syw = Math.sin(view.yaw);
+  const cpt = Math.cos(view.pitch), spt = Math.sin(view.pitch);
+  const FOC = scale * 1.7;
+  const zSpan = scale * formS;
+
+  if (deep) {
+    /* Painter's order. These dots are opaque, so without it the far side of a
+       model draws over the near side about half the time and the solid reads
+       inside out. Sorting indices rather than the arrays themselves keeps every
+       particle's index -- and therefore its ring slot and its lottery ticket --
+       exactly where it was. */
+    for (let i = 0; i < n; i++) {
+      const ox = px[i] - cx, oy = py[i] - cy;
+      zbuf[i] = oy * spt + (-ox * syw + pz[i] * cyw) * cpt;
+      ord[i] = i;
+    }
+    const view2 = ord.subarray(0, n);
+    view2.sort((a, b) => zbuf[b] - zbuf[a]);   // far first
+  }
+
+  for (let q2 = 0; q2 < n; q2++) {
+    const i = deep ? ord[q2] : q2;
+    const ox = px[i] - cx, oy = py[i] - cy, oz = pz[i];
     let fRad = falloffPx;
     if (shaped) {
       let th = Math.atan2(oy, ox); if (th < 0) th += TAU;
@@ -1864,14 +2091,39 @@ function loop() {
       fRad *= 1 + (shapeLut[si] - 1) * cfg.splitShape;
     }
     // distance measured against the deformed boundary: 1.0 is exactly on it, so
-    // size still crosses zero there and the colour split rides the new outline
-    const ndx = ox / (fRad * fex), ndy = oy / (fRad * fey);
-    let size = (1 - Math.sqrt(ndx * ndx + ndy * ndy)) * sizeHiPx;
+    // size still crosses zero there and the colour split rides the new outline.
+    // z joins the distance, which turns the negative-space ring into a shell.
+    const ndx = ox / (fRad * fex), ndy = oy / (fRad * fey), ndz = oz / fRad;
+    let size = (1 - Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz)) * sizeHiPx;
+
+    // rotate about the vertical, then the horizontal, then project
+    const rx = ox * cyw + oz * syw;
+    let rz = -ox * syw + oz * cyw;
+    const ry = oy * cpt - rz * spt;
+    rz = oy * spt + rz * cpt;
+    const persp = FOC / Math.max(FOC * 0.25, FOC + rz);
+
     /* Size keys off distance from centre, which is the whole charm of the orb
        and precisely wrong for a glyph: outer letters bloom shut while the
        middle ones vanish. Converge toward one size while a shape holds, but
-       not all the way -- a little variation keeps it from looking printed. */
-    if (formT > 0.002) size += (-1.15 * sizeHiPx - size) * formT * 0.88;
+       not all the way -- a little variation keeps it from looking printed.
+       A model converges on its own depth instead: near stars land on the
+       positive end of the palette and far ones on the negative, so the colour
+       split that separates the core from the ring becomes the shading. */
+    if (form3d) {
+      /* 0.88 leaves an eighth of the old size behind, and for a glyph that
+         residue is the point -- it keeps the letters from looking printed. For
+         a solid it is fatal: a particle 400px out starts at size -250, and an
+         eighth of that swamps a depth signal worth a few dozen. Converge, and
+         stretch the two halves separately, because the palette is not
+         symmetric -- green arrives by +sizeHi and magenta needs several times
+         that in the other direction. */
+      const t3 = Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
+      const want = (t3 >= 0 ? t3 : t3 * 2.4) * sizeHiPx;
+      size += (want - size) * formT * 0.98;
+    } else if (formT > 0.002) {
+      size += (-1.15 * sizeHiPx - size) * formT * 0.88;
+    }
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
@@ -1880,14 +2132,21 @@ function loop() {
     // A formation throws particles far from centre, where size is very negative
     // and dots are largest -- exactly the wrong place for legibility. Thin them
     // while a shape is holding so the glyph reads instead of blooming shut.
-    let rad = bs ? bs.star * k : Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
+    /* A solid draws at one size, scaled only by perspective. Radius normally
+       comes from |size|, and size is now carrying depth as a colour -- and the
+       magenta half of the palette is stretched 2.4x to reach it, which would
+       otherwise make the FAR side of a model the fattest thing on screen. */
+    let rad = bs ? bs.star * k
+            : form3d ? sizeHiPx * cfg.dot * 0.26 * (1 - formT * 0.15)
+            : Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
     if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
+    if (deep) rad *= persp;              // near is bigger, which is most of the depth
     if (rad > radCap) rad = radCap;
     if (rad > 0.2) {
       ctx.beginPath();
-      ctx.arc(px[i], py[i], rad, 0, 6.2832);
+      ctx.arc(cx + rx * persp, cy + ry * persp, rad, 0, 6.2832);
       ctx.fill();
     }
   }

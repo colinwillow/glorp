@@ -352,6 +352,61 @@ already standing near its new slot.
 
 ---
 
+## Depth
+
+The particles have a `z` now, and it is bolted on rather than designed in —
+deliberately. Everything tuned in here is 2D and works: size from distance, the
+colour split, trails, containment, the shells. So `z` is a fourth number that is
+**zero for all of it**. The ring is flat, a glyph is flat, a shell is flat, and
+with `z` at zero the projection is the identity and the distance is the old
+distance. It only goes non-zero when something asks.
+
+Say `sphere`, `cube`, `torus`, `helix` or `knot` — or `/show cube`, or
+`/show model <name>` for anything in `models/`.
+
+Three things make it read as depth:
+
+- **Perspective.** One rotation and one divide per particle. Near dots draw
+  bigger, and the camera turns while a solid holds, because a still projection
+  is just a drawing.
+- **Colour is depth.** A glyph converges every particle on one size, and the
+  eighth of the old size left behind is the point — it keeps letters from
+  looking printed. For a solid that residue is fatal: a particle 400 px out
+  starts at size −250, and an eighth of that swamps a depth signal worth a few
+  dozen. So a solid converges fully, onto its own `z`: near lands on the
+  positive end of the palette and far on the negative, and the colour split that
+  separates the core from the ring becomes the shading.
+- **Painter's order.** These dots are opaque, so without a depth sort the far
+  side draws over the near side about half the time and a solid reads inside
+  out. Indices are sorted, never the arrays, so every particle keeps its ring
+  slot and its lottery ticket.
+
+Radius is the one thing that does *not* come from `size` here. The magenta half
+of the palette is stretched 2.4× to reach full saturation, which would otherwise
+make the far side of a model the fattest thing on screen.
+
+### Models
+
+`models/*.obj`. OBJ because it is a text format a person can read and forty
+lines can parse, with no dependency and no build step — which is the bargain
+this whole file is built on. Vertices alone are enough if the file is already a
+point cloud; with faces, points are scattered across the triangles **by area**,
+or every dense corner of the mesh gets as many particles as every flat wall.
+Every model is centred on its bounding box and scaled to fit, because a mesh
+exported in millimetres or modelled off-origin otherwise arrives off screen at a
+thousand times the size, and it is never obvious which.
+
+`models/knot.obj` is a 7,920-triangle torus knot, there to exercise the loader.
+
+**Animated characters** are the open question. Real skinned animation means
+parsing glTF, reading bones and vertex weights, and skinning every frame — a lot
+of machinery for a particle look. Particles need positions and nothing else, so
+the route that fits is **baked point-cloud frames**: export the animation as a
+sequence of positions and cross-fade. Baking throws away exactly the expensive
+part and keeps the part that reads.
+
+---
+
 ## Presets
 
 `base · shaped · mouth`, in the tune panel.
