@@ -1,20 +1,24 @@
 # Orb
 
-Audio-reactive particle field. Single file, no build step, no dependencies.
+A voice you can talk to, drawn as a particle field. Single HTML file, no build
+step, no dependencies. The optional brain and voice live in `worker/`.
+
+Open `index.html` over HTTPS — `getUserMedia` will not run from `file://`.
+It is live at https://colinwillow.github.io/glorp/
+
 Descendant of the old p5 `Okay` sketch — same steering behaviours, rewritten
 without per-frame allocation.
-
-Open `index.html` over HTTPS. `getUserMedia` will not run from `file://`.
 
 ---
 
 ## Architecture
 
-Three layers. They only talk in one direction.
+Four layers. They only talk in one direction.
 
 ```
-  microphone ──► analyse() ──► drive ──► loop() ──► canvas
-                              (struct)   physics
+  microphone ─┐
+  script     ─┼─► drive ──► loop() ──► canvas
+  its voice  ─┘  (struct)   physics
 ```
 
 ### The drive struct
@@ -29,54 +33,140 @@ const drive = {
 };
 ```
 
-**Audio never touches physics.** It writes these five numbers; physics only
-reads them. That is the seam that makes the Jarvis states cheap later — a
-scripted animator writes the same struct for "thinking" and "speaking" and
-the visual system doesn't change at all. Keep this boundary intact.
+**Nothing upstream touches physics.** Five numbers is the entire interface. The
+microphone fills them; so does a scripted animator; so does the orb's own
+synthesised voice. Physics cannot tell which, and has never needed to change to
+accept a new source. Keep this boundary intact — it is the reason the state
+machine, and later the brain, cost almost nothing to add.
+
+`analyse()` writes a separate `mic` struct rather than `drive` directly. That
+separation is what lets voice detection keep running while a scripted state
+owns the visuals — otherwise the orb could not hear itself being interrupted.
+
+### States
+
+`idle | listening | thinking | speaking`, each writing the same five channels.
+
+| state | source |
+|---|---|
+| `idle` | the microphone if one is live, else a slow scripted breath |
+| `listening` | the microphone |
+| `thinking` | a bright lobe orbiting the ring on a fixed clock. Nothing about it is random, which is what makes it read as *working on something* rather than reacting to something |
+| `speaking` | its own voice, analysed exactly as the microphone is. With no voice configured, a syllable clock built from the reply's own vowels |
+
+Transitions are automatic with a manual override. Voice above `vadOn` wins from
+any state, so it can be interrupted mid-sentence. Changes cross-fade over
+260 ms — a hard cut between sources reads as a glitch, not a mood.
+
+Idle passing the microphone through matters: idle means nobody has said
+anything yet, not that the orb has stopped hearing.
 
 ### Physics, per particle per step
 
-Four forces, summed into acceleration:
-
 1. **arrive** — steer toward a target, slowing inside 100px
    ```js
-   ringR = baseR * (1 + drive.scale*rmsGain)
-         + drive.spectrum[band] * baseR * specGain
-   target = centre + basePoint[i] * ringR * sin(frame * i / rateX)
+   ringR = (baseR * (1 + drive.scale*rmsGain)
+          + drive.spectrum[band] * baseR * specGain) * shapeLut[angle]
    ```
-   `basePoint[i]` is a unit circle point. Multiplying it by an index-rated
-   sine is the bloom — every particle inflates and inverts on its own clock,
-   which is what makes it ooze rather than pulse.
-
    The band index comes from the particle's **index**, so bass and treble
-   occupy fixed arcs of the circumference. The spectrum carves the silhouette.
+   occupy fixed arcs. `bloom` multiplies the target by an index-rated sine —
+   at 1 it swings through zero and every particle oozes through the centre;
+   near 0 the ring holds still. Anything above ~0.6 smears the silhouette
+   across every radius at once, which is what makes shapes stop reading.
 
-2. **membrane** — signed radial force toward the ring surface, sampled at the
-   particle's **current angle** (not its index). Outward when inside, inward
-   when outside. This is what makes it read as a skin rather than a cloud.
+2. **membrane** — signed radial force toward the surface, sampled at the
+   particle's **current angle**. It samples the shape and the ellipse too, or
+   it pulls everything back onto a circle and sands the corners off.
 
-3. **turbulence** — random jitter scaled by `drive.turbulence`. Sibilants
-   shatter the surface; vowels leave it smooth.
+3. **turbulence** — random jitter. Sibilants shatter the surface, vowels leave
+   it smooth.
 
 4. **flee** — steer away from the pointer inside `fleeRadius`.
 
-`drive.impulse` is not a fifth force. It's an outward radial kick that lives
-**inside the membrane branch** — so it only fires when `membrane > 0.001`.
-Physically that's right (no skin, nothing to snap), but the sliders don't show
-the coupling: dropping `membrane` to 0 silently kills onset response too.
+A share of particles (`core`) sit out all of this and hold a small central
+circle instead — no spectrum, no shape, no membrane, no kick. They still
+breathe, because their radius carries loudness.
+
+The onset **kick** scales each push by that particle's own shape radius.
+Pushing everyone out by the same amount *adds a constant* to `r(theta)`, and
+adding a constant to a radial function is exactly what rounds it toward a
+circle — which is why every loud moment used to flatten the silhouette.
+Pushing by `c*r` turns `r` into `r*(1+c)`, a pure dilation, so the outline
+stays similar to itself however hard it is hit.
+
+### Shapes
+
+The silhouette is not drawn anywhere. Size and colour key off distance from
+centre, so a circular target can only ever produce concentric bands. The
+outline lives entirely in the target, so it is a radial function `r(theta)`:
+
+`circle · triangle · square · pentagon · hexagon · star · rosette · mouth`
+
+Each is precomputed into a 256-entry angular table, normalised to a peak radius
+of 1 so switching shapes never changes how far the orb reaches. `shape` sets
+the resting silhouette, `shapeGain` lets the spectral centroid drive the morph;
+fractional values are real blends, not snaps.
+
+The **mouth** is `1 - 0.62*|sin t|^0.72` — the kink in `|sin|` puts cusps at
+left and right, so it is a lens with corners rather than a squashed circle.
+`ellipse` and `jaw` then work it like lips, and the mapping is phonetically
+real: `/i/` and `/e/` carry a high second formant and spread the lips, `/o/`
+and `/u/` are low and round them. When a real reply is spoken its vowels are
+extracted and fed to the same channel, so the silhouette shapes the actual
+words.
 
 ### Rendering
 
-- `size = (1 - dist/falloff) * sizeHi`, deliberately allowed to go **negative**
-  past `falloff`. `Math.abs()` makes distant particles large again, and the
-  colour formula clamps the green channel to zero when size is negative.
-  **That sign flip is where the purple comes from.** It was an accident in the
-  original and it's load-bearing now.
-- Colour is a function of size only, so it's precomputed into a 96-entry LUT
-  instead of building a string per particle. The LUT is only rebuilt when the
-  rounded hue shift actually changes (`if (shift !== lastShift)`), so steady
-  audio costs zero rebuilds per frame — not one.
-- Radius capped at 22px. Without it, startup overdraw tanks the frame rate.
+- `size = (1 - dist/falloffPx) * sizeHi`, deliberately allowed to go
+  **negative**. `Math.abs()` makes distant particles large again and the colour
+  formula clamps green to zero when size is negative. **That sign flip is where
+  the purple comes from.** It was an accident in the original and it is
+  load-bearing now.
+- The **negative-space ring** is simply where size crosses zero. Measured with
+  a scalar distance it can only be a circle, so `splitEll`/`splitJaw` give the
+  boundary its own aspect and `splitShape` makes it follow the current outline
+  — audio deforms the ring itself rather than shoving particles outward to fake
+  it.
+- `follow` blends the split between an absolute pixel distance and a fraction
+  of the current ring radius. Fixed in pixels it stops tracking the orb: shrink
+  `radius` and the whole field ends up inside the green zone with no ring and
+  no purple at all.
+- Colour is a function of size only, precomputed into a 96-entry LUT, rebuilt
+  only when the hue shift or the size range actually changes.
+
+### Containment
+
+The orb can explode to the viewport edge but never through it. An ellipse
+matching the viewport aspect (so a phone gets its full height), inset by the
+largest dot that can be drawn. Past `contain` a quadratic spring ramps in; at
+the wall a hard stop projects the particle back and removes only its *outward*
+velocity, so particles graze along it instead of piling up. Each particle gets
+its own wall radius, or a saturated orb traces the boundary as a visible edge.
+
+Verified with the drive pinned at maximum across phone, desktop and 320x400:
+nothing leaves the viewport.
+
+---
+
+## Audio
+
+Level is measured in **dB against an adaptive room floor**, not linear RMS.
+Conversational speech is about -30 dBFS, i.e. rms ~0.03, which `min(1, rms*6)`
+turned into 0.19 — so the form only woke up for shouting while the spectrum
+bars, already dB-scaled, looked perfectly lively. The floor follows the room
+down fast and up slowly, so response is relative to ambient: a quiet room does
+not become twitchy and a noisy one does not go dead, with no calibration step.
+
+`dbMargin` is how far above the measured room the response starts; `dbRange` is
+how many dB from there to full. The meter shows both the live input dB and the
+tracked room floor, which is what you set `dbMargin` against.
+
+**All three timbre channels read *high* on near-silence**, not low: zero-crossing
+rate is high for low-level noise, flux fires on FFT jitter, and the centroid of
+noise is arbitrary. Ungated, an idle microphone in a quiet room was worth a
+constant outward push of ~3 px/frame² and blew the orb into the wall on nothing
+at all. `hue`, `turbulence` and `impulse` are gated by level above `gateFloor`;
+`scale` and `spectrum` are already amplitude-proportional and are left alone.
 
 ---
 
@@ -90,10 +180,46 @@ while (physAcc >= STEP && steps < 4) { physAcc -= STEP; step(); }
 ```
 
 The original used p5's `frameCount`, so it literally ran at double speed on a
-120Hz display. iOS also throttles rAF to 30fps when idle and ramps up on
-touch — with the accumulator that changes the fps readout but not the motion.
+120Hz display. iOS also throttles rAF to 30fps when idle — with the accumulator
+that changes the fps readout but not the motion.
 
 Don't reintroduce `frame++` inside the render path.
+
+---
+
+## Brain and voice
+
+Optional. Without them everything still runs; the orb just reacts to sound and
+mouths a scripted reply in silence.
+
+- **Speech in** — the browser's own recogniser. No key, no proxy. Press `talk`.
+- **Thinking** — Claude, through the Worker in `worker/`.
+- **Voice out** — ElevenLabs, through the same Worker. The reply is played
+  *and* analysed, so `speaking` reads real audio rather than a syllable clock.
+
+The API keys live in the Worker, never in the page — this is served from GitHub
+Pages, so anything in `index.html` is public and a leaked key is billable. The
+page only ever learns the Worker's URL, which it keeps in `localStorage`.
+Setup is in [`worker/README.md`](worker/README.md).
+
+Recognition is deafened while the orb talks, or it hears itself through the
+speaker and answers its own reply forever. `abort()` rather than `stop()`,
+because `stop()` finalises whatever is pending — which at that moment is the
+orb's own words. `echoTail` covers how long the room keeps ringing afterwards.
+
+---
+
+## Presets
+
+`base · shaped · mouth`, in the tune panel.
+
+Each preset **pins every parameter it was built against**, including the ones
+added after it — `follow`, `splitEll`, `splitJaw`, `splitShape`, `falloffGain`,
+`gate`, `core`, `kickShape`. A config captured before a feature existed does not
+reproduce once that feature lands, because the new feature quietly alters it.
+Pinning is what keeps an old look old; sometimes that means zero, sometimes the
+value that was current at the time.
+`copy preset` dumps the current config as JSON.
 
 ---
 
@@ -101,45 +227,47 @@ Don't reintroduce `frame++` inside the render path.
 
 | Param | Does |
 |---|---|
-| `specGain` | Spectrum → ring radius. **The main idea.** Start here. |
+| `bloom` | The differentiation knob. 1 smears the target across every radius; low values let shapes read. |
+| `split` / `coreR` | Where the negative-space ring sits relative to the core and the ring. Roughly 0.3-0.5 keeps the two cleanly separated. |
+| `split` ↔ `dot` | **Coupled.** Dot size scales with distance *past* the boundary, so halving `split` roughly doubles drawn dots. Halve `dot` to compensate. |
+| `specGain` | Spectrum → ring radius. The original idea. |
 | `membrane` | Cloud (0) → skin (1) → aggressive (2+). |
 | `rateX` / `rateY` | Bloom speed. The **asymmetry** between them is why it folds instead of pulsing. |
-| `falloff` | Distance where size crosses zero — the green/purple boundary. |
-| `gK` vs `rK`/`bK` | 10 / 3 / 1 is the whole palette. Negate `gK` to invert it. |
+| `gate` | 1 fades deformation in with level; 0 leaves it always on. Centroid is centred on 0.5 but reads 0 at silence, so ungated the resting orb sits at one extreme. |
+| `hueGain` | At 2.55 the centroid rotates the palette ~230°, enough that green and purple swap. Lower it if the negative-space ring should read consistently. |
 | `attack` / `release` | Fast attack, slow release. Equal values look like a VU meter. |
 | `count` | Not just density — it sets the top of the index range, so it changes the wave's character. |
-
-`copy preset` in the tune panel dumps the current config as JSON. Paste it
-over `DEFAULTS` to bake a look in.
 
 ---
 
 ## Gotchas
 
 - **Never shadow a name** between a function parameter and an outer `const`.
-  Valid JS, but some transpilers flatten the scopes and throw
-  *"Cannot declare a const variable twice."* Cost an hour already.
+  Valid JS, but some transpilers flatten the scopes and throw *"Cannot declare a
+  const variable twice."* Cost an hour already.
 - Base points must be rebuilt against the **active** count, not the pool size,
   or you get an arc with visible endpoints instead of a closed circle.
 - Seed particles near the ring. Seeding far out produces huge negative sizes
   and a fill-rate stall for the first few seconds.
-- iOS needs a user gesture before `AudioContext` will start. The enable-mic
-  button covers it; don't try to autostart.
-- `membrane` at 0 also disables `impulseGain` — the onset kick is applied
-  inside the membrane branch. If onsets look dead, check `membrane` before
-  reaching for `impulseGain`.
+- iOS needs a user gesture before `AudioContext` will start — for the
+  microphone *and* for playback. Both are built on a real click; the reply
+  lands long after any gesture.
+- At `follow: 1` the `falloff` and `falloffGain` sliders are inert on the
+  absolute term. The split rides the ring radius alone.
+- Anything that swallows an error costs a debugging round. An empty `catch`,
+  a discarded `no-speech`, a generic failure message — each one hid a
+  one-line fix behind an hour of guessing.
 
 ---
 
 ## Next
 
-- [ ] **State machine.** `idle | listening | thinking | speaking`, each writing
-      `drive` from a different source. Listening = mic. Thinking = scripted LFO.
-      Speaking = analyse the TTS output stream instead of the mic.
+- [ ] **Streaming voice.** ElevenLabs' WebSocket endpoint would let the orb
+      start speaking on the first chunk instead of waiting for the whole clip.
+      That wait is most of the latency now.
 - [ ] **Pitch (f0)** via autocorrelation. Deliberately skipped — jittery on
       consonants and silence. Spectral centroid gets most of the value.
-- [ ] **Ellipse ring.** Make the ring's aspect ratio a function of centroid so
-      vowel colour changes the overall shape, not just the surface.
 - [ ] **WebGL** if the particle count needs to go past ~4000. Canvas2D `arc()`
       is the ceiling. Instanced points with a fragment shader would clear 50k.
-- [ ] **Preset library.** Named configs with crossfade between them.
+- [ ] **Preset crossfade.** Presets snap; morphing between them would make
+      each state able to carry its own look.
