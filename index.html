@@ -349,12 +349,18 @@ function caption(said, said2) {
 /* Where the wait actually goes. The pipeline is serial -- full reply, then
    full clip, then speak -- so knowing which leg dominates is the difference
    between optimising the right thing and the loud thing. */
-const clock = { t0:0, firstTok:0, lastTok:0, audio:0 };
+const clock = { t0:0, firstTok:0, lastTok:0, audio:0, claudeMs:0 };
 function mark(k) { clock[k] = performance.now(); }
 function reportTiming() {
   const ms = (a, b) => Math.round(clock[b] - clock[a]);
   const parts = [];
-  if (clock.firstTok) parts.push("think " + ms("t0", "firstTok") + "ms");
+  if (clock.firstTok) {
+    // split the wait: what Claude spent, and what the trip cost on top
+    const think = ms("t0", "firstTok");
+    parts.push(clock.claudeMs
+      ? "think " + think + "ms (claude " + clock.claudeMs + ", net " + (think - clock.claudeMs) + ")"
+      : "think " + think + "ms");
+  }
   if (clock.lastTok) parts.push("write " + ms("firstTok", "lastTok") + "ms");
   if (clock.audio) parts.push("voice " + ms("lastTok", "audio") + "ms");
   const total = clock.audio ? ms("t0", "audio") : 0;
@@ -375,7 +381,7 @@ async function ask(text) {
   if (!brain.url) { setState("thinking"); return; }   // scripted reply, no brain wired
 
   brain.busy = true;
-  clock.t0 = performance.now(); clock.firstTok = clock.lastTok = clock.audio = 0;
+  clock.t0 = performance.now(); clock.firstTok = clock.lastTok = clock.audio = 0; clock.claudeMs = 0;
   brain.history.push({ role:"user", content:text });
   // the proxy is stateless, so trimming here is what bounds the token bill
   if (brain.history.length > 20) brain.history.splice(0, brain.history.length - 20);
@@ -410,6 +416,7 @@ async function ask(text) {
       try {
         const ctl = JSON.parse(raw.slice(cut + 1));
         if (ctl.show) setFormation(ctl.show, ctl.show.seconds);
+        if (ctl.ms && ctl.ms.claude) clock.claudeMs = ctl.ms.claude;
       } catch (e) { /* a malformed frame must never cost us the reply */ }
     }
     brain.history.push({ role:"assistant", content: full });
@@ -424,7 +431,9 @@ async function ask(text) {
      sound does. Mouthing early and letting audio catch up puts the two out of
      step, which reads worse than the wait. */
   const spoke = await playReply(full);
-  if (!spoke) planSpeech(full);
+  // playReply reports once audio starts; without a voice nothing ever would,
+  // and the legs before the voice are exactly the ones worth seeing
+  if (!spoke) { planSpeech(full); reportTiming(); }
   setState("speaking");
 }
 

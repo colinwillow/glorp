@@ -134,6 +134,12 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     { label: "plain", run: () => client.messages.stream({ ...base }) },
   ];
 
+  /* The page can only see its own round trip, which lumps network in with
+     Claude. Time the leg that happens here so the two can be told apart --
+     they have completely different fixes. */
+  const tIn = Date.now();
+  let tFirst = 0;
+
   const encoder = new TextEncoder();
   const out = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -144,6 +150,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           let wrote = false;
           for await (const event of stream) {
             if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+              if (!tFirst) tFirst = Date.now();
               controller.enqueue(encoder.encode(event.delta.text));
               wrote = true;
             }
@@ -156,12 +163,18 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           if (!wrote) controller.enqueue(encoder.encode("I had nothing to say to that."));
           // Control frame after a NUL, which cannot occur in the spoken text --
           // so the page can split them without a parser and never speak this.
+          const frame: { show?: unknown; ms?: Record<string, number> } = {};
           for (const block of final.content) {
             if (block.type === "tool_use" && block.name === "show") {
-              controller.enqueue(encoder.encode("\u0000" + JSON.stringify({ show: block.input })));
+              frame.show = block.input;
               console.log("orb-brain show", JSON.stringify(block.input));
             }
           }
+          // claude: request leaving this worker to its first text token.
+          // Whatever the page measures beyond this is network and the browser.
+          frame.ms = { claude: (tFirst || Date.now()) - tIn };
+          console.log("orb-brain claude ms", frame.ms.claude);
+          controller.enqueue(encoder.encode("\u0000" + JSON.stringify(frame)));
           console.log("orb-brain ok via", attempt.label);
           lastError = null;
           break;
