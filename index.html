@@ -58,7 +58,7 @@
   input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;
     background:#C8F49A;border:none;cursor:pointer}
   #row{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1E1E1E}
-  #prow{display:flex;gap:8px;flex-wrap:wrap}
+  .brow{display:flex;gap:8px;flex-wrap:wrap}
 </style>
 </head>
 <body>
@@ -87,7 +87,8 @@ const DEFAULTS = {
   attack:0.35, release:0.11, dbMargin:12, dbRange:34,
   dot:1.3, sizeHi:32, falloff:210, follow:1.0, split:0.46,
   splitEll:1.6, splitJaw:0.35, splitShape:1.0,
-  trail:0.76, rK:-0.5, gK:7, bK:-2, base:120
+  trail:0.76, rK:-0.5, gK:7, bK:-2, base:120,
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -125,8 +126,132 @@ const PRESETS = {
 /* the only channel audio has into physics */
 const drive = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
 
+/* ---------------- states ----------------
+   idle | listening | thinking | speaking. Every state writes the SAME five
+   channels; the visual system never learns which one is talking. That is the
+   entire point of the seam -- listening fills them from the microphone, the
+   other three from script, and physics cannot tell the difference.
+
+   mic is where analyse() puts its results now. Keeping it separate from drive
+   is what lets voice-activity detection keep running while a scripted state
+   owns the visuals -- otherwise the orb could never hear you interrupt it. */
+const mic  = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+const srcD = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+const fromD = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+
+const STATES = ["idle", "listening", "thinking", "speaking"];
+const BLEND = 260;                       // ms to cross-fade on a state change
+let state = "idle", stateT = 0, blendT = 1e9;
+let manual = false, heardVoice = false, quietT = 0;
+
+function setState(next) {
+  if (next !== state) {
+    // snapshot what physics is currently seeing, and ease off it rather than
+    // snapping -- a hard cut between sources reads as a glitch, not a mood
+    fromD.scale = drive.scale; fromD.hue = drive.hue;
+    fromD.turbulence = drive.turbulence; fromD.impulse = drive.impulse;
+    fromD.spectrum.set(drive.spectrum);
+    state = next; stateT = 0; blendT = 0;
+    if (next === "listening") { heardVoice = false; quietT = 0; }
+  }
+  syncStateBtns();
+}
+
+// deterministic per-syllable noise, so speech has structure instead of jitter
+const hash = (i) => { const v = Math.sin(i * 12.9898) * 43758.5453; return v - Math.floor(v); };
+
+function srcIdle(t) {
+  srcD.scale = 0.05 + 0.035 * Math.sin(t * 0.6);
+  srcD.hue = 0.05 + 0.05 * Math.sin(t * 0.17);
+  srcD.turbulence = 0.02;
+  srcD.impulse = 0;
+  for (let b = 0; b < BANDS; b++) srcD.spectrum[b] = 0.04 + 0.03 * Math.sin(b * 0.25 + t * 0.7);
+}
+
+function srcThinking(t) {
+  // a bright lobe orbits the ring. Nothing about it is random, which is what
+  // makes it read as working on something rather than reacting to something.
+  const pos = (t * 0.55 % 1) * BANDS;
+  for (let b = 0; b < BANDS; b++) {
+    let d = Math.abs(b - pos); if (d > BANDS / 2) d = BANDS - d;
+    srcD.spectrum[b] = 0.10 + 0.85 * Math.exp(-(d * d) / 26);
+  }
+  srcD.scale = 0.34 + 0.10 * Math.sin(t * 2.1);
+  srcD.hue = 0.5 + 0.42 * Math.sin(t * 0.42);      // sweeps shape and palette
+  srcD.turbulence = 0.06;
+  srcD.impulse = Math.max(0, Math.sin(t * 2.1)) * 0.10;
+}
+
+function srcSpeaking(t) {
+  /* A syllable clock, not a noise generator. Each slot gets an envelope, a
+     vowel and a chance of being a pause, so the rhythm reads as speech. The
+     vowel drives hue, which is the centroid channel -- so the mouth widens and
+     the silhouette morphs per syllable exactly as they would on real audio. */
+  const sy = t * cfg.sylRate;
+  const idx = Math.floor(sy), f = sy - idx;
+  const voiced = hash(idx) > 0.2;
+  const env = voiced ? Math.pow(Math.sin(Math.PI * Math.min(1, f * 1.3)), 0.75) : 0;
+  const vowel = hash(idx * 7 + 3);
+  const sib = hash(idx * 3 + 11) > 0.65;           // sibilant syllables hiss
+
+  srcD.scale = 0.12 + 0.72 * env;
+  srcD.hue += (vowel * env - srcD.hue) * 0.25;
+  srcD.turbulence = 0.10 + 0.55 * (sib ? env : 0);
+  srcD.impulse = (voiced && f < 0.16) ? 0.9 : srcD.impulse * 0.86;
+  for (let b = 0; b < BANDS; b++) {
+    const fb = b / BANDS;
+    const f1 = Math.exp(-Math.pow((fb - 0.06) / 0.05, 2));               // voice bar
+    const f2 = Math.exp(-Math.pow((fb - (0.12 + vowel * 0.45)) / 0.09, 2)); // formant
+    srcD.spectrum[b] = env * (0.85 * f1 + 0.6 * f2);
+  }
+}
+
+function updateState(dt) {
+  stateT += dt; blendT += dt;
+
+  if (!manual) {
+    // barge-in: voice wins from any state, so it can be interrupted mid-sentence
+    if (A && mic.scale > cfg.vadOn) {
+      if (state !== "listening") setState("listening");
+      heardVoice = true; quietT = 0;
+    } else if (state === "listening") {
+      quietT += dt;
+      if (heardVoice && quietT > cfg.holdMs) setState("thinking");
+      else if (!heardVoice && quietT > cfg.holdMs * 3) setState("idle");
+    } else if (state === "thinking" && stateT > cfg.thinkMs) {
+      setState("speaking");
+    } else if (state === "speaking" && stateT > cfg.speakMs) {
+      setState(A ? "listening" : "idle");
+    }
+  }
+
+  const t = stateT / 1000;
+  if (state === "listening") {
+    srcD.scale = mic.scale; srcD.hue = mic.hue;
+    srcD.turbulence = mic.turbulence; srcD.impulse = mic.impulse;
+    srcD.spectrum.set(mic.spectrum);
+  } else if (state === "idle") srcIdle(t);
+  else if (state === "thinking") srcThinking(t);
+  else srcSpeaking(t);
+
+  let f = blendT / BLEND; if (f > 1) f = 1;
+  const e = f * f * (3 - 2 * f);
+  drive.scale += (srcD.scale - drive.scale) * e;
+  drive.hue += (srcD.hue - drive.hue) * e;
+  drive.turbulence += (srcD.turbulence - drive.turbulence) * e;
+  drive.impulse += (srcD.impulse - drive.impulse) * e;
+  for (let b = 0; b < BANDS; b++)
+    drive.spectrum[b] += (srcD.spectrum[b] - drive.spectrum[b]) * e;
+}
+
 /* ---------------- controls ---------------- */
 const SPEC = [
+  ["state", [
+    ["vadOn","voice threshold",0.02,0.6,0.01],
+    ["holdMs","silence hold ms",100,3000,50],
+    ["thinkMs","think ms",200,6000,100],
+    ["speakMs","speak ms",500,10000,100],
+    ["sylRate","syllables / sec",1,8,0.1]]],
   ["audio drive", [
     ["rmsGain","rms → size",0,4,0.05],
     ["specGain","spectrum → ring",0,2.5,0.05],
@@ -195,9 +320,29 @@ SPEC.forEach(([title, rows]) => {
   });
   panel.appendChild(g);
 });
+const sgrp = document.createElement("div"); sgrp.className = "grp";
+sgrp.innerHTML = "<h3>state</h3>";
+const srow = document.createElement("div"); srow.className = "brow";
+const stBtns = ["auto"].concat(STATES).map((nm) => {
+  const btn = document.createElement("button");
+  btn.textContent = nm; btn.dataset.s = nm;
+  btn.onclick = () => {
+    if (nm === "auto") { manual = false; syncStateBtns(); }
+    else { manual = true; setState(nm); }
+  };
+  srow.appendChild(btn);
+  return btn;
+});
+function syncStateBtns() {
+  const active = manual ? state : "auto";
+  stBtns.forEach((btn) => btn.classList.toggle("on", btn.dataset.s === active));
+}
+sgrp.appendChild(srow);
+panel.insertBefore(sgrp, panel.firstChild);
+
 const pgrp = document.createElement("div"); pgrp.className = "grp";
 pgrp.innerHTML = "<h3>preset</h3>";
-const prow = document.createElement("div"); prow.id = "prow";
+const prow = document.createElement("div"); prow.className = "brow";
 const pbtns = Object.keys(PRESETS).map((name) => {
   const btn = document.createElement("button");
   btn.textContent = name; btn.dataset.p = name;
@@ -207,7 +352,7 @@ const pbtns = Object.keys(PRESETS).map((name) => {
   return btn;
 });
 pgrp.appendChild(prow);
-panel.insertBefore(pgrp, panel.firstChild);
+panel.insertBefore(pgrp, sgrp.nextSibling);
 
 const row = document.createElement("div"); row.id = "row";
 row.innerHTML = '<button id="rst">reset</button><button id="cpy">copy preset</button><button id="bars" class="on">hide bars</button>';
@@ -323,10 +468,10 @@ function analyse() {
     let lvl = (db - lo) / cfg.dbRange;
     if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
 
-    // compare like with like: rms is 0-0.3 but drive.scale is 0-1, so the old
+    // compare like with like: rms is 0-0.3 but mic.scale is 0-1, so the old
     // test went permanently false above 0.3 and attack was never once applied
-    const k = lvl > drive.scale ? cfg.attack : cfg.release;
-    drive.scale += (lvl - drive.scale) * k;
+    const k = lvl > mic.scale ? cfg.attack : cfg.release;
+    mic.scale += (lvl - mic.scale) * k;
 
     const N = A.freq.length;
     for (let b = 0; b < BANDS; b++) {
@@ -335,7 +480,7 @@ function analyse() {
       let acc = 0;
       for (let i = lo; i < hi; i++) acc += A.freq[i];
       const bandVal = acc / (hi - lo) / 255;
-      drive.spectrum[b] += (bandVal - drive.spectrum[b]) * 0.35;
+      mic.spectrum[b] += (bandVal - mic.spectrum[b]) * 0.35;
     }
     let cn = 0, cd = 0, flux = 0;
     for (let i = 0; i < N; i++) {
@@ -358,14 +503,14 @@ function analyse() {
        sit near 1.0 at lvl 0.00 and blow the orb into the containment wall on
        nothing at all. scale and spectrum are already amplitude-proportional, so
        only these three need gating. */
-    let g = (drive.scale - cfg.gateFloor) / 0.12;
+    let g = (mic.scale - cfg.gateFloor) / 0.12;
     if (g < 0) g = 0; else if (g > 1) g = 1;
 
-    drive.hue += (centroid * g - drive.hue) * 0.06;
-    drive.turbulence += (Math.min(1, zcr * 26) * g - drive.turbulence) * 0.16;
-    drive.impulse = Math.max(drive.impulse * 0.86, Math.min(1, flux * 0.05) * g);
+    mic.hue += (centroid * g - mic.hue) * 0.06;
+    mic.turbulence += (Math.min(1, zcr * 26) * g - mic.turbulence) * 0.16;
+    mic.impulse = Math.max(mic.impulse * 0.86, Math.min(1, flux * 0.05) * g);
   } else if (A) {
-    drive.impulse *= 0.9;
+    mic.impulse *= 0.9;
   }
   requestAnimationFrame(analyse);
 }
@@ -509,6 +654,9 @@ function loop() {
   const now = performance.now();
   let dt = now - lastT; lastT = now;
   if (dt > 250) dt = 250;
+
+  // states write drive before anything reads it
+  updateState(dt);
 
   const baseR = cfg.radius * scale;
 
@@ -762,15 +910,18 @@ function loop() {
 
   acc += dt; frames++;
   if (acc > 500) {
-    hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " + micState;
+    hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " +
+                      state + (manual ? " (held)" : "");
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
-                        (A ? "\ndB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");
+                        "\nmic " + micState +
+                        (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");
     acc = 0; frames = 0;
   }
   requestAnimationFrame(loop);
 }
+syncStateBtns();
 buildLut(0);
 loop();
 </script>
