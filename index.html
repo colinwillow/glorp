@@ -78,6 +78,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
   count:570, radius:0.16, rateX:23000, rateY:6500, bloom:1.0, fit:1.19, contain:0.86,
+  shape:0, shapeGain:2.0,
   speedLo:3.5, speedHi:19.5, forceRatio:0.045, fleeRadius:100, fleeMult:1.8,
   rmsGain:1.15, specGain:0.65, membrane:0.35, ellipse:0.45,
   falloffGain:1.7, turbGain:1.6, impulseGain:2.7, hueGain:2.55,
@@ -99,6 +100,7 @@ const SPEC = [
     ["turbGain","sibilance → turbulence",0,4,0.1],
     ["impulseGain","onset → impulse",0,5,0.1],
     ["hueGain","centroid → hue",0,4,0.05],
+    ["shapeGain","centroid → shape",0,4,0.05],
     ["ellipse","centroid → ellipse",0,1.5,0.05],
     ["attack","attack",0.05,1,0.01],
     ["release","release",0.01,0.5,0.01]]],
@@ -108,6 +110,7 @@ const SPEC = [
     ["bloom","bloom",0,1,0.01],
     ["fit","fit to screen",0.5,1.2,0.01],
     ["contain","contain",0.3,1,0.02],
+    ["shape","shape",0,7,0.01],
     ["rateX","rate x",2000,60000,500],
     ["rateY","rate y",2000,60000,500]]],
   ["motion", [
@@ -280,6 +283,51 @@ function resize() {
 resize();
 window.addEventListener("resize", resize);
 
+/* ---------------- shapes ---------------- */
+/* The silhouette is not drawn anywhere — size and colour key off distance from
+   centre, so concentric bands are all you ever get from a circular target.
+   The only thing that decides the outline is the target itself, so make it a
+   radial function r(theta) and morph between them. Audio picks the blend, so
+   states stay defined instead of dissolving into displacement. */
+const SHAPE_N = 256;
+/* r peaks where cos(a - half) is smallest, i.e. a = 0 -- so rot = PI/2 puts a
+   vertex at the top of the screen and rot = PI/2 + PI/sides puts a flat edge
+   there. Every shape is normalised to a peak radius of 1 so swapping one in
+   never changes how far the orb reaches. */
+function polyR(t, sides, rot) {
+  const seg = TAU / sides, half = Math.PI / sides;
+  let a = (t + rot) % seg; if (a < 0) a += seg;
+  return Math.cos(half) / Math.cos(a - half);
+}
+function lobeR(t, k, amp) {
+  return (1 + amp * Math.cos(k * (t + Math.PI / 2))) / (1 + amp);
+}
+const SHAPES = [
+  () => 1,                                            // circle
+  (t) => polyR(t, 3, Math.PI / 2),                    // triangle, point up
+  (t) => polyR(t, 4, Math.PI / 2 + Math.PI / 4),      // square, flat top
+  (t) => polyR(t, 5, Math.PI / 2),                    // pentagon, point up
+  (t) => polyR(t, 6, Math.PI / 2 + Math.PI / 6),      // hexagon, flat top
+  (t) => 0.44 + 0.56 * Math.pow(0.5 + 0.5 * Math.cos(5 * (t + Math.PI / 2)), 0.55),  // star
+  (t) => lobeR(t, 6, 0.42)                            // rosette / overlapping circles
+];
+const shapeTab = SHAPES.map((fn) => {
+  const tab = new Float32Array(SHAPE_N);
+  for (let i = 0; i < SHAPE_N; i++) tab[i] = fn(i / SHAPE_N * TAU);
+  return tab;
+});
+const shapeLut = new Float32Array(SHAPE_N);
+let lastMorph = -999;
+function buildShapeLut(m) {
+  const len = SHAPES.length;
+  let w = m % len; if (w < 0) w += len;
+  const i0 = w | 0, i1 = (i0 + 1) % len;
+  const f = w - i0, e = f * f * (3 - 2 * f);   // smoothstep, so morphs ease in
+  const ta = shapeTab[i0], tb = shapeTab[i1];
+  for (let i = 0; i < SHAPE_N; i++) shapeLut[i] = ta[i] + (tb[i] - ta[i]) * e;
+}
+buildShapeLut(0);
+
 const MAX = 6000;
 const px = new Float32Array(MAX), py = new Float32Array(MAX);
 const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
@@ -389,6 +437,10 @@ function loop() {
   const softSpan = Math.max(0.02, 1 - cfg.contain);
   const wall = 3.5 * k;
 
+  const sIdx = cfg.shape + drive.hue * cfg.shapeGain;
+  const mKey = Math.round(sIdx * 128);
+  if (mKey !== lastMorph) { buildShapeLut(mKey / 128); lastMorph = mKey; }
+
   const shift = Math.round(drive.hue * cfg.hueGain * 90);
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || lo !== LUT_LO) {
@@ -406,7 +458,8 @@ function loop() {
     physAcc -= STEP; steps++; frame++;
     for (let i = 0; i < n; i++) {
       const band = (i * BANDS / n) | 0;
-      let ringR = baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain;
+      const sk = (i * SHAPE_N / n) | 0;
+      let ringR = (baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain) * shapeLut[sk];
       if (ringR > maxR) ringR = maxR;
       // bloom 1 = original (sine swings through zero, target crosses centre)
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
@@ -430,7 +483,10 @@ function loop() {
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         const b2 = ((th / TAU) * BANDS) | 0;
-        let surf = baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain;
+        let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
+        // sample the shape at the current angle too, otherwise the membrane
+        // pulls everything back onto a circle and sands the corners off
+        let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2];
         if (surf > maxR) surf = maxR;
         const push = (surf - rd) * 0.02 * cfg.membrane;
         ax += (rx / rd) * push; ay += (ry / rd) * push;
