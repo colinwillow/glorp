@@ -226,9 +226,35 @@ Three ways in:
 - **Celebrations are not drawings at all.** Nobody wants a picture of a
   firework. Those hand off to a **shell** — see below.
 - **The brain's `show` tool**, when it decides a shape says it better than a
-  sentence, and `echo` mode, which spells every word it hears.
+  sentence.
 - **`/show <thing>`** in the tune panel, which takes a word, `face`, a shell
   name, or any trigger word — so a shell can be watched without saying it.
+
+### echo · duet
+
+The `echo` button cycles three ways, and the choice is remembered.
+
+| mode | heard | answered |
+| --- | --- | --- |
+| off | — | out loud |
+| echo | every word spelled as it lands | brain out of the circuit entirely |
+| duet | every word spelled as it lands | out loud **and** shown |
+
+`duet` is the default. Echo was built as a way to watch recognition work with
+the brain out of the way; duet is the same drawing put back on top of a real
+conversation, so a question is answered in both directions at once. Ask it its
+name and it says "I'm Orb" while the field spells ORB.
+
+Choosing what to show is three rules in order. A trigger word anywhere in the
+reply wins outright — say congratulations back and the sky goes up. Otherwise
+the longest word carrying any weight stands in for the sentence, filler words
+excluded. And if the brain reached for `show` itself, that wins over both: it
+picked deliberately, and two pictures for one sentence is one too many.
+
+The timing matters more than the choice. The picture is scheduled to where its
+word actually falls in the sentence — word index over word count, times the
+measured length of the audio, minus a beat so it is up slightly before the word
+is said rather than after it.
 
 ### Why emoji read at all
 
