@@ -347,9 +347,19 @@ const cap = document.getElementById("cap");
    we are in before blaming anything else. */
 const standalone = window.navigator.standalone === true ||
   (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+/* Baked in because neither is a secret -- the browser calls this URL in the
+   clear, and voice ids are public. The API keys stay in the Worker. This also
+   fixes the home-screen app, which gets its own localStorage partition and so
+   launched with nothing to call. A stored value still wins, so a blank field
+   stays blank rather than springing back to the default. */
+const DEFAULT_BRAIN = "https://orb-brain.colinwillowtree.workers.dev";
+const stored = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+
 const brain = {
-  url: (() => { try { return localStorage.getItem("orbBrain") || ""; } catch (e) { return ""; } })(),
-  voice: (() => { try { return localStorage.getItem("orbVoice") || ""; } catch (e) { return ""; } })(),
+  url: stored("orbBrain") === null ? DEFAULT_BRAIN : stored("orbBrain"),
+  // left blank on purpose: the Worker already defaults to the chosen voice, and
+  // one source of truth beats two that can disagree. Set it here to override.
+  voice: stored("orbVoice") || "",
   history: [],
   busy: false
 };
