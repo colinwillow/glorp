@@ -209,6 +209,51 @@ orb's own words. `echoTail` covers how long the room keeps ringing afterwards.
 
 ---
 
+## Formations
+
+The orb can stop being a ring and become a drawing: a word, an emoji, a face.
+It happens **locally**, off the recogniser's interim results — no round trip,
+no key, no Worker. Recognition delivers words in a couple of hundred
+milliseconds; the two-second wait is the language model, and matching a word
+never needed one.
+
+Three ways in:
+
+- **Trigger words.** Say one of the words in `TRIGGERS` and the matching shape
+  forms. `happy` draws 😀, `love` draws ❤️, `fire` draws 🔥, `hello` spells
+  HELLO. Forty-four words across feelings, celebrations, objects, and short
+  words that read better spelled than pictured.
+- **Celebrations burst first.** `congratulations`, `birthday`, `party`,
+  `fireworks`, `celebrate`, `boom` throw the whole field outward under gravity,
+  then let it fall back into the glyph 1.2 s later. The explosion is the point;
+  the glyph is the landing.
+- **The brain's `show` tool**, when it decides a shape says it better than a
+  sentence, and `echo` mode, which spells every word it hears.
+
+### Why emoji read at all
+
+Everything above is one mechanism: draw the string to an offscreen canvas, read
+the pixels back, keep the lit ones. Which is why arbitrary words are free — if
+the font has the glyph, the orb can draw it.
+
+But "lit" means two different things, and getting that wrong is what made the
+first attempt fail. Our own text is painted pure white, so every lit pixel is
+signal and the **fill** is the drawing. An emoji is painted by the font in its
+own palette, and 😀 is a solid yellow disc with dark features on it — threshold
+that on alpha and you get a filled circle with no eyes and no mouth.
+
+So the sampler decides which it is looking at: chroma and luminance spread near
+zero means one flat colour, which means our text, which means fill. Anything
+else is **traced** instead — silhouette edges, interior colour edges, and the
+dark features themselves. A face comes out as a rim, two eyes and a smile; a
+heart as an outline.
+
+One particle per sampled point, so the count follows the drawing: ❤️ samples to
+about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
+duration and hands them back after.
+
+---
+
 ## Presets
 
 `base · shaped · mouth`, in the tune panel.

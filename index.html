@@ -1128,13 +1128,22 @@ let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
 let formCountWas = 0;
 
 /* Draw it, read the pixels back, keep the lit ones. One mechanism covers every
-   glyph the font has, which is what makes arbitrary words free. */
+   glyph the font has, which is what makes arbitrary words free.
+
+   But "lit" means two different things. Our own text is painted pure white, so
+   every lit pixel is signal and the fill is the drawing. An emoji is painted by
+   the font in its own palette and its face is a solid disc -- fill that and the
+   eyes and mouth disappear. Those get traced instead: silhouette edges,
+   interior colour edges, and the dark features themselves. */
 function sampleGlyphs(str) {
-  const S = 220;
+  const S = 220, K = 3, STEP = 2;
+  const NB = [[K, 0], [-K, 0], [0, K], [0, -K]];
   const c = document.createElement("canvas");
   c.width = S; c.height = S;
   const g = c.getContext("2d", { willReadFrequently: true });
-  g.fillStyle = "#000"; g.fillRect(0, 0, S, S);
+  // Left transparent and thresholded on alpha rather than painted black and
+  // thresholded on red -- a multi-coloured glyph has no reliable red channel,
+  // and alpha is the one thing every glyph shares. This is what lets emoji in.
   g.fillStyle = "#fff";
   g.textAlign = "center"; g.textBaseline = "middle";
   let size = Math.min(S * 0.8, (S * 1.6) / Math.max(1, str.length));
@@ -1143,10 +1152,40 @@ function sampleGlyphs(str) {
   if (w > S * 0.92) { size *= (S * 0.92) / w; g.font = "700 " + size + "px sans-serif"; }
   g.fillText(str, S / 2, S / 2);
 
-  const d = g.getImageData(0, 0, S, S).data, pts = [];
-  for (let y = 0; y < S; y += 2)
-    for (let x = 0; x < S; x += 2)
-      if (d[(y * S + x) * 4] > 128) pts.push([(x / S) * 2 - 1, (y / S) * 2 - 1]);
+  const d = g.getImageData(0, 0, S, S).data;
+  const lum = new Float32Array(S * S), on = new Uint8Array(S * S);
+  let n = 0, sum = 0, chroma = 0, lo = 1e9, hi = -1e9;
+  for (let i = 0; i < S * S; i++) {
+    if (d[i * 4 + 3] <= 100) continue;
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+    const l = 0.299 * r + 0.587 * gg + 0.114 * b;
+    on[i] = 1; lum[i] = l; n++; sum += l;
+    if (l < lo) lo = l;
+    if (l > hi) hi = l;
+    const ch = Math.max(r, gg, b) - Math.min(r, gg, b);
+    if (ch > chroma) chroma = ch;
+  }
+  if (!n) return [];
+  const flat = chroma < 10 && hi - lo < 10;   // one flat colour: our own text
+  const dark = sum / n - 55;
+
+  const at = (x, y) =>
+    (x < 0 || y < 0 || x >= S || y >= S || !on[y * S + x]) ? -1 : lum[y * S + x];
+
+  const pts = [];
+  for (let y = 0; y < S; y += STEP)
+    for (let x = 0; x < S; x += STEP) {
+      const i = y * S + x;
+      if (!on[i]) continue;
+      if (flat) { pts.push([(x / S) * 2 - 1, (y / S) * 2 - 1]); continue; }
+      const l = lum[i];
+      let keep = l < dark;                    // the features themselves
+      for (let k = 0; k < 4 && !keep; k++) {
+        const v = at(x + NB[k][0], y + NB[k][1]);
+        if (v < 0 || Math.abs(v - l) > 45) keep = true;   // rim, or a colour edge
+      }
+      if (keep) pts.push([(x / S) * 2 - 1, (y / S) * 2 - 1]);
+    }
   return pts;
 }
 
@@ -1170,15 +1209,53 @@ function faceGlyph() {
 
 /* Heard locally, drawn locally. Recognition delivers interim words in a couple
    of hundred milliseconds; the two-second wait is the language model, and
-   matching a word never needed one. */
+   matching a word never needed one.
+
+   Emoji are glyphs, so the sampler already draws them -- the whole set is
+   vocabulary for free. burst is the one thing a still shape cannot do: throw
+   everything outward under gravity first, then assemble. */
 const TRIGGERS = {
-  face:{shape:"face"}, smile:{shape:"face"}, smiley:{shape:"face"},
-  hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"}, yo:{text:"YO"},
+  // feelings
+  happy:{text:"\u{1F600}"}, smile:{text:"\u{1F600}"}, smiley:{text:"\u{1F600}"},
+  laugh:{text:"\u{1F602}"}, funny:{text:"\u{1F602}"},
+  sad:{text:"\u{1F622}"}, crying:{text:"\u{1F622}"},
+  angry:{text:"\u{1F620}"}, mad:{text:"\u{1F620}"},
+  confused:{text:"\u{1F615}"}, hmm:{text:"\u{1F615}"},
+  love:{text:"\u2764\uFE0F"}, heart:{text:"\u2764\uFE0F"},
+  cool:{text:"\u{1F60E}"}, wow:{text:"\u{1F62E}"},
+  wink:{text:"\u{1F609}"}, think:{text:"\u{1F914}"},
+  // celebrations throw the field first, then land on the glyph
+  congratulations:{text:"\u{1F389}", burst:true},
+  congrats:{text:"\u{1F389}", burst:true},
+  birthday:{text:"\u{1F382}", burst:true},
+  party:{text:"\u{1F389}", burst:true},
+  fireworks:{text:"\u2728", burst:true},
+  celebrate:{text:"\u{1F389}", burst:true},
+  boom:{text:"\u{1F4A5}", burst:true},
+  // things
+  fire:{text:"\u{1F525}"}, star:{text:"\u2B50"}, sun:{text:"\u2600\uFE0F"},
+  moon:{text:"\u{1F319}"}, music:{text:"\u{1F3B5}"}, eyes:{text:"\u{1F440}"},
+  apple:{text:"\u{1F34E}"}, coffee:{text:"\u2615"}, rocket:{text:"\u{1F680}"},
+  brain:{text:"\u{1F9E0}"}, ghost:{text:"\u{1F47B}"}, skull:{text:"\u{1F480}"},
+  // words that read better spelled
+  face:{shape:"face"}, hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"},
   yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
-  wow:{text:"WOW"}, cool:{text:"COOL"}, nice:{text:"NICE"}, stop:{text:"STOP"},
-  apple:{text:"APPLE"}, orb:{text:"ORB"}, love:{text:"LOVE"}, help:{text:"HELP"},
-  what:{text:"WHAT"}, why:{text:"WHY"}, how:{text:"HOW"}, now:{text:"NOW"}
+  stop:{text:"STOP"}, orb:{text:"ORB"}, help:{text:"HELP"}, nice:{text:"NICE"}
 };
+
+/* A shell, not a shove: everything gets outward speed with an upward bias, then
+   falls under gravity while the ring's pull is held back so it cannot simply
+   reel them in. */
+let burstUntil = 0;
+function fireBurst() {
+  const n = Math.min(MAX, Math.round(cfg.count));
+  burstUntil = performance.now() + 1500;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU, sp = 5 + Math.random() * 11;
+    vx[i] = Math.cos(a) * sp;
+    vy[i] = Math.sin(a) * sp - 4.5;
+  }
+}
 let echoOn = false, echoSeen = 0, lastLive = "";
 
 /* Interim results grow and revise, and the final word of one is usually still
@@ -1206,6 +1283,12 @@ function feedWords(finalText, interimText) {
 }
 
 function setFormation(spec, seconds) {
+  if (spec && spec.burst) {
+    fireBurst();
+    // let it fly before it assembles; the explosion is the point
+    setTimeout(() => setFormation({ text: spec.text, shape: spec.shape }, seconds), 1200);
+    return true;
+  }
   const pts = spec && spec.shape === "face" ? faceGlyph()
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
   if (!pts.length) return false;
@@ -1217,8 +1300,10 @@ function setFormation(spec, seconds) {
 
   /* A ring looks fine with 400 particles; five letters do not. Borrow more for
      the duration and hand them back afterwards -- the count is what decides
-     whether a word reads at all. */
-  const want = Math.min(MAX, Math.max(Math.round(cfg.count), pts.length));
+     whether a word reads at all. One particle per sampled point, so a busy
+     emoji costs more of them than a heart does; the ceiling is there for the
+     frame rate on a phone, not for the drawing. */
+  const want = Math.min(MAX, 2600, Math.max(Math.round(cfg.count), pts.length));
   if (want > Math.round(cfg.count)) {
     if (!formCountWas) formCountWas = cfg.count;
     cfg.count = want;
@@ -1353,6 +1438,7 @@ function loop() {
   const fex = Math.max(0.15, 1 + sEcc * 0.45);
   const fey = Math.max(0.15, 1 - sEcc * 0.45) * (1 + drive.scale * cfg.splitJaw);
 
+  const bursting = performance.now() < burstUntil;
   const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
   const turb = drive.turbulence * cfg.turbGain * hold;
   const kick = drive.impulse * cfg.impulseGain * hold;
@@ -1387,7 +1473,7 @@ function loop() {
       }
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5);
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5) * (bursting ? 0.08 : 1);
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -1439,6 +1525,8 @@ function loop() {
           ay += (ry / rd) * kick * 1.6 * mag;
         }
       }
+
+      if (bursting) ay += 0.30;   // what makes it fall rather than just spread
 
       if (turb > 0.01) {
         ax += (Math.random() - 0.5) * turb * 2.4;
