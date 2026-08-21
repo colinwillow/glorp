@@ -109,7 +109,8 @@ const DEFAULTS = {
   dot:0.35, sizeHi:32, falloff:210, follow:1.0, split:0.46,
   splitEll:1.6, splitJaw:0.35, splitShape:1.0,
   trail:0.76, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500,
+  snap:0.30, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -629,10 +630,17 @@ function toggleSTT() {
       else interim += e.results[i][0].transcript;
     }
     heard = heard.trim();
+    // words are drawn from the interim stream, so they land while you are still
+    // saying the sentence rather than after the model has replied to it
+    feedWords(heard, interim.trim());
     // showing the interim text proves recognition is alive even when nothing
     // ever reaches isFinal, which is the failure that looks like doing nothing
     if (!heard && interim.trim()) caption("", "… " + interim.trim());
-    if (heard) ask(heard);
+    if (heard) {
+      echoSeen = 0; lastLive = "";        // next utterance starts counting again
+      if (echoOn) caption(heard, "");     // echo mode is local only: no brain, no wait
+      else ask(heard);
+    }
   };
   // every error, including no-speech: silence here is what made this invisible
   rec.onerror = (e) => caption("", "speech error: " + e.error);
@@ -653,7 +661,9 @@ const SPEC = [
     ["thinkMs","think ms",200,6000,100],
     ["speakMs","speak ms",500,10000,100],
     ["sylRate","syllables / sec",1,8,0.1],
-    ["echoTail","echo tail ms",0,2000,50]]],
+    ["echoTail","echo tail ms",0,2000,50],
+    ["snap","形 snap",0,1,0.02],
+    ["flashMs","word flash ms",300,3000,50]]],
   ["audio drive", [
     ["rmsGain","rms → size",0,4,0.05],
     ["specGain","spectrum → ring",0,2.5,0.05],
@@ -772,8 +782,18 @@ const talkBtn = document.createElement("button");
 talkBtn.textContent = "talk";
 talkBtn.onclick = toggleSTT;
 
+// Local-only mode: spell every word as it is heard, never call the brain.
+const echoBtn = document.createElement("button");
+echoBtn.textContent = "echo";
+echoBtn.onclick = () => {
+  echoOn = !echoOn;
+  echoBtn.classList.toggle("on", echoOn);
+  caption("", echoOn ? "echo: spelling what it hears, brain off" : "echo off");
+};
+
 const srow = document.createElement("div"); srow.className = "brow";
 srow.appendChild(talkBtn);
+srow.appendChild(echoBtn);
 const stBtns = ["auto"].concat(STATES).map((nm) => {
   const btn = document.createElement("button");
   btn.textContent = nm; btn.dataset.s = nm;
@@ -1148,6 +1168,43 @@ function faceGlyph() {
   return pts;
 }
 
+/* Heard locally, drawn locally. Recognition delivers interim words in a couple
+   of hundred milliseconds; the two-second wait is the language model, and
+   matching a word never needed one. */
+const TRIGGERS = {
+  face:{shape:"face"}, smile:{shape:"face"}, smiley:{shape:"face"},
+  hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"}, yo:{text:"YO"},
+  yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
+  wow:{text:"WOW"}, cool:{text:"COOL"}, nice:{text:"NICE"}, stop:{text:"STOP"},
+  apple:{text:"APPLE"}, orb:{text:"ORB"}, love:{text:"LOVE"}, help:{text:"HELP"},
+  what:{text:"WHAT"}, why:{text:"WHY"}, how:{text:"HOW"}, now:{text:"NOW"}
+};
+let echoOn = false, echoSeen = 0, lastLive = "";
+
+/* Interim results grow and revise, and the final word of one is usually still
+   being decided -- flashing it means flashing half-heard guesses. Take only
+   the words behind the cursor, and only ones not shown yet. */
+function feedWords(finalText, interimText) {
+  const live = (finalText + " " + interimText).trim();
+  if (!live) return;
+  /* Recognition revises as it goes and starts fresh utterances without always
+     closing the last one, so the cursor has to notice when the text is no
+     longer an extension of what it already counted -- otherwise a stale count
+     swallows every word of the next sentence. */
+  if (!live.startsWith(lastLive)) echoSeen = 0;
+  lastLive = live;
+  const w = live.split(/\s+/).filter(Boolean);
+  const settled = finalText ? w.length : w.length - 1;
+  for (let i = echoSeen; i < settled; i++) {
+    const word = w[i].replace(/[^a-z0-9']/gi, "");
+    if (!word) continue;
+    const trig = TRIGGERS[word.toLowerCase()];
+    if (trig) setFormation(trig, cfg.flashMs / 1000);
+    else if (echoOn && word.length > 1) setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
+  }
+  if (settled > echoSeen) echoSeen = settled;
+}
+
 function setFormation(spec, seconds) {
   const pts = spec && spec.shape === "face" ? faceGlyph()
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
@@ -1403,6 +1460,17 @@ function loop() {
 
       vx[i] += ax; vy[i] += ay;
       px[i] += vx[i]; py[i] += vy[i];
+
+      /* Steering cannot hit a mark that only exists for 400 ms: these
+         particles travel 1-3 px a frame, so by the time they arrive the word
+         is over. Pull position directly toward the target while a shape is
+         holding -- the force model still runs underneath and takes back over
+         as the formation releases. */
+      if (formT > 0.002 && i < formN && cfg.snap > 0.001) {
+        const k2 = cfg.snap * formT;
+        px[i] += (tx - px[i]) * k2;
+        py[i] += (ty - py[i]) * k2;
+      }
 
       // q is the position in wall units: 1.0 is exactly on the boundary.
       // Names are w-prefixed so they never collide with the membrane block's
