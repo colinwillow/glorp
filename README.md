@@ -60,6 +60,11 @@ Four forces, summed into acceleration:
 
 4. **flee** — steer away from the pointer inside `fleeRadius`.
 
+`drive.impulse` is not a fifth force. It's an outward radial kick that lives
+**inside the membrane branch** — so it only fires when `membrane > 0.001`.
+Physically that's right (no skin, nothing to snap), but the sliders don't show
+the coupling: dropping `membrane` to 0 silently kills onset response too.
+
 ### Rendering
 
 - `size = (1 - dist/falloff) * sizeHi`, deliberately allowed to go **negative**
@@ -68,7 +73,9 @@ Four forces, summed into acceleration:
   **That sign flip is where the purple comes from.** It was an accident in the
   original and it's load-bearing now.
 - Colour is a function of size only, so it's precomputed into a 96-entry LUT
-  once per frame instead of building a string per particle.
+  instead of building a string per particle. The LUT is only rebuilt when the
+  rounded hue shift actually changes (`if (shift !== lastShift)`), so steady
+  audio costs zero rebuilds per frame — not one.
 - Radius capped at 22px. Without it, startup overdraw tanks the frame rate.
 
 ---
@@ -118,6 +125,9 @@ over `DEFAULTS` to bake a look in.
   and a fill-rate stall for the first few seconds.
 - iOS needs a user gesture before `AudioContext` will start. The enable-mic
   button covers it; don't try to autostart.
+- `membrane` at 0 also disables `impulseGain` — the onset kick is applied
+  inside the membrane branch. If onsets look dead, check `membrane` before
+  reaching for `impulseGain`.
 
 ---
 
