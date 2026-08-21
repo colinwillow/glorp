@@ -268,7 +268,18 @@ function updateState(dt) {
     srcD.scale = mic.scale; srcD.hue = mic.hue;
     srcD.turbulence = mic.turbulence; srcD.impulse = mic.impulse;
     srcD.spectrum.set(mic.spectrum);
-  } else if (state === "idle") srcIdle(t);
+  } else if (state === "idle") {
+    /* A live mic still drives the visuals while idle. Idle means nobody has
+       said anything yet -- not that the orb has stopped hearing. Routing idle
+       through the scripted breath made it deaf to everything under vadOn and
+       painted constants over the tuned resting state. The breath is only for
+       when there is no audio source at all. */
+    if (A) {
+      srcD.scale = mic.scale; srcD.hue = mic.hue;
+      srcD.turbulence = mic.turbulence; srcD.impulse = mic.impulse;
+      srcD.spectrum.set(mic.spectrum);
+    } else srcIdle(t);
+  }
   else if (state === "thinking") srcThinking(t);
   else srcSpeaking(t);
 
@@ -1055,7 +1066,7 @@ function loop() {
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
-                        "\nmic " + micState +
+                        "\nmic " + micState + "  in " + f2(mic.scale) +
                         (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");
     acc = 0; frames = 0;
   }
