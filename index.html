@@ -341,6 +341,12 @@ function updateState(dt) {
    side. With no endpoint configured everything below stays dormant and the
    scripted states run instead. */
 const cap = document.getElementById("cap");
+/* Added to the home screen, iOS runs this in a different context from Safari:
+   its own permission grants, often its own storage partition, and a long
+   history of WebKit bugs around media capture there. Worth knowing which one
+   we are in before blaming anything else. */
+const standalone = window.navigator.standalone === true ||
+  (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
 const brain = {
   url: (() => { try { return localStorage.getItem("orbBrain") || ""; } catch (e) { return ""; } })(),
   voice: (() => { try { return localStorage.getItem("orbVoice") || ""; } catch (e) { return ""; } })(),
@@ -1471,15 +1477,17 @@ function loop() {
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
                         "\nmic " + micState + "  in " + f2(mic.scale) +
+                        (standalone ? "  [standalone]" : "") +
+                        (brain.url ? "" : "  [no endpoint]") +
                         (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");
     acc = 0; frames = 0;
   }
   requestAnimationFrame(loop);
 }
 syncStateBtns();
-caption("", brain.url
+caption("", (standalone ? "home screen app · " : "") + (brain.url
   ? "tap enable mic, then talk. try: \u201cshow me a face\u201d or \u201cspell hello\u201d"
-  : "tap enable mic. add a brain endpoint under tune to talk to it.");
+  : "no brain endpoint set \u2014 open tune and paste the worker url"));
 buildLut(0);
 loop();
 </script>
