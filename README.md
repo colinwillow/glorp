@@ -368,7 +368,12 @@ Three things make it read as depth:
 
 - **Perspective.** One rotation and one divide per particle. Near dots draw
   bigger, and the camera turns while a solid holds, because a still projection
-  is just a drawing.
+  is just a drawing. **One** turn: a revolution is a look at the thing from
+  every side, and past that it is a screensaver. Ending on exactly `TAU` means
+  the view is back where it started, so there is no residual rotation to unwind.
+  A solid's duration is derived from it — land, draw itself in, turn once, go —
+  rather than picked out of the air, which either cuts it off mid-turn or leaves
+  it standing there afterwards.
 - **Colour is depth.** A glyph converges every particle on one size, and the
   eighth of the old size left behind is the point — it keeps letters from
   looking printed. For a solid that residue is fatal: a particle 400 px out
@@ -380,6 +385,18 @@ Three things make it read as depth:
   side draws over the near side about half the time and a solid reads inside
   out. Indices are sorted, never the arrays, so every particle keeps its ring
   slot and its lottery ticket.
+
+Both rotations are scaled by `formT`, and that is the bug it fixes: a formation
+releases over a second and a half, and for all of it the field is flat again
+while the camera is still turned — so the ring, and whatever was asked for next,
+came back skewed and then snapped straight. Rotation now unwinds exactly as the
+shape dissolves.
+
+Models arrive **upside down** without a fix: model space is Y-up and the
+screen's y grows downward. Negating y is the whole of it — except that negating
+one axis mirrors the mesh, which reverses every triangle's winding, and the
+winding is where the face normals come from. Left alone the back-face cull hides
+precisely the half it should show. The faces get reversed too.
 
 Radius is the one thing that does *not* come from `size` here. The magenta half
 of the palette is stretched 2.4× to reach full saturation, which would otherwise
@@ -457,7 +474,7 @@ Three things had to be true first.
   drawn. GLB cannot carry a quad, but the diagonal it added is recoverable: two
   triangles sharing an edge, near coplanar, where the shared edge is longer than
   the alternative, were one quad. On `test_head.glb`: 5,987 faces → **2,612
-  quads**, 87% of triangles paired. The remainder are triangles that were always
+  quads**, 87% of triangles paired; `knot.obj` needs no recovery and gives 3,932. The remainder are triangles that were always
   triangles — measured against a mesh that is genuinely all quads, triangulated
   the way an exporter would, recovery is 960 in, 951 back, **99%**. OBJ needs
   none of this. It stores `f a b c d` and the quad is simply there, which is the
@@ -480,7 +497,7 @@ stops looking like it is made of anything. `wire` on the slider.
 `WIRE_MAX` is 4,200 vertices. Past that a model falls back to scattered surface
 points with no edges, because a wireframe needs one particle per vertex and
 every edge is a line drawn every frame. Measured: 3,032 verts / 6,403 edges at
-60fps, 3,960 / 7,948 at 56.
+60fps, 3,960 / 7,948 at 54.
 
 ### Where this stops
 

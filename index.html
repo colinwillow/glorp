@@ -730,7 +730,7 @@ const SPEC = [
     ["shape","shape",0,8,0.01],
     ["drift","resting drift",0,1.5,0.01],
     ["depth","depth",0,1.5,0.01],
-    ["spin","spin / sec",-1.2,1.2,0.02],
+    ["spin","turns / sec",-1.2,1.2,0.02],
     ["solid","hide far surface",0,1,0.02],
     ["wire","wireframe",0,1,0.02],
     ["tilt","camera tilt",-0.8,0.8,0.02],
@@ -1203,7 +1203,11 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
    and rotation happens once, at draw, which is why nothing upstream had to
    learn about it. */
-const view = { yaw: 0, pitch: 0, deep: false };
+/* One full turn and then still, rather than spinning forever. A revolution is
+   a look at the thing from every side; past that it is a screensaver. And
+   ending on exactly TAU means the view is back where it started -- no residual
+   rotation to unwind, and the projection is the identity again. */
+const view = { turn: 0, yaw: 0, pitch: 0, deep: false };
 let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
@@ -1636,6 +1640,17 @@ function readGlb(buf) {
 /* A wireframe needs one particle per vertex, and MAX is the ceiling on
    particles. Well under it: every edge is a line drawn every frame. */
 const WIRE_MAX = 4200;
+
+/* Model space is Y-up; the screen's y grows downward, so every model arrives
+   upside down. Negating y is the whole fix -- except that negating one axis
+   mirrors the mesh, which reverses every triangle's winding, and the winding is
+   where the face normals come from. Left alone the back-face cull would then
+   hide precisely the half it should show. Reverse the faces too. */
+function toScreenAxes(geo) {
+  for (const v of geo.V) v[1] = -v[1];
+  for (const f of geo.F) f.reverse();
+  return geo;
+}
 const modelCache = {};
 async function showModel(src, seconds) {
   const key = src.toLowerCase();
@@ -1650,7 +1665,8 @@ async function showModel(src, seconds) {
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error("HTTP " + res.status);
-        const geo = /\.obj$/i.test(url) ? readObj(await res.text()) : readGlb(await res.arrayBuffer());
+        const geo = toScreenAxes(/\.obj$/i.test(url) ? readObj(await res.text())
+                                                     : readGlb(await res.arrayBuffer()));
         /* Vertices first, because that is what makes the wireframe possible --
            a particle standing on a vertex can have a line drawn from it. Only
            a mesh too dense to give every vertex a particle falls back to
@@ -1964,6 +1980,7 @@ function setFormation(spec, seconds) {
   formS = form3d ? 0.29 : 0.42;
   formE = (spec && spec.edges) || null;
   wireAt = performance.now() + 2000;
+  view.turn = 0;
 
   /* Particles are indexed by angle around the ring, so ordering the targets by
      angle too means the ring unfolds into the shape instead of scrambling
@@ -2008,7 +2025,12 @@ function setFormation(spec, seconds) {
   }
   formN = n;
   formWant = 1;
-  formUntil = performance.now() + Math.max(1, Math.min(30, seconds || 5)) * 1000;
+  /* A solid should live exactly as long as its look-around takes: land, draw
+     itself in, turn once, go. A duration picked out of the air either cuts it
+     off mid-turn or leaves it standing there afterwards. */
+  const secs = form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 1.4
+                      : Math.max(1, Math.min(30, seconds || 5));
+  formUntil = performance.now() + Math.min(30, secs) * 1000;
   formLabel = spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
             : spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
   return true;
@@ -2021,7 +2043,7 @@ function updateFormation(dt) {
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
     formT = 0; formLabel = ""; form3d = false; view.yaw = 0;
-    formE = null; wireT = 0;
+    formE = null; wireT = 0; view.turn = 0;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
@@ -2094,7 +2116,9 @@ function loop() {
   /* Only ever turning while there is something with depth to look at. A
      spinning flat ring is just a ring that wobbles. */
   view.deep = form3d && formT > 0.002;
-  if (view.deep) view.yaw += cfg.spin * (dt / 1000) * TAU * 0.25;
+  // the turn starts once the cloud has landed, not while it is still arriving
+  if (view.deep && formWant && now > wireAt && view.turn < 1)
+    view.turn = Math.min(1, view.turn + Math.abs(cfg.spin) * (dt / 1000));
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? cfg.wire : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
@@ -2102,6 +2126,12 @@ function loop() {
   // an easing curve never actually reaches zero, and a residual pitch leaves a
   // residual perspective on a field that is supposed to be exactly flat
   if (!view.deep && Math.abs(view.pitch) < 0.002) view.pitch = 0;
+  /* Scaled by formT, and this is the bug it fixes: a formation releases over a
+     second and a half, and for all of it the field is flat again while the
+     camera is still turned -- so the ring, and whatever was asked for next,
+     came back skewed and then snapped straight. The rotation now unwinds
+     exactly as the shape dissolves. */
+  view.yaw = (view.turn >= 1 ? 0 : view.turn * TAU * (cfg.spin < 0 ? -1 : 1)) * formT;
 
   const tt = now / 1000;
   const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1);
@@ -2352,7 +2382,9 @@ function loop() {
      enough back that perspective reads as depth rather than as a fisheye. */
   const deep = view.deep;
   const cyw = Math.cos(view.yaw), syw = Math.sin(view.yaw);
-  const cpt = Math.cos(view.pitch), spt = Math.sin(view.pitch);
+  // pitch unwinds with the shape for the same reason yaw does
+  const pitchNow = view.pitch * formT;
+  const cpt = Math.cos(pitchNow), spt = Math.sin(pitchNow);
   const FOC = scale * 1.7;
   const zSpan = scale * formS;
 
@@ -2454,7 +2486,7 @@ function loop() {
        magenta half of the palette is stretched 2.4x to reach it, which would
        otherwise make the FAR side of a model the fattest thing on screen. */
     let rad = bs ? bs.star * k
-            : form3d ? sizeHiPx * cfg.dot * 0.26 * (1 - formT * 0.15)
+            : form3d ? sizeHiPx * cfg.dot * 0.13 * (1 - formT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
