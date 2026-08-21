@@ -101,7 +101,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 const DEFAULTS = {
   count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
-  depth:1.0, spin:0.34, tilt:0.16,
+  depth:1.0, spin:0.34, tilt:0.16, solid:1.0,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
@@ -126,7 +126,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, solid:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -137,7 +137,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, solid:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -731,6 +731,7 @@ const SPEC = [
     ["drift","resting drift",0,1.5,0.01],
     ["depth","depth",0,1.5,0.01],
     ["spin","spin / sec",-1.2,1.2,0.02],
+    ["solid","hide far surface",0,1,0.02],
     ["tilt","camera tilt",-0.8,0.8,0.02],
     ["core","core share",0,0.6,0.01],
     ["coreR","core radius",0.05,0.6,0.01],
@@ -1192,6 +1193,8 @@ function buildLut(hueShift) {
    the audio reactivity all keep running underneath it. */
 const formX = new Float32Array(MAX), formY = new Float32Array(MAX);
 const formZ = new Float32Array(MAX);
+// surface orientation, when the source had one. A glyph does not.
+const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float32Array(MAX);
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
    and rotation happens once, at draw, which is why nothing upstream had to
    learn about it. */
@@ -1200,7 +1203,7 @@ let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
    containment wall, which then fights the formation for them. */
-let form3d = false, formS = 0.42;
+let form3d = false, formHasN = false, formS = 0.42;
 let formCountWas = 0;
 
 /* Draw it, read the pixels back, keep the lit ones. One mechanism covers every
@@ -1325,42 +1328,37 @@ function fitPoints(p) {
   let m = 0;
   for (let d = 0; d < 3; d++) m = Math.max(m, hi[d] - lo[d]);
   const k = m > 1e-9 ? 2 / m : 1;
+  // anything past xyz is a direction, not a place: centring or scaling it is
+  // meaningless and scaling it by a negative would invert the surface
   return p.map((q) => [(q[0] - (lo[0] + hi[0]) / 2) * k,
                        (q[1] - (lo[1] + hi[1]) / 2) * k,
-                       (q[2] - (lo[2] + hi[2]) / 2) * k]);
+                       (q[2] - (lo[2] + hi[2]) / 2) * k].concat(q.slice(3)));
 }
 
-/* OBJ, because it is a text format a person can read and forty lines can parse,
-   with no dependency and no build step -- which is the whole bargain this file
-   is built on. Vertices alone are enough if the file is already a point cloud;
-   with faces, points are scattered across the triangles by area, or every dense
-   corner of the mesh gets the same number of particles as every flat wall. */
-function sampleObj(text, want) {
-  const V = [], T = [];
-  for (const line of text.split("\n")) {
-    const c = line.charCodeAt(0);
-    if (c === 118 && line[1] === " ") {                       // "v "
-      const q = line.split(/\s+/);
-      V.push([+q[1], +q[2], +q[3]]);
-    } else if (c === 102 && line[1] === " ") {                // "f "
-      const q = line.trim().split(/\s+/).slice(1)
-        .map((w) => { const j = parseInt(w, 10); return j < 0 ? V.length + j : j - 1; });
-      for (let i = 1; i + 1 < q.length; i++) T.push([q[0], q[i], q[i + 1]]);   // fan
-    }
-  }
+/* Scatter points across triangles by area. Shared, because the difference
+   between an .obj and a .glb ends the moment you have vertices and triangles:
+   after that a mesh is a mesh. */
+function sampleMesh(V, T, want) {
   if (!V.length) return [];
   if (!T.length) return fitPoints(V.slice(0, want));
 
-  const area = [];
+  /* The cross product is doing two jobs. Its length is twice the triangle's
+     area, which is the sampling weight; its direction is the surface normal,
+     which is what lets the far side of a solid be hidden. Taking the face
+     normal rather than reading the file's own vertex normals keeps this working
+     for an OBJ that has none, and a per-point orientation is all that is
+     wanted here anyway -- these are dots, not a smooth shaded surface. */
+  const area = [], nrm = [];
   let total = 0;
   for (const [a, b, c] of T) {
     const A = V[a], B = V[b], C = V[c];
-    if (!A || !B || !C) { area.push(0); continue; }
+    if (!A || !B || !C) { area.push(0); nrm.push([0, 0, 0]); continue; }
     const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
     const vx2 = C[0] - A[0], vy2 = C[1] - A[1], vz2 = C[2] - A[2];
     const nx = uy * vz2 - uz * vy2, ny = uz * vx2 - ux * vz2, nz = ux * vy2 - uy * vx2;
-    const s = Math.sqrt(nx * nx + ny * ny + nz * nz) / 2;
-    area.push(s); total += s;
+    const L = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    nrm.push([nx / L, ny / L, nz / L]);
+    area.push(L / 2); total += L / 2;
   }
   const cum = [];
   let run = 0;
@@ -1382,11 +1380,145 @@ function sampleObj(text, want) {
     // uniform over a triangle: fold the square back across the diagonal
     let u = Math.random(), v = Math.random();
     if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const nn = nrm[lo];
     out.push([A[0] + u * (B[0] - A[0]) + v * (C[0] - A[0]),
               A[1] + u * (B[1] - A[1]) + v * (C[1] - A[1]),
-              A[2] + u * (B[2] - A[2]) + v * (C[2] - A[2])]);
+              A[2] + u * (B[2] - A[2]) + v * (C[2] - A[2]),
+              nn[0], nn[1], nn[2]]);
   }
   return fitPoints(out);
+}
+
+/* OBJ, because it is a text format a person can read and forty lines can parse,
+   with no dependency and no build step -- which is the whole bargain this file
+   is built on. Vertices alone are enough if the file is already a point cloud;
+   with faces, points are scattered across the triangles by area, or every dense
+   corner of the mesh gets the same number of particles as every flat wall. */
+function sampleObj(text, want) {
+  const V = [], T = [];
+  for (const line of text.split("\n")) {
+    const c = line.charCodeAt(0);
+    if (c === 118 && line[1] === " ") {                       // "v "
+      const q = line.split(/\s+/);
+      V.push([+q[1], +q[2], +q[3]]);
+    } else if (c === 102 && line[1] === " ") {                // "f "
+      const q = line.trim().split(/\s+/).slice(1)
+        .map((w) => { const j = parseInt(w, 10); return j < 0 ? V.length + j : j - 1; });
+      for (let i = 1; i + 1 < q.length; i++) T.push([q[0], q[i], q[i + 1]]);   // fan
+    }
+  }
+  return sampleMesh(V, T, want);
+}
+
+/* GLB, which is what people actually export. Twelve-byte header, a JSON chunk
+   describing the file, a binary chunk holding the numbers -- and the only part
+   this needs is POSITION and the indices. More code than OBJ because it is
+   binary and indirect (accessor -> bufferView -> buffer, with strides), but it
+   is also the format that carries skins and animation, which is where this has
+   to go next. Draco and meshopt compression need a decoder that cannot be
+   inlined; they announce themselves in extensionsUsed and are reported rather
+   than guessed at. */
+const GLB_N = { SCALAR:1, VEC2:2, VEC3:3, VEC4:4 };
+const GLB_SZ = { 5120:1, 5121:1, 5122:2, 5123:2, 5125:4, 5126:4 };
+
+// DataView, not a typed array over the buffer: glTF aligns accessors to their
+// component size, but an interleaved bufferView is under no such obligation and
+// `new Float32Array(buf, offset)` throws outright on a misaligned one.
+function glbRead(dv, g, bin, idx) {
+  const a = g.accessors[idx];
+  const n = GLB_N[a.type] || 1, sz = GLB_SZ[a.componentType];
+  if (!sz) throw new Error("componentType " + a.componentType);
+  const bv = g.bufferViews[a.bufferView] || {};
+  const base = bin + (bv.byteOffset || 0) + (a.byteOffset || 0);
+  const stride = bv.byteStride || sz * n;
+  const out = new Float32Array(a.count * n);
+  for (let i = 0; i < a.count; i++)
+    for (let j = 0; j < n; j++) {
+      const o = base + i * stride + j * sz;
+      out[i * n + j] = a.componentType === 5126 ? dv.getFloat32(o, true)
+                     : a.componentType === 5125 ? dv.getUint32(o, true)
+                     : a.componentType === 5123 ? dv.getUint16(o, true)
+                     : a.componentType === 5122 ? dv.getInt16(o, true)
+                     : a.componentType === 5120 ? dv.getInt8(o)
+                     : dv.getUint8(o);
+    }
+  return out;
+}
+
+// Exporters routinely bake the Y-up/Z-up fix into a node transform, so a mesh
+// read without it arrives on its side.
+function glbMat(node) {
+  if (node.matrix) return node.matrix.slice();
+  const [x, y, z, w] = node.rotation || [0, 0, 0, 1];
+  const [sx, sy, sz] = node.scale || [1, 1, 1];
+  const [tx, ty, tz] = node.translation || [0, 0, 0];
+  return [
+    (1 - 2 * (y * y + z * z)) * sx, (2 * (x * y + z * w)) * sx, (2 * (x * z - y * w)) * sx, 0,
+    (2 * (x * y - z * w)) * sy, (1 - 2 * (x * x + z * z)) * sy, (2 * (y * z + x * w)) * sy, 0,
+    (2 * (x * z + y * w)) * sz, (2 * (y * z - x * w)) * sz, (1 - 2 * (x * x + y * y)) * sz, 0,
+    tx, ty, tz, 1
+  ];
+}
+function glbMul(a, b) {                       // column-major, as glTF stores them
+  const o = new Array(16);
+  for (let c = 0; c < 4; c++)
+    for (let r = 0; r < 4; r++)
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] +
+                     a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  return o;
+}
+
+function sampleGlb(buf, want) {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x46546C67) throw new Error("not a GLB (bad magic)");
+  const ver = dv.getUint32(4, true);
+  if (ver !== 2) throw new Error("glTF version " + ver + ", need 2");
+
+  let o = 12, g = null, bin = -1;
+  while (o + 8 <= buf.byteLength) {
+    const len = dv.getUint32(o, true), type = dv.getUint32(o + 4, true);
+    if (type === 0x4E4F534A) g = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, o + 8, len)));
+    else if (type === 0x004E4942) bin = o + 8;
+    o += 8 + len;                             // chunk lengths already include padding
+  }
+  if (!g) throw new Error("no JSON chunk");
+  const hard = (g.extensionsUsed || []).filter((e) => /draco|meshopt/i.test(e));
+  if (hard.length) throw new Error("compressed with " + hard.join(", ") + " -- export without it");
+  if (bin < 0) throw new Error("no BIN chunk");
+
+  const V = [], T = [];
+  const walk = (idx, parent) => {
+    const node = g.nodes[idx];
+    if (!node) return;
+    const m = glbMul(parent, glbMat(node));
+    if (node.mesh !== undefined) {
+      for (const prim of (g.meshes[node.mesh] || {}).primitives || []) {
+        if ((prim.mode === undefined ? 4 : prim.mode) !== 4) continue;   // triangles only
+        if (prim.attributes.POSITION === undefined) continue;
+        const p = glbRead(dv, g, bin, prim.attributes.POSITION);
+        const off = V.length;
+        for (let i = 0; i < p.length; i += 3) {
+          const x = p[i], y = p[i + 1], z = p[i + 2];
+          V.push([m[0] * x + m[4] * y + m[8] * z + m[12],
+                  m[1] * x + m[5] * y + m[9] * z + m[13],
+                  m[2] * x + m[6] * y + m[10] * z + m[14]]);
+        }
+        if (prim.indices !== undefined) {
+          const ix = glbRead(dv, g, bin, prim.indices);
+          for (let i = 0; i + 2 < ix.length; i += 3)
+            T.push([off + ix[i], off + ix[i + 1], off + ix[i + 2]]);
+        } else {
+          for (let i = 0; i + 2 < p.length / 3; i += 3) T.push([off + i, off + i + 1, off + i + 2]);
+        }
+      }
+    }
+    for (const c of node.children || []) walk(c, m);
+  };
+  const I = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+  const scene = g.scenes && g.scenes[g.scene || 0];
+  for (const r of (scene && scene.nodes) || g.nodes.map((_, i) => i)) walk(r, I);
+  if (!V.length) throw new Error("no triangle geometry in it");
+  return sampleMesh(V, T, want);
 }
 
 const modelCache = {};
@@ -1394,16 +1526,24 @@ async function showModel(src, seconds) {
   const key = src.toLowerCase();
   if (!modelCache[key]) {
     caption(null, "loading " + src + "…");
-    try {
-      const res = await fetch(/^https?:|\.obj$/i.test(src) ? src : "models/" + src + ".obj");
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      modelCache[key] = sampleObj(await res.text(), 2400);
-      if (!modelCache[key].length) throw new Error("no vertices in it");
-    } catch (err) {
-      delete modelCache[key];
-      caption(null, "model: " + err.message);
-      return false;
+    /* A bare name tries .glb first and .obj second, so nobody has to remember
+       which one they exported. A path with an extension is taken at its word. */
+    const named = /\.(glb|gltf|obj)$/i.test(src) || /^https?:/i.test(src);
+    const urls = named ? [src] : ["models/" + src + ".glb", "models/" + src + ".obj"];
+    let err = null;
+    for (const url of urls) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        modelCache[key] = /\.obj$/i.test(url)
+          ? sampleObj(await res.text(), 2400)
+          : sampleGlb(await res.arrayBuffer(), 2400);
+        if (!modelCache[key].length) throw new Error("nothing to sample in it");
+        err = null;
+        break;
+      } catch (e) { err = e; delete modelCache[key]; }
     }
+    if (err) { caption(null, "model " + src + ": " + err.message); return false; }
   }
   const ok = setFormation({ points: modelCache[key], label: src }, seconds);
   if (ok) caption(null, "showing " + src + " · " + modelCache[key].length + " points");
@@ -1469,7 +1609,8 @@ const TRIGGERS = {
   // solids, which is where depth actually shows
   sphere:{solid:"sphere"}, ball:{solid:"sphere"}, cube:{solid:"cube"},
   box:{solid:"cube"}, torus:{solid:"torus"}, donut:{solid:"torus"},
-  helix:{solid:"helix"}, spiral:{solid:"helix"}, knot:{model:"knot"}
+  helix:{solid:"helix"}, spiral:{solid:"helix"},
+  knot:{model:"knot"}, head:{model:"test_head"}
 };
 
 /* ---------------- shells ----------------
@@ -1696,6 +1837,7 @@ function setFormation(spec, seconds) {
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
   if (!pts.length) return false;
   form3d = pts[0].length > 2;
+  formHasN = pts[0].length > 5;
   formS = form3d ? 0.29 : 0.42;
 
   /* Particles are indexed by angle around the ring, so ordering the targets by
@@ -1719,6 +1861,7 @@ function setFormation(spec, seconds) {
   for (let i = 0; i < n; i++) {
     const p = pts[Math.floor((i / n) * pts.length)];
     formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
+    fnx[i] = p[3] || 0; fny[i] = p[4] || 0; fnz[i] = p[5] || 0;
   }
   formN = n;
   formWant = 1;
@@ -2081,8 +2224,25 @@ function loop() {
     view2.sort((a, b) => zbuf[b] - zbuf[a]);   // far first
   }
 
+  /* Without this a solid is a speckle: nothing occludes anything, so the far
+     surface shows straight through the near one and a head reads as a cloud
+     shaped vaguely like a head. Rotate each point's own surface normal with the
+     camera and drop the ones facing away. Softened at the boundary, or the
+     silhouette pops as a hard edge sweeps around it while the model turns. */
+  const culling = formHasN && deep && cfg.solid > 0.001 && formT > 0.02;
+  const cullK = cfg.solid * formT;
+
   for (let q2 = 0; q2 < n; q2++) {
     const i = deep ? ord[q2] : q2;
+    if (culling && i < formN) {
+      const nzv = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
+      // facing the camera is nzv < 0, since near is -z after projection
+      // hash(i), not Math.random(): a fresh draw every frame makes the soft
+      // boundary band flicker, where a per-particle constant dithers it once
+      const d2 = hash(i);
+      if (nzv > 0.10) { if (d2 < cullK) continue; }
+      else if (nzv > -0.10 && d2 < cullK * (nzv + 0.10) * 5) continue;
+    }
     const ox = px[i] - cx, oy = py[i] - cy, oz = pz[i];
     let fRad = falloffPx;
     if (shaped) {
@@ -2118,7 +2278,12 @@ function loop() {
          stretch the two halves separately, because the palette is not
          symmetric -- green arrives by +sizeHi and magenta needs several times
          that in the other direction. */
-      const t3 = Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
+      /* Hiding the far surface costs the contrast that made depth read: what
+         is left all sits on the near half, so a symmetric mapping paints the
+         whole thing green. Re-centre on the visible range instead -- nearest
+         point green, silhouette magenta, which lands as a rim light. */
+      const t3 = culling ? Math.max(-1, Math.min(1, -rz / (zSpan * 0.36) - 1))
+                         : Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
       const want = (t3 >= 0 ? t3 : t3 * 2.4) * sizeHiPx;
       size += (want - size) * formT * 0.98;
     } else if (formT > 0.002) {

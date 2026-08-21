@@ -387,16 +387,57 @@ make the far side of a model the fattest thing on screen.
 
 ### Models
 
-`models/*.obj`. OBJ because it is a text format a person can read and forty
-lines can parse, with no dependency and no build step — which is the bargain
-this whole file is built on. Vertices alone are enough if the file is already a
-point cloud; with faces, points are scattered across the triangles **by area**,
-or every dense corner of the mesh gets as many particles as every flat wall.
-Every model is centred on its bounding box and scaled to fit, because a mesh
-exported in millimetres or modelled off-origin otherwise arrives off screen at a
-thousand times the size, and it is never obvious which.
+`models/*.glb` or `models/*.obj`. A bare name tries `.glb` first and `.obj`
+second, so nobody has to remember which they exported.
 
-`models/knot.obj` is a 7,920-triangle torus knot, there to exercise the loader.
+**GLB** is what people actually export, and it is the one that matters: twelve
+byte header, a JSON chunk describing the file, a binary chunk holding the
+numbers. All this needs out of it is `POSITION` and the indices. It is more code
+than OBJ because it is binary and indirect — accessor → bufferView → buffer,
+with strides — but it is also the format that carries skins and animation, which
+is where this has to go next. Node transforms are composed on the way through,
+because exporters routinely bake the Y-up/Z-up fix into one and a mesh read
+without it arrives on its side. Draco and meshopt compression need a decoder
+that cannot be inlined; they announce themselves in `extensionsUsed` and are
+reported rather than guessed at.
+
+**OBJ** is still there because it is a text format a person can read and forty
+lines can parse. It is the fallback, not the preference.
+
+Either way, once you have vertices and triangles a mesh is a mesh. Points are
+scattered across the triangles **by area**, or every dense corner gets as many
+particles as every flat wall, and everything is centred on its bounding box and
+scaled to fit — a mesh exported in millimetres or modelled off-origin otherwise
+arrives off screen at a thousand times the size, and it is never obvious which.
+
+### Hiding the far surface
+
+Without it a solid is a speckle. Nothing occludes anything, so the far surface
+shows straight through the near one and a head reads as a cloud shaped vaguely
+like a head.
+
+The cross product that weights the triangle sampling is doing two jobs: its
+length is twice the area, and its direction is the surface normal. So every
+sampled point carries the orientation of the triangle it came from — taken from
+the face rather than from the file's own vertex normals, which keeps it working
+for an OBJ that has none, and a per-point orientation is all that is wanted for
+dots anyway. Rotate that normal with the camera and drop the points facing away.
+
+Two details that are the difference between working and looking broken:
+
+- The boundary is **softened**, or the silhouette pops as a hard edge sweeps
+  around it while the model turns. Dithered with `hash(i)`, not `Math.random()`
+  — a fresh draw every frame makes that band flicker; a per-particle constant
+  dithers it once.
+- Culling **costs the contrast** that made depth read, because what is left all
+  sits on the near half and a symmetric mapping paints the whole thing green. So
+  the colour re-centres on the visible range: nearest point green, silhouette
+  magenta, which lands as a rim light.
+
+`solid` on the slider, 0 to show everything.
+
+`models/knot.obj` is a 7,920-triangle torus knot and `models/test_head.glb` a
+5,723-vertex head, both there to exercise the loaders.
 
 **Animated characters** are the open question. Real skinned animation means
 parsing glTF, reading bones and vertex weights, and skinning every frame — a lot
