@@ -151,6 +151,7 @@ const STATES = ["idle", "listening", "thinking", "speaking"];
 const BLEND = 260;                       // ms to cross-fade on a state change
 let state = "idle", stateT = 0, blendT = 1e9;
 let manual = false, heardVoice = false, quietT = 0;
+let smoothScale = 0;
 
 function setState(next) {
   if (next !== state) {
@@ -228,11 +229,18 @@ function srcSpeaking(t) {
   const env = voiced ? Math.pow(Math.sin(Math.PI * Math.min(1, f * 1.3)), 0.75) : 0;
   const vowel = step ? step.v : hash(idx * 7 + 3);
   const sib = hash(idx * 3 + 11) > 0.65;           // sibilant syllables hiss
+  const stressed = hash(idx * 5 + 7) > 0.55;       // and only some carry an onset
 
   srcD.scale = 0.12 + 0.72 * env;
   srcD.hue += (vowel * env - srcD.hue) * 0.25;
   srcD.turbulence = 0.10 + 0.55 * (sib ? env : 0);
-  srcD.impulse = (voiced && f < 0.16) ? 0.9 : srcD.impulse * 0.86;
+  /* An onset of 0.9 on every syllable was nothing like real speech. The kick
+     integrates to roughly 31 * impulse px/frame of velocity, and the arrive
+     force is capped near 0.6 px/frame^2 -- so at 4.2 syllables a second the
+     field was re-kicked long before it could be pulled back, and just wandered
+     outward until it hit the wall. Real flux peaks lower and only fires on
+     genuine onsets, so do the same. */
+  srcD.impulse = (voiced && stressed && f < 0.16) ? 0.25 : srcD.impulse * 0.86;
   for (let b = 0; b < BANDS; b++) {
     const fb = b / BANDS;
     const f1 = Math.exp(-Math.pow((fb - 0.06) / 0.05, 2));               // voice bar
@@ -282,6 +290,17 @@ function updateState(dt) {
   }
   else if (state === "thinking") srcThinking(t);
   else srcSpeaking(t);
+
+  /* The mic path shapes level with attack/release; the scripted sources wrote
+     raw values straight in, so speaking stepped between syllables instead of
+     breathing between them. Run them through the same envelope -- states are
+     only interchangeable if they are shaped alike. */
+  if (state === "listening") smoothScale = srcD.scale;
+  else {
+    const ka = srcD.scale > smoothScale ? cfg.attack : cfg.release;
+    smoothScale += (srcD.scale - smoothScale) * ka;
+    srcD.scale = smoothScale;
+  }
 
   let f = blendT / BLEND; if (f > 1) f = 1;
   const e = f * f * (3 - 2 * f);
