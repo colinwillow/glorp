@@ -436,6 +436,60 @@ Two details that are the difference between working and looking broken:
 
 `solid` on the slider, 0 to show everything.
 
+### The mesh
+
+A mesh does not arrive; it **grows**. Say `head` and the particles fly into the
+vertex positions, hold for a beat as a point cloud, and then the wireframe draws
+itself in between dots that are already standing in the right places. Nothing
+moves and nothing cross-fades — the lines simply appear. That is the whole
+reason it reads as one thing becoming another rather than two things swapped,
+and it is only possible because the formation **is** the vertex list rather than
+a scatter of surface points.
+
+Three things had to be true first.
+
+- **Welding.** glTF splits a vertex at every UV and normal seam — 47% of the
+  vertices in `test_head.glb` are duplicates of a position already there. Two
+  triangles either side of a seam then share no index, the edge between them is
+  invisible, and the wireframe comes out in disconnected patches.
+- **Quads.** Nobody models in triangles and nobody wants to look at them; an
+  exporter's diagonals are noise laid over the edge flow that was actually
+  drawn. GLB cannot carry a quad, but the diagonal it added is recoverable: two
+  triangles sharing an edge, near coplanar, where the shared edge is longer than
+  the alternative, were one quad. On `test_head.glb`: 5,987 faces → **2,612
+  quads**, 87% of triangles paired. The remainder are triangles that were always
+  triangles — measured against a mesh that is genuinely all quads, triangulated
+  the way an exporter would, recovery is 960 in, 951 back, **99%**. OBJ needs
+  none of this. It stores `f a b c d` and the quad is simply there, which is the
+  one thing it does better.
+- **The sort.** Points are ordered by angle so the ring unfolds into a shape
+  instead of scrambling through itself. An edge list is a set of indices *into*
+  that order, so sorting the points out from under it wires every edge to the
+  wrong pair of particles — it draws a ball of string in roughly the shape of the
+  model. Sort a permutation and carry the edges through its inverse.
+
+Edges draw only when **both** ends face the camera, which is why back-facing
+particles are marked hidden rather than skipped: the test needs the position of
+the one that does not. And they are bucketed by depth rather than stroked
+individually — canvas will take six thousand separate strokes and will not do it
+in sixteen milliseconds; six passes with one path each costs six.
+
+The vertices thin to 45% as the mesh comes in but do not go, or a wireframe
+stops looking like it is made of anything. `wire` on the slider.
+
+`WIRE_MAX` is 4,200 vertices. Past that a model falls back to scattered surface
+points with no edges, because a wireframe needs one particle per vertex and
+every edge is a line drawn every frame. Measured: 3,032 verts / 6,403 edges at
+60fps, 3,960 / 7,948 at 56.
+
+### Where this stops
+
+Point cloud and wireframe live comfortably here. **Textured** does not — affine
+per-triangle texturing on a 2D canvas at thousands of triangles is slow and
+seams badly — and **animated** needs skinning. That is where WebGL earns its
+place, and it is the reason to stay on GLB: three.js reads the same file with
+`GLTFLoader`, so the assets survive the port unchanged.
+
 `models/knot.obj` is a 7,920-triangle torus knot and `models/test_head.glb` a
 5,723-vertex head, both there to exercise the loaders.
 
