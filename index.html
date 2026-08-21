@@ -96,7 +96,7 @@ const DEFAULTS = {
   dot:0.35, sizeHi:32, falloff:210, follow:1.0, split:0.46,
   splitEll:1.6, splitJaw:0.35, splitShape:1.0,
   trail:0.76, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -484,10 +484,15 @@ async function playReply(text) {
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
-    ttsSrc.onended = () => { ttsPlaying = false; };
+    ttsSrc.onended = () => {
+      ttsPlaying = false;
+      echoUntil = performance.now() + cfg.echoTail;
+      setTimeout(resumeSTT, cfg.echoTail);
+    };
     plan = null;                          // real audio outranks the guess
     planMs = audio.duration * 1000;
     ttsPlaying = true;
+    pauseSTT();
     ttsSrc.start();
     return true;
   } catch (err) {
@@ -501,6 +506,22 @@ async function playReply(text) {
    often, hence the restart in onend. */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, recOn = false;
+/* It hears itself through the speaker and answers its own reply, forever.
+   Deafen it while it talks. abort() rather than stop(), because stop()
+   finalises whatever is pending -- which is exactly the orb's own words. The
+   tail covers room reverb after the audio ends. */
+let sttPaused = false, echoUntil = 0;
+
+function pauseSTT() {
+  if (!recOn || sttPaused) return;
+  sttPaused = true;
+  if (rec) { try { rec.abort(); } catch (e) {} }
+}
+function resumeSTT() {
+  if (!recOn || !sttPaused) return;
+  sttPaused = false;
+  if (rec) { try { rec.start(); } catch (e) {} }
+}
 
 function toggleSTT() {
   if (recOn) {
@@ -515,6 +536,7 @@ function toggleSTT() {
   rec.onstart = () => caption("", "listening… say something");
   rec.onaudiostart = () => caption("", "hearing audio…");
   rec.onresult = (e) => {
+    if (sttPaused || performance.now() < echoUntil) return;   // that was us
     let heard = "", interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) heard += e.results[i][0].transcript;
@@ -529,7 +551,9 @@ function toggleSTT() {
   // every error, including no-speech: silence here is what made this invisible
   rec.onerror = (e) => caption("", "speech error: " + e.error);
   rec.onend = () => {
-    if (recOn) { try { rec.start(); } catch (err) { caption("", "restart failed: " + err.message); } }
+    if (recOn && !sttPaused) {
+      try { rec.start(); } catch (err) { caption("", "restart failed: " + err.message); }
+    }
   };
   try { rec.start(); } catch (err) { caption("", "could not start: " + err.message); return; }
   recOn = true; talkBtn.classList.add("on"); talkBtn.textContent = "listening";
@@ -542,7 +566,8 @@ const SPEC = [
     ["holdMs","silence hold ms",100,3000,50],
     ["thinkMs","think ms",200,6000,100],
     ["speakMs","speak ms",500,10000,100],
-    ["sylRate","syllables / sec",1,8,0.1]]],
+    ["sylRate","syllables / sec",1,8,0.1],
+    ["echoTail","echo tail ms",0,2000,50]]],
   ["audio drive", [
     ["rmsGain","rms → size",0,4,0.05],
     ["specGain","spectrum → ring",0,2.5,0.05],
