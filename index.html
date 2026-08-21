@@ -77,13 +77,14 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:513, radius:0.07, rateX:14000, rateY:23500, bloom:0.44, fit:0.75, contain:0.56,
-  shape:1.27, shapeGain:1.35,
-  speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
-  rmsGain:0.9, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8,
+  count:626, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
+  shape:2.35, shapeGain:1.35,
+  speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
+  rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8,
   falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
   attack:0.35, release:0.11,
-  dot:1.15, sizeHi:26, falloff:70, follow:1.0, split:0.46,
+  dot:0.4, sizeHi:32, falloff:70, follow:1.0, split:0.62,
+  splitEll:0.45, splitJaw:0.35, splitShape:1.0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
 };
 const cfg = Object.assign({}, DEFAULTS);
@@ -127,6 +128,9 @@ const SPEC = [
     ["falloff","falloff",20,600,5],
     ["follow","split follows size",0,1,0.02],
     ["split","split at",0.1,2,0.02],
+    ["splitEll","centroid → split wide",0,2.5,0.05],
+    ["splitJaw","level → split tall",0,2,0.05],
+    ["splitShape","split follows shape",0,1,0.02],
     ["trail","trail",0.02,1,0.01],
     ["rK","red k",-20,20,0.5],
     ["gK","green k",-20,20,0.5],
@@ -439,7 +443,11 @@ function loop() {
   // gScale already carries loudness.
   const ringNow = baseR * gScale;
   const fAbs = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
-  const fRel = ringNow * cfg.split;
+  // The field spreads outward faster than the ring grows -- median particle
+  // distance runs ~0.44 of the ring at rest but ~0.60 under audio -- so a fixed
+  // fraction falls behind and every particle ends up on the far side with no
+  // negative space left. falloffGain pushes the split out with level to match.
+  const fRel = ringNow * cfg.split * (1 + drive.scale * cfg.falloffGain * 0.3);
   const falloffPx = fAbs + (fRel - fAbs) * cfg.follow;
   const sizeHiPx = cfg.sizeHi * k;
   const radCap = 22 * k * cfg.dot;
@@ -466,9 +474,26 @@ function loop() {
   // Vowels really do work this way: /i/ has a high second formant, so a bright
   // centroid spreads the lips wide, and a dark one rounds them tall. jaw then
   // opens it vertically with loudness, which is what reads as talking.
-  const ecc = (drive.hue - 0.5) * 2 * cfg.ellipse;   // bright → wide, dark → tall
+  // same centring problem as the split ellipse below: at silence drive.hue is 0,
+  // which is one end of the range, not the middle -- so an ungated ecc leaves
+  // the resting orb permanently stretched tall. Fade it in with level too.
+  const ecc = (drive.hue - 0.5) * 2 * cfg.ellipse * Math.min(1, drive.scale * 3);
   const ex = Math.max(0.15, 1 + ecc * 0.45);
   const ey = Math.max(0.15, 1 - ecc * 0.45) * (1 + drive.scale * cfg.jaw);
+  // The negative-space ring is just the set of points where size crosses zero,
+  // i.e. dist == falloffPx. A scalar distance makes that a circle no matter what
+  // the particles are doing. Give the boundary its own aspect and its own
+  // outline and audio can deform the ring itself instead of shoving particles
+  // outward to fake it.
+  // Centroid is centred on 0.5, but at silence drive.hue is 0 -- so untouched
+  // this parks the resting boundary at one extreme of the deformation instead
+  // of neutral. Fade the eccentricity in with level so rest is a clean
+  // undeformed ring and the mouth only moves when there is something to say.
+  const sGate = Math.min(1, drive.scale * 3);
+  const sEcc = (drive.hue - 0.5) * 2 * cfg.splitEll * sGate;
+  const fex = Math.max(0.15, 1 + sEcc * 0.45);
+  const fey = Math.max(0.15, 1 - sEcc * 0.45) * (1 + drive.scale * cfg.splitJaw);
+
   const turb = drive.turbulence * cfg.turbGain;
   const kick = drive.impulse * cfg.impulseGain;
 
@@ -568,10 +593,19 @@ function loop() {
   ctx.fillRect(0, 0, W, H);
 
   const span = LUT_HI - LUT_LO;
+  const shaped = cfg.splitShape > 0.001;
   for (let i = 0; i < n; i++) {
-    const ox = cx - px[i], oy = cy - py[i];
-    const distMag = Math.sqrt(ox * ox + oy * oy);
-    const size = (1 - distMag / falloffPx) * sizeHiPx;
+    const ox = px[i] - cx, oy = py[i] - cy;
+    let fRad = falloffPx;
+    if (shaped) {
+      let th = Math.atan2(oy, ox); if (th < 0) th += TAU;
+      let si = ((th / TAU) * SHAPE_N) | 0; if (si >= SHAPE_N) si = SHAPE_N - 1;
+      fRad *= 1 + (shapeLut[si] - 1) * cfg.splitShape;
+    }
+    // distance measured against the deformed boundary: 1.0 is exactly on it, so
+    // size still crosses zero there and the colour split rides the new outline
+    const ndx = ox / (fRad * fex), ndy = oy / (fRad * fey);
+    const size = (1 - Math.sqrt(ndx * ndx + ndy * ndy)) * sizeHiPx;
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
