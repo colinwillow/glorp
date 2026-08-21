@@ -66,6 +66,8 @@
     font-size:12px;line-height:1.5;color:#6B6B6B;pointer-events:none;text-align:center;
     max-width:520px;margin:0 auto}
   #cap b{display:block;color:#C8F49A;font-weight:400;margin-bottom:3px}
+  #cap i{display:block;font-style:normal;color:#3E4A38;font-size:10px;
+    letter-spacing:.08em;margin-top:5px}
 </style>
 </head>
 <body>
@@ -335,12 +337,36 @@ const brain = {
   busy: false
 };
 
-let lastAsked = "";
+let lastAsked = "", lastTiming = "";
 function caption(said, said2) {
   if (said !== null) lastAsked = said;
   cap.innerHTML = "";
   if (lastAsked) { const b = document.createElement("b"); b.textContent = lastAsked; cap.appendChild(b); }
   if (said2) cap.appendChild(document.createTextNode(said2));
+  if (lastTiming) { const i = document.createElement("i"); i.textContent = lastTiming; cap.appendChild(i); }
+}
+
+/* Where the wait actually goes. The pipeline is serial -- full reply, then
+   full clip, then speak -- so knowing which leg dominates is the difference
+   between optimising the right thing and the loud thing. */
+const clock = { t0:0, firstTok:0, lastTok:0, audio:0 };
+function mark(k) { clock[k] = performance.now(); }
+function reportTiming() {
+  const ms = (a, b) => Math.round(clock[b] - clock[a]);
+  const parts = [];
+  if (clock.firstTok) parts.push("think " + ms("t0", "firstTok") + "ms");
+  if (clock.lastTok) parts.push("write " + ms("firstTok", "lastTok") + "ms");
+  if (clock.audio) parts.push("voice " + ms("lastTok", "audio") + "ms");
+  const total = clock.audio ? ms("t0", "audio") : 0;
+  if (total) parts.push("= " + total + "ms to first sound");
+  lastTiming = parts.join("   ");
+  if (!lastTiming) return;
+  console.log("orb timing:", lastTiming);
+  // append rather than re-render: the reply text lives in the DOM already and
+  // this fires after the last caption() call, which would otherwise hide it
+  const i = document.createElement("i");
+  i.textContent = lastTiming;
+  cap.appendChild(i);
 }
 
 async function ask(text) {
@@ -349,6 +375,7 @@ async function ask(text) {
   if (!brain.url) { setState("thinking"); return; }   // scripted reply, no brain wired
 
   brain.busy = true;
+  clock.t0 = performance.now(); clock.firstTok = clock.lastTok = clock.audio = 0;
   brain.history.push({ role:"user", content:text });
   // the proxy is stateless, so trimming here is what bounds the token bill
   if (brain.history.length > 20) brain.history.splice(0, brain.history.length - 20);
@@ -367,9 +394,11 @@ async function ask(text) {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (!clock.firstTok) mark("firstTok");
       full += dec.decode(value, { stream:true });
       caption(text, full);
     }
+    mark("lastTok");
     brain.history.push({ role:"assistant", content: full });
   } catch (err) {
     full = "I couldn't reach my brain.";
@@ -494,6 +523,8 @@ async function playReply(text) {
     ttsPlaying = true;
     pauseSTT();
     ttsSrc.start();
+    mark("audio");
+    reportTiming();
     return true;
   } catch (err) {
     caption(null, "voice failed: " + err.message);
