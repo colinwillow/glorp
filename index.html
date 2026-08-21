@@ -101,7 +101,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 const DEFAULTS = {
   count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
-  depth:1.0, spin:0.34, tilt:0.16, solid:1.0, wire:1.0,
+  depth:1.0, spin:0.34, tilt:0.16, solid:1.0, wire:1.0, muse:1.0, share:0.62,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
@@ -126,7 +126,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -137,7 +137,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -496,7 +496,7 @@ function answerVisual(text, ms) {
   // the picture has to be up slightly before the word is said, not after it
   const delay = Math.max(0, (at / w.length) * (ms || 0) - 260);
   const hold = Math.max(1.6, (ms || 2400) / 1000 * 0.8);
-  answerAt = setTimeout(() => setFormation(spec, hold), delay);
+  answerAt = setTimeout(() => { if (!(form3d && formWant)) setFormation(spec, hold); }, delay);
 }
 
 /* ---------------- voice out ----------------
@@ -729,6 +729,8 @@ const SPEC = [
     ["contain","contain",0.3,1,0.02],
     ["shape","shape",0,8,0.01],
     ["drift","resting drift",0,1.5,0.01],
+    ["muse","listening muse",0,1.5,0.02],
+    ["share","shape takes",0.08,1,0.02],
     ["depth","depth",0,1.5,0.01],
     ["spin","turns / sec",-1.2,1.2,0.02],
     ["solid","hide far surface",0,1,0.02],
@@ -837,7 +839,7 @@ talkBtn.onclick = toggleSTT;
 const echoBtn = document.createElement("button");
 const ECHO_SAYS = ["echo off",
                    "echo: spelling what it hears, brain off",
-                   "duet: spells what it hears, and shows what it answers"];
+                   "duet: patterns while it listens, a picture when it answers"];
 function syncEcho(say) {
   echoBtn.textContent = echoMode === 2 ? "duet" : "echo";
   echoBtn.classList.toggle("on", echoMode > 0);
@@ -1198,6 +1200,10 @@ function buildLut(hueShift) {
    the audio reactivity all keep running underneath it. */
 const formX = new Float32Array(MAX), formY = new Float32Array(MAX);
 const formZ = new Float32Array(MAX);
+/* Which particles a formation actually took. A word drawn by the whole field
+   leaves nothing outside it, and the ring around a shape is most of what makes
+   the shape look like it belongs to something. */
+const formOn = new Uint8Array(MAX);
 // surface orientation, when the source had one. A glyph does not.
 const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float32Array(MAX);
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
@@ -1752,6 +1758,84 @@ const TRIGGERS = {
   knot:{model:"knot"}, head:{model:"test_head"}
 };
 
+/* ---------------- muses ----------------
+   What it does while you are talking to it. Spelling the words back was legible
+   and dull -- a transcript, drawn. This is the other reading of "it is
+   listening": the field wanders through a handful of abstract behaviours, none
+   of them about what was said, all of them driven by the sound of it.
+
+   Each muse is a pair of numbers per particle -- a radius multiplier and an
+   angle offset -- applied to the ring target before anything else touches it.
+   That is the whole interface, and it is why none of these had to know about
+   the shape, the membrane, the containment or the colour: they move the target,
+   and the rest of the program does what it always does with a target.
+
+   Written into module scratch rather than returned, because this runs per
+   particle per physics substep and an allocated pair each time is millions of
+   objects a second. */
+let muR = 1, muA = 0;
+const MUSE_N = 6;
+const MUSE_HUE = [0, 34, -30, 74, -64, 18];    // each one shifts the palette too
+const MUSE_NAME = ["rings", "wave", "comet", "twin", "lattice", "sparks"];
+
+function muse(k, i, a, t, lvl, imp) {
+  switch (k) {
+    case 0: {                                   // three shells, counter-turning
+      const band = i % 3;
+      muR = (band === 0 ? 0.48 : band === 1 ? 0.82 : 1.16) * (1 + lvl * 0.30);
+      muA = t * (band - 1) * 0.55;
+      return;
+    }
+    case 1: {                                   // a wave travelling round the rim
+      muR = 1 + (0.16 + lvl * 0.55) * Math.sin(a * 5 - t * 2.2);
+      muA = 0;
+      return;
+    }
+    case 2: {                                   // a comet: one bright arc sweeping
+      let d = a - t * 1.1;
+      d = d - TAU * Math.round(d / TAU);        // wrap to the short way round
+      const w = 1 / (1 + 16 * d * d);
+      muR = 1 + (0.30 + lvl * 0.7) * w;
+      muA = -0.55 * d * w;                      // and it bunches as it passes
+      return;
+    }
+    case 3: {                                   // two lobes orbiting each other
+      muR = 1 + (0.26 + lvl * 0.55) * Math.cos(2 * (a - t * 0.5));
+      muA = 0;
+      return;
+    }
+    case 4: {                                   // snapped to a polar grid
+      const step = TAU / 18;
+      muA = Math.round(a / step) * step - a;
+      muR = (0.55 + 0.22 * ((i * 7) % 4)) * (1 + lvl * 0.35);
+      return;
+    }
+    default: {                                  // every fifth one thrown on onsets
+      const out = i % 5 === 0;
+      muR = out ? 1 + imp * 1.3 + lvl * 0.2 : 1 - imp * 0.16;
+      muA = out ? imp * 0.5 : 0;
+      return;
+    }
+  }
+}
+
+/* Which one, and how much of it. It changes every few seconds and cross-fades,
+   because a hard cut between two of these reads as a glitch rather than as a
+   thought moving on. */
+const muses = { amt: 0, a: 0, b: 1, mix: 1, next: 0 };
+function updateMuses(dt, now, listening) {
+  muses.amt += ((listening ? 1 : 0) - muses.amt) * (1 - Math.pow(1 - 0.022, dt / 16.67));
+  if (muses.amt < 0.002) { muses.amt = 0; return; }
+  if (now > muses.next) {
+    muses.next = now + 4200 + Math.random() * 2600;
+    muses.a = muses.b;
+    // never twice in a row: repeating one reads as the thing having stalled
+    muses.b = (muses.a + 1 + ((Math.random() * (MUSE_N - 1)) | 0)) % MUSE_N;
+    muses.mix = 0;
+  }
+  if (muses.mix < 1) muses.mix = Math.min(1, muses.mix + dt / 900);
+}
+
 /* ---------------- shells ----------------
    A celebration is not a picture of a firework, it is one. Nothing is drawn
    here: the field is thrown outward and the pattern is whatever the launch
@@ -1957,12 +2041,24 @@ function feedWords(finalText, interimText) {
     const trig = TRIGGERS[word.toLowerCase()];
     if (trig && (trig.solid || trig.model)) { setFormation(trig, 10); continue; }
     if (trig) setFormation(trig, cfg.flashMs / 1000);
-    else if (echoMode && word.length > 1) setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
+    /* Only echo spells what it hears. Duet used to as well, and a transcript
+       drawn in particles turns out to be the least interesting thing this can
+       do with a voice -- the muse has the listening half now. */
+    else if (echoMode === 1 && word.length > 1) setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
   }
   if (settled > echoSeen) echoSeen = settled;
 }
 
 function setFormation(spec, seconds) {
+  /* A solid owns the field until it is done with it. Two formations fighting
+     over the same particles is not a transition, it is a glitch: ask for a head
+     and get a head, and then a smiley face two seconds later because the reply
+     had a word in it. One or the other -- and that includes a firework, which
+     would take the whole field out from under the model mid-turn. Another model
+     may replace it, since that is a deliberate choice rather than a collision. */
+  const owned = form3d && formWant;
+  if (owned && !(spec && (spec.points || spec.solid || spec.model))) return false;
+
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
@@ -1977,8 +2073,17 @@ function setFormation(spec, seconds) {
   if (!pts.length) return false;
   form3d = pts[0].length > 2;
   formHasN = pts[0].length > 5;
-  formS = form3d ? 0.29 : 0.42;
   formE = (spec && spec.edges) || null;
+  /* How much of the field the shape gets. A mesh takes all of it -- an edge
+     index means nothing if only some vertices have particles standing on them
+     -- but a word or an emoji takes a share and leaves the rest on the rim,
+     still breathing and still reacting. */
+  const share = formE || form3d ? 1 : Math.max(0.08, Math.min(1, cfg.share));
+
+  /* Much smaller when the field is shared. The perimeter cannot go outside the
+     containment wall -- that is what the wall is -- so the only way to have a
+     ring around a word is for the word to fit inside one. */
+  formS = form3d ? 0.29 : share < 0.95 ? 0.23 : 0.42;
   wireAt = performance.now() + 2000;
   view.turn = 0;
 
@@ -2008,7 +2113,8 @@ function setFormation(spec, seconds) {
      frame rate on a phone, not for the drawing. */
   // a wireframe cannot skip vertices: every one of them anchors edges
   const want = formE ? Math.min(MAX, pts.length)
-                     : Math.min(MAX, 2600, Math.max(Math.round(cfg.count), pts.length));
+                     : Math.min(MAX, 2600, Math.max(Math.round(cfg.count),
+                                                   Math.ceil(pts.length / share)));
   if (want > Math.round(cfg.count)) {
     if (!formCountWas) formCountWas = cfg.count;
     cfg.count = want;
@@ -2018,17 +2124,24 @@ function setFormation(spec, seconds) {
   const n = Math.min(MAX, want);
   // resampling the list would break the one-to-one an edge index relies on
   if (formE && n !== pts.length) formE = null;
-  for (let i = 0; i < n; i++) {
-    const p = pts[Math.floor((i / n) * pts.length)];
+  formOn.fill(0);
+  /* Spread through the index, not taken off the front. Particles are ordered by
+     angle, so the first 60% of them is a 60% arc -- the shape would be drawn by
+     one side of the ring and the other side would sit there empty. */
+  const take = Math.max(1, Math.min(n, Math.round(n * share)));
+  for (let j = 0; j < take; j++) {
+    const i = Math.min(n - 1, Math.round((j * n) / take));
+    const p = pts[Math.floor((j / take) * pts.length)];
+    formOn[i] = 1;
     formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
     fnx[i] = p[3] || 0; fny[i] = p[4] || 0; fnz[i] = p[5] || 0;
   }
-  formN = n;
+  formN = take;
   formWant = 1;
   /* A solid should live exactly as long as its look-around takes: land, draw
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
-  const secs = form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 1.4
+  const secs = form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 2.4
                       : Math.max(1, Math.min(30, seconds || 5));
   formUntil = performance.now() + Math.min(30, secs) * 1000;
   formLabel = spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
@@ -2119,6 +2232,10 @@ function loop() {
   // the turn starts once the cloud has landed, not while it is still arriving
   if (view.deep && formWant && now > wireAt && view.turn < 1)
     view.turn = Math.min(1, view.turn + Math.abs(cfg.spin) * (dt / 1000));
+  /* Only while it is actually listening to someone, and only in duet -- echo
+     is the literal mode and should stay literal. */
+  updateMuses(dt, now, echoMode === 2 && state === "listening" && !formWant && !bs);
+
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? cfg.wire : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
@@ -2134,7 +2251,8 @@ function loop() {
   view.yaw = (view.turn >= 1 ? 0 : view.turn * TAU * (cfg.spin < 0 ? -1 : 1)) * formT;
 
   const tt = now / 1000;
-  const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1);
+  const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1) *
+               (1 - muses.amt);
   const wander = rest * (0.62 * Math.sin(tt / 7.3) + 0.38 * Math.sin(tt / 11.9 + 1.7));
   const gScale = (1 + drive.scale * cfg.rmsGain) * (1 + rest * 0.05 * Math.sin(tt / 9.1));
   const maxR = Math.min(W, H) * 0.5 * cfg.fit;
@@ -2173,7 +2291,9 @@ function loop() {
   const mKey = Math.round(sIdx * 128);
   if (mKey !== lastMorph) { buildShapeLut(mKey / 128); lastMorph = mKey; }
 
-  const shift = Math.round(drive.hue * cfg.hueGain * 90) + (bs ? bs.hue : 0);
+  const museHue = muses.amt * cfg.muse *
+    (MUSE_HUE[muses.a] + (MUSE_HUE[muses.b] - MUSE_HUE[muses.a]) * muses.mix);
+  const shift = Math.round(drive.hue * cfg.hueGain * 90 + museHue) + (bs ? bs.hue : 0);
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
@@ -2198,14 +2318,20 @@ function loop() {
   const fex = Math.max(0.15, 1 + sEcc * 0.45);
   const fey = Math.max(0.15, 1 - sEcc * 0.45) * (1 + drive.scale * cfg.splitJaw);
 
+  /* Two of everything, because a formation only takes a share of the field now.
+     A particle holding the shape wants its audio motion damped, or the letters
+     smear; a particle still on the rim wants all of it, or the perimeter freezes
+     into a dead circle for as long as the word is up -- which looks worse than
+     no perimeter at all. */
   const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
-  const turb = drive.turbulence * cfg.turbGain * hold;
-  const kick = drive.impulse * cfg.impulseGain * hold * pull;
+  const muAmt = muses.amt * cfg.muse, muHeld = muAmt * hold;
+  const turbFree = drive.turbulence * cfg.turbGain, turb = turbFree * hold;
+  const kickFree = drive.impulse * cfg.impulseGain * pull, kick = kickFree * hold;
   /* The membrane is a spring toward the ring surface, and at rest it is the
      strongest thing in here -- a star 300px out gets nearly 2px/frame of inward
      pull, which is why the first shells expanded, sprang back, and hung on the
      silhouette. It has to come off with the ring, not just be outrun. */
-  const memb = cfg.membrane * hold * pull;
+  const membFree = cfg.membrane * pull, memb = membFree * hold;
 
   physAcc += dt;
   let steps = 0;
@@ -2218,6 +2344,8 @@ function loop() {
       // everything launches, or a fifth of the field stays home as a bright
       // lump in the middle of the explosion.
       const isCore = !bs && pr[i] < cfg.core;
+      const held = formOn[i] === 1;            // is this one holding the shape
+      const fT = held ? formT : 0;
       let ringR;
       if (isCore) {
         ringR = baseR * gScale * cfg.coreR;
@@ -2226,27 +2354,63 @@ function loop() {
         const sk = (i * SHAPE_N / n) | 0;
         ringR = (baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain) * shapeLut[sk];
       }
+      /* One multiplier for everything that scales the ring, because the
+         membrane is a spring toward the ring surface and it has now quietly
+         undone two separate features by not knowing about them. Anything that
+         moves the target has to move `surf` with it or it is simply sprung
+         back to where it would have been. */
+      let ringMul = 1;
+      // the free particles go to the rim while a shape holds. Left where they
+      // were they sit on top of the letters at the same size and colour, which
+      // reads as two drawings fighting rather than a shape with a field round it
+      if (!held && formT > 0.002 && !isCore)
+        ringMul *= 1 + (maxR * 0.78 / Math.max(1, ringR) - 1) * formT;
       if (ringR > maxR) ringR = maxR;
       // bloom 1 = original (sine swings through zero, target crosses centre)
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
-      const sqx = 1 - cfg.bloom + cfg.bloom * Math.sin(frame / cfg.rateX * i);
-      const sqy = 1 - cfg.bloom + cfg.bloom * Math.cos(frame / cfg.rateY * i);
-      let tx = cx + bx[i] * ringR * sqx * ex;
-      let ty = cy + by[i] * ringR * sqy * ey;
-      if (formT > 0.002 && i < formN) {
-        tx += (cx + formX[i] * scale * formS - tx) * formT;
-        ty += (cy + formY[i] * scale * formS - ty) * formT;
+      let ux = bx[i], uy = by[i];
+      /* The muse moves the target and nothing else, which is why none of them
+         had to know about the shape, the membrane, the wall or the colour. */
+      const mu = held ? muHeld : muAmt;
+      if (mu > 0.001 && !isCore) {
+        const ang = i * TAU / n;
+        muse(muses.b, i, ang, tt, drive.scale, drive.impulse);
+        let dR = muR, dA = muA;
+        if (muses.mix < 1) {
+          muse(muses.a, i, ang, tt, drive.scale, drive.impulse);
+          dR += (dR - muR) * -(1 - muses.mix); dA += (dA - muA) * -(1 - muses.mix);
+        }
+        ringMul *= 1 + (dR - 1) * mu;
+        if (dA) {
+          const ca = Math.cos(dA * mu), sa = Math.sin(dA * mu);
+          ux = bx[i] * ca - by[i] * sa; uy = bx[i] * sa + by[i] * ca;
+        }
+      }
+      /* Bloom smears each particle's target across a range of radii, which is
+         what gives the resting orb its depth -- and which sands off anything
+         with radial structure. Three concentric shells inside a 0.43 bloom come
+         out as one thick restless band. Damped in proportion to how much muse
+         is running. */
+      ringR *= ringMul;
+      const bl = cfg.bloom * (1 - mu * 0.8);
+      const sqx = 1 - bl + bl * Math.sin(frame / cfg.rateX * i);
+      const sqy = 1 - bl + bl * Math.cos(frame / cfg.rateY * i);
+      let tx = cx + ux * ringR * sqx * ex;
+      let ty = cy + uy * ringR * sqy * ey;
+      if (fT > 0.002) {
+        tx += (cx + formX[i] * scale * formS - tx) * fT;
+        ty += (cy + formY[i] * scale * formS - ty) * fT;
       }
       /* z has no shape, no membrane, no wall and no mouse: it is only ever
          pulled toward a target, so one damped spring is the entire model. Its
          target is zero unless a 3D formation is holding, which is what keeps
          the flat orb exactly as flat as it was. */
-      const tz = formT > 0.002 && i < formN ? formZ[i] * scale * formS * formT : 0;
+      const tz = fT > 0.002 ? formZ[i] * scale * formS * fT : 0;
       vz[i] += (tz - pz[i]) * 0.020 - vz[i] * 0.20;
       pz[i] += vz[i];
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5) * pull;
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5) * pull;
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -2257,23 +2421,28 @@ function loop() {
       const am = Math.sqrt(ax * ax + ay * ay);
       if (am > maxF) { ax = ax / am * maxF; ay = ay / am * maxF; }
 
-      if (!isCore && (memb > 0.001 || kick > 0.01)) {
+      const mb = held ? memb : membFree, kk2 = held ? kick : kickFree;
+      if (!isCore && (mb > 0.001 || kk2 > 0.01)) {
         const rx = px[i] - cx, ry = py[i] - cy;
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
 
-        if (memb > 0.001) {
+        if (mb > 0.001) {
           const b2 = ((th / TAU) * BANDS) | 0;
           // sample the shape at the current angle too, otherwise the membrane
           // pulls everything back onto a circle and sands the corners off
-          let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2];
+          /* The membrane has to follow the muse or it undoes it. It is a spring
+             toward the ring surface and it is the strongest force here at rest,
+             so three concentric shells get sprung back onto one and the whole
+             muse comes out as a slightly restless circle. */
+          let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2] * ringMul;
           // radius of the ellipse at this angle, or the membrane rounds the lips
           // straight back off the way it used to round off the corners
           const elx = ey * (rx / rd), ely = ex * (ry / rd);
           surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
           if (surf > maxR) surf = maxR;
-          const push = (surf - rd) * 0.02 * memb;
+          const push = (surf - rd) * 0.02 * mb;
           ax += (rx / rd) * push; ay += (ry / rd) * push;
         }
 
@@ -2285,7 +2454,7 @@ function loop() {
         // For P(t) = (r cos t, r sin t) the outward normal is
         // (r cos t + r' sin t, r sin t - r' cos t), which reduces to radial
         // when r' is 0, i.e. on a circle.
-        if (kick > 0.01) {
+        if (kk2 > 0.01) {
           // Pushing every particle out by the SAME amount adds a constant to
           // r(theta), and adding a constant to a radial function is precisely
           // what rounds it toward a circle -- which is why every onset used to
@@ -2294,8 +2463,8 @@ function loop() {
           // dilation, so the outline stays similar to itself however hard it
           // is hit.
           const mag = 1 + (shapeLut[s2] - 1) * cfg.kickShape;
-          ax += (rx / rd) * kick * 1.6 * mag;
-          ay += (ry / rd) * kick * 1.6 * mag;
+          ax += (rx / rd) * kk2 * 1.6 * mag;
+          ay += (ry / rd) * kk2 * 1.6 * mag;
         }
       }
 
@@ -2307,9 +2476,10 @@ function loop() {
         if (bs.drag) { ax -= vx[i] * bs.drag; ay -= vy[i] * bs.drag; }
       }
 
-      if (turb > 0.01) {
-        ax += (Math.random() - 0.5) * turb * 2.4;
-        ay += (Math.random() - 0.5) * turb * 2.4;
+      const tb = held ? turb : turbFree;
+      if (tb > 0.01) {
+        ax += (Math.random() - 0.5) * tb * 2.4;
+        ay += (Math.random() - 0.5) * tb * 2.4;
       }
 
       if (hasMouse) {
@@ -2338,8 +2508,8 @@ function loop() {
          is over. Pull position directly toward the target while a shape is
          holding -- the force model still runs underneath and takes back over
          as the formation releases. */
-      if (formT > 0.002 && i < formN && cfg.snap > 0.001) {
-        const k2 = cfg.snap * formT;
+      if (fT > 0.002 && cfg.snap > 0.001) {
+        const k2 = cfg.snap * fT;
         px[i] += (tx - px[i]) * k2;
         py[i] += (ty - py[i]) * k2;
         pz[i] += (tz - pz[i]) * k2;
@@ -2417,8 +2587,10 @@ function loop() {
        back-facing vertex is standing -- an edge is drawn only when BOTH ends
        face the camera, and that test needs the position of the one that does
        not. */
+    const held = formOn[i] === 1;
+    const fT = held ? formT : 0;
     let hidden = false;
-    if (culling && i < formN) {
+    if (culling && held) {
       const nzv = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
       // facing the camera is nzv < 0, since near is -z after projection
       // hash(i), not Math.random(): a fresh draw every frame makes the soft
@@ -2454,7 +2626,7 @@ function loop() {
        A model converges on its own depth instead: near stars land on the
        positive end of the palette and far ones on the negative, so the colour
        split that separates the core from the ring becomes the shading. */
-    if (form3d) {
+    if (form3d && held) {
       /* 0.88 leaves an eighth of the old size behind, and for a glyph that
          residue is the point -- it keeps the letters from looking printed. For
          a solid it is fatal: a particle 400px out starts at size -250, and an
@@ -2469,9 +2641,9 @@ function loop() {
       const t3 = culling ? Math.max(-1, Math.min(1, -rz / (zSpan * 0.36) - 1))
                          : Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
       const want = (t3 >= 0 ? t3 : t3 * 2.4) * sizeHiPx;
-      size += (want - size) * formT * 0.98;
-    } else if (formT > 0.002) {
-      size += (-1.15 * sizeHiPx - size) * formT * 0.88;
+      size += (want - size) * fT * 0.98;
+    } else if (fT > 0.002) {
+      size += (-1.15 * sizeHiPx - size) * fT * 0.88;
     }
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
@@ -2486,8 +2658,10 @@ function loop() {
        magenta half of the palette is stretched 2.4x to reach it, which would
        otherwise make the FAR side of a model the fattest thing on screen. */
     let rad = bs ? bs.star * k
-            : form3d ? sizeHiPx * cfg.dot * 0.13 * (1 - formT * 0.15)
-            : Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
+            : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
+            : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
+              // the rim is a frame, not a second drawing competing with the first
+              * (held ? 1 : 1 - formT * 0.72);
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
     if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
@@ -2495,7 +2669,7 @@ function loop() {
     if (rad > radCap) rad = radCap;
     const sx = cx + rx * persp, sy = cy + ry * persp;
     if (wireT > 0.002) {
-      sxA[i] = sx; syA[i] = sy; szA[i] = rz; visA[i] = hidden ? 0 : 1;
+      sxA[i] = sx; syA[i] = sy; szA[i] = rz; visA[i] = hidden || !held ? 0 : 1;
       /* The vertices thin as the mesh comes in. They do not go: a wireframe
          with no points on it stops looking like it is made of anything. */
       rad *= 1 - 0.55 * wireT;

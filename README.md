@@ -238,12 +238,14 @@ The `echo` button cycles three ways, and the choice is remembered.
 | --- | --- | --- |
 | off | — | out loud |
 | echo | every word spelled as it lands | brain out of the circuit entirely |
-| duet | every word spelled as it lands | out loud **and** shown |
+| duet | **a muse** | out loud **and** shown |
 
-`duet` is the default. Echo was built as a way to watch recognition work with
-the brain out of the way; duet is the same drawing put back on top of a real
-conversation, so a question is answered in both directions at once. Ask it its
-name and it says "I'm Orb" while the field spells ORB.
+`duet` is the default. Duet used to spell what it heard as well, and a
+transcript drawn in particles turns out to be the least interesting thing this
+can do with a voice — legible, and dull. Echo keeps that behaviour for when the
+literal reading is what you want; duet gets the muse instead.
+
+Ask it its name and it says "I'm Glorb" while the field spells GLORB.
 
 Choosing what to show is three rules in order. A trigger word anywhere in the
 reply wins outright — say congratulations back and the sky goes up. Otherwise
@@ -349,6 +351,75 @@ a particle's ring slot is its index over the count, so dropping 1800 to 400
 leaves every survivor pointing at the same narrow arc, and the orb re-forms as a
 bunch on one side. Keep one particle in every `prev/n` and each survivor is
 already standing near its new slot.
+
+---
+
+## Muses
+
+What it does while you are talking to it. The field wanders through a handful of
+abstract behaviours — none of them about what was said, all of them driven by
+the sound of it. It changes every four to seven seconds and cross-fades, because
+a hard cut between two of these reads as a glitch rather than as a thought
+moving on.
+
+| muse | what it does |
+| --- | --- |
+| `rings` | three concentric shells, counter-turning |
+| `wave` | a wave travelling round the rim |
+| `comet` | one bright arc sweeping, bunching as it passes |
+| `twin` | two lobes orbiting each other |
+| `lattice` | snapped to a polar grid |
+| `sparks` | every fifth particle thrown outward on onsets |
+
+Each one also rotates the palette, so they read as different weather and not
+just different geometry.
+
+Each muse is **two numbers per particle** — a radius multiplier and an angle
+offset — applied to the ring target before anything else touches it. That is the
+whole interface, and it is why none of them had to know about the shape, the
+membrane, the containment or the colour: they move the target, and the rest of
+the program does what it always does with a target. Written into module scratch
+rather than returned, because this runs per particle per physics substep and an
+allocated pair each time is millions of objects a second.
+
+Two things had to give way, and both had already caught me once:
+
+- **The membrane**, again. It is a spring toward the ring surface and the
+  strongest force here at rest, so three concentric shells were sprung back onto
+  one and the whole muse came out as a slightly restless circle. Everything that
+  scales the ring now goes through **one multiplier** the membrane reads back.
+- **Bloom.** It smears each particle's target across a range of radii, which is
+  what gives the resting orb its depth and what sands off anything with radial
+  structure. Damped in proportion to how much muse is running.
+
+## Sharing the field
+
+A shape takes a **share** of the particles, not all of them — `share`, default
+0.62 — and the rest go out to the rim and keep breathing. A word drawn by the
+whole field leaves nothing outside it, and the ring around a shape is most of
+what makes the shape look like it belongs to something.
+
+Participants are spread **through the index**, not taken off the front:
+particles are ordered by angle, so the first 62% of them is a 62% arc and the
+shape would be drawn by one side of the ring with the other side left empty.
+
+A shared glyph also draws much smaller. The perimeter cannot go outside the
+containment wall — that is what the wall is — so the only way to have a ring
+around a word is for the word to fit inside one.
+
+Everything the audio does now exists in two versions, one damped and one not. A
+particle holding the shape wants its motion damped or the letters smear; a
+particle on the rim wants all of it, or the perimeter freezes into a dead circle
+for as long as the word is up, which looks worse than no perimeter at all.
+
+## One or the other
+
+A solid owns the field until it is done with it. Two formations fighting over
+the same particles is not a transition, it is a glitch — ask for a head, get a
+head, and then a smiley face two seconds later because the reply had a word in
+it. That includes fireworks, which would take the whole field out from under a
+model mid-turn. Another **model** may replace one, since that is a deliberate
+choice rather than a collision.
 
 ---
 
