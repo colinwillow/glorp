@@ -330,6 +330,7 @@ function updateState(dt) {
 const cap = document.getElementById("cap");
 const brain = {
   url: (() => { try { return localStorage.getItem("orbBrain") || ""; } catch (e) { return ""; } })(),
+  voice: (() => { try { return localStorage.getItem("orbVoice") || ""; } catch (e) { return ""; } })(),
   history: [],
   busy: false
 };
@@ -462,7 +463,7 @@ async function playReply(text) {
     const res = await fetch(new URL("/speak", brain.url), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, voice: brain.voice || undefined })
     });
     if (!res.ok) {
       // 501 just means no voice key is set; anything else is worth showing
@@ -621,6 +622,18 @@ ep.addEventListener("change", () => {
   caption("", brain.url ? "brain connected" : "scripted mode");
 });
 sgrp.appendChild(ep);
+
+// Voice ids are not secrets, so the picker can live here rather than in a
+// config file that needs a redeploy to audition a different voice.
+const voiceIn = document.createElement("input");
+voiceIn.type = "text"; voiceIn.placeholder = "elevenlabs voice id (blank = worker default)";
+voiceIn.value = brain.voice;
+voiceIn.addEventListener("change", () => {
+  brain.voice = voiceIn.value.trim();
+  try { localStorage.setItem("orbVoice", brain.voice); } catch (e) {}
+  caption(null, brain.voice ? "voice set" : "using the worker's default voice");
+});
+sgrp.appendChild(voiceIn);
 
 // Typing bypasses speech recognition entirely. With two new moving parts at
 // once, being able to test the brain on its own is the difference between a

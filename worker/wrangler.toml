@@ -10,3 +10,6 @@ compatibility_flags = ["nodejs_compat"]
 # can spend your tokens.
 [vars]
 ALLOWED_ORIGIN = "https://colinwillow.github.io"
+# Default voice. The page can override it per request from the tune panel,
+# and GET /voices lists what this account actually has.
+ELEVEN_VOICE_ID = "wyWA56cQNU2KqUW4eCsI"

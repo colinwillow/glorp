@@ -41,14 +41,18 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   if (!env.ELEVENLABS_API_KEY) {
     return new Response("No ELEVENLABS_API_KEY on this Worker.", { status: 501, headers });
   }
-  let body: { text?: string };
+  let body: { text?: string; voice?: string };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
   const text = (body.text ?? "").trim();
   if (!text) return new Response("body must be { text: \"...\" }", { status: 400, headers });
 
-  const voice = (env.ELEVEN_VOICE_ID ?? DEFAULT_VOICE).trim();
+  /* The page may name the voice. Voice ids are not secrets and the account is
+     the caller's own, so letting the picker live in the app beats editing a
+     config file and redeploying to audition a voice. The var stays as the
+     default for when the page says nothing. */
+  const voice = (body.voice || env.ELEVEN_VOICE_ID || DEFAULT_VOICE).trim();
   const model = (env.ELEVEN_MODEL_ID ?? DEFAULT_TTS_MODEL).trim();
 
   const res = await fetch(`${ELEVEN_BASE}/text-to-speech/${encodeURIComponent(voice)}`, {
