@@ -101,7 +101,7 @@ const BANDS = 64, TAU = Math.PI * 2;
 const DEFAULTS = {
   count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
-  depth:1.0, spin:0.34, tilt:0.16, solid:1.0, wire:1.0, muse:1.0, share:0.62,
+  depth:1.0, spin:0.34, tilt:0.16, solid:1.0, wire:1.0, muse:1.0, share:0.62, idleS:35,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
@@ -126,7 +126,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, idleS:0, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -137,7 +137,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, drift:0, muse:0, share:1, idleS:0, depth:0, spin:0, tilt:0, solid:0, wire:0, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -671,6 +671,7 @@ function toggleSTT() {
     heard = heard.trim();
     // words are drawn from the interim stream, so they land while you are still
     // saying the sentence rather than after the model has replied to it
+    stirred();
     feedWords(heard, interim.trim());
     // showing the interim text proves recognition is alive even when nothing
     // ever reaches isFinal, which is the failure that looks like doing nothing
@@ -731,6 +732,7 @@ const SPEC = [
     ["drift","resting drift",0,1.5,0.01],
     ["muse","listening muse",0,1.5,0.02],
     ["share","shape takes",0.08,1,0.02],
+    ["idleS","offer menu after s",0,120,1],
     ["depth","depth",0,1.5,0.01],
     ["spin","turns / sec",-1.2,1.2,0.02],
     ["solid","hide far surface",0,1,0.02],
@@ -1751,12 +1753,100 @@ const TRIGGERS = {
   yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
   stop:{text:"STOP"}, help:{text:"HELP"}, nice:{text:"NICE"},
   glorb:{text:"GLORB"}, orb:{text:"GLORB"},
+  menu:{menu:true}, options:{menu:true},
   // solids, which is where depth actually shows
   sphere:{solid:"sphere"}, ball:{solid:"sphere"}, cube:{solid:"cube"},
   box:{solid:"cube"}, torus:{solid:"torus"}, donut:{solid:"torus"},
   helix:{solid:"helix"}, spiral:{solid:"helix"},
   knot:{model:"knot"}, head:{model:"test_head"}
 };
+
+/* ---------------- menu ----------------
+   Say "menu" and the field rearranges into one: the orb stays as a cluster in
+   the middle, six satellites come out on arms, and each one is a thing you can
+   ask for -- by touching it or by saying its name. Nothing new was needed to
+   draw it. Satellites and arms are points, the arms' segments are edges, and
+   the wireframe pass that grew a mesh out of a point cloud draws them.
+
+   Edit this list and the menu changes. Six because six fits round a circle at a
+   readable size; the geometry is built from MENU.length, so it will take more,
+   it will just get tighter. */
+const MENU = [
+  { label: "head",      act: { model: "test_head" } },
+  { label: "knot",      act: { model: "knot" } },
+  { label: "shapes",    act: { solid: "torus" } },
+  { label: "fireworks", act: { show: [["peony", 0], ["nova", 760], ["valentine", 1520],
+                                      ["pinwheel", 2280], ["willow", 3060]] } },
+  { label: "about",     act: { text: "GLORB" } },
+  { label: "images",    act: { text: "SOON" } }
+];
+
+const menuGroup = new Int8Array(MAX);      // -1 hub or arm, 0..n satellite
+let menuOn = false, menuHit = -1;
+/* Left alone long enough, it offers rather than waits. Anything that counts as
+   someone being there resets the clock -- a touch, a word, a formation. */
+let lastActive = performance.now();
+const stirred = () => { lastActive = performance.now(); };
+const menuAt = [];                         // satellite centres, in formation units
+
+function menuPoints() {
+  const pts = [], E = [], grp = [], N = MENU.length;
+  const HUB = 96, SAT = 74, ARM = 9, R = 0.72, sr = 0.19;
+  menuAt.length = 0;
+
+  // the hub: what is left of the orb, still a ring
+  for (let i = 0; i < HUB; i++) {
+    const a = (i / HUB) * TAU;
+    pts.push([Math.cos(a) * 0.19, Math.sin(a) * 0.19]); grp.push(-1);
+  }
+  for (let k = 0; k < N; k++) {
+    // -PI/2 puts the first one straight up, which is where a menu starts
+    const a = -Math.PI / 2 + (k / N) * TAU;
+    const cxk = Math.cos(a) * R, cyk = Math.sin(a) * R;
+    menuAt.push([cxk, cyk, MENU[k].label]);
+
+    const armFrom = pts.length;
+    for (let j = 0; j < ARM; j++) {
+      const t = 0.24 + (j / (ARM - 1)) * 0.52;      // stops short of both ends
+      pts.push([Math.cos(a) * R * t, Math.sin(a) * R * t]); grp.push(-1);
+      if (j) E.push(armFrom + j - 1, armFrom + j);
+    }
+    const satFrom = pts.length;
+    for (let j = 0; j < SAT; j++) {
+      const b = (j / SAT) * TAU;
+      pts.push([cxk + Math.cos(b) * sr, cyk + Math.sin(b) * sr]); grp.push(k);
+      // closing the ring is what makes it read as a sphere rather than beads
+      E.push(satFrom + j, satFrom + ((j + 1) % SAT));
+    }
+  }
+  return { pts, edges: Int32Array.from(E), groups: grp };
+}
+
+/* Pick one. The same call whether it was touched or spoken, because there is no
+   reason for those to be different code paths. */
+function menuPick(k) {
+  if (k < 0 || k >= MENU.length) return false;
+  const item = MENU[k];
+  menuOn = false; menuHit = -1;
+  formWant = 0; formUntil = 0;               // the menu gets out of its own way
+  caption(null, item.label);
+  // a beat, or the choice and its answer arrive on top of each other
+  setTimeout(() => setFormation(item.act, 8), 260);
+  return true;
+}
+
+function menuNear(clientX, clientY) {
+  if (!menuOn || formT < 0.35) return -1;
+  const s = scale * formS;
+  let best = -1, bd = 1e9;
+  for (let k = 0; k < menuAt.length; k++) {
+    const dx = clientX - (cx + menuAt[k][0] * s), dy = clientY - (cy + menuAt[k][1] * s);
+    const d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = k; }
+  }
+  // generous, because these are touched with a thumb
+  return bd < (0.30 * s) * (0.30 * s) ? best : -1;
+}
 
 /* ---------------- muses ----------------
    What it does while you are talking to it. Spelling the words back was legible
@@ -2038,7 +2128,14 @@ function feedWords(finalText, interimText) {
   for (let i = echoSeen; i < settled; i++) {
     const word = w[i].replace(/[^a-z0-9']/gi, "");
     if (!word) continue;
-    const trig = TRIGGERS[word.toLowerCase()];
+    const w2 = word.toLowerCase();
+    /* While the menu is up its labels outrank everything, including the brain.
+       Saying "head" at a menu with head on it means that one, not a question. */
+    if (menuOn) {
+      const k = MENU.findIndex((it) => it.label === w2);
+      if (k >= 0) { menuPick(k); echoSeen = settled; return; }
+    }
+    const trig = TRIGGERS[w2];
     if (trig && (trig.solid || trig.model)) { setFormation(trig, 10); continue; }
     if (trig) setFormation(trig, cfg.flashMs / 1000);
     /* Only echo spells what it hears. Duet used to as well, and a transcript
@@ -2066,14 +2163,16 @@ function setFormation(spec, seconds) {
   /* Everything arrives here as a list of places to be. A glyph, a face, a
      procedural solid and a mesh off disk differ only in how the list was made
      -- which is why depth cost the formation system one extra column. */
-  let pts = spec && spec.points ? spec.points
+  const asMenu = spec && spec.menu ? menuPoints() : null;
+  let pts = asMenu ? asMenu.pts
+            : spec && spec.points ? spec.points
             : spec && spec.solid ? fitPoints(SOLIDS[spec.solid](1800))
             : spec && spec.shape === "face" ? faceGlyph()
             : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
   if (!pts.length) return false;
   form3d = pts[0].length > 2;
   formHasN = pts[0].length > 5;
-  formE = (spec && spec.edges) || null;
+  formE = asMenu ? asMenu.edges : (spec && spec.edges) || null;
   /* How much of the field the shape gets. A mesh takes all of it -- an edge
      index means nothing if only some vertices have particles standing on them
      -- but a word or an emoji takes a share and leaves the rest on the rim,
@@ -2124,15 +2223,24 @@ function setFormation(spec, seconds) {
   const n = Math.min(MAX, want);
   // resampling the list would break the one-to-one an edge index relies on
   if (formE && n !== pts.length) formE = null;
+  stirred();
   formOn.fill(0);
+  menuGroup.fill(-1);
+  menuOn = !!asMenu;
   /* Spread through the index, not taken off the front. Particles are ordered by
      angle, so the first 60% of them is a 60% arc -- the shape would be drawn by
      one side of the ring and the other side would sit there empty. */
   const take = Math.max(1, Math.min(n, Math.round(n * share)));
   for (let j = 0; j < take; j++) {
     const i = Math.min(n - 1, Math.round((j * n) / take));
-    const p = pts[Math.floor((j / take) * pts.length)];
+    /* Multiply before dividing. (j / take) * pts.length lands a hair BELOW j
+       when take equals pts.length -- floating point, for about one index in
+       twenty-five -- and floor then hands two particles the same point and
+       skips another. Which is invisible until something indexes those points:
+       an edge list then draws a chord straight across the shape. */
+    const p = pts[Math.min(pts.length - 1, Math.floor((j * pts.length) / take))];
     formOn[i] = 1;
+    if (asMenu) menuGroup[i] = asMenu.groups[j];
     formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
     fnx[i] = p[3] || 0; fny[i] = p[4] || 0; fnz[i] = p[5] || 0;
   }
@@ -2141,10 +2249,11 @@ function setFormation(spec, seconds) {
   /* A solid should live exactly as long as its look-around takes: land, draw
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
-  const secs = form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 2.4
+  const secs = asMenu ? 30                 // it waits to be chosen from
+             : form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 2.4
                       : Math.max(1, Math.min(30, seconds || 5));
   formUntil = performance.now() + Math.min(30, secs) * 1000;
-  formLabel = spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
+  formLabel = asMenu ? "menu" : spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
             : spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
   return true;
 }
@@ -2155,17 +2264,30 @@ function updateFormation(dt) {
   const rate = 1 - Math.pow(1 - 0.045, dt / 16.67);
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
-    formT = 0; formLabel = ""; form3d = false; view.yaw = 0;
+    formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
     formE = null; wireT = 0; view.turn = 0;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
 
 let mx = -9999, my = -9999;
-const onMove = (e) => { const t = e.touches ? e.touches[0] : e; mx = t.clientX; my = t.clientY; };
+const onMove = (e) => {
+  const t = e.touches ? e.touches[0] : e; mx = t.clientX; my = t.clientY;
+  stirred();
+  if (menuOn) menuHit = menuNear(mx, my);
+};
+/* Down highlights, up picks -- so a thumb can slide between them and land
+   somewhere deliberate, rather than firing whatever it touched first. */
+const onPick = (e) => {
+  if (!menuOn) return;
+  const t = e.changedTouches ? e.changedTouches[0] : e;
+  const k = menuNear(t.clientX, t.clientY);
+  if (k >= 0) { e.preventDefault(); menuPick(k); }
+};
 const onLeave = () => { mx = my = -9999; };
 ["pointermove","touchstart","touchmove"].forEach(ev =>
   canvas.addEventListener(ev, onMove, { passive:true }));
+["pointerup", "touchend"].forEach(ev => canvas.addEventListener(ev, onPick));
 ["pointerup","pointercancel","pointerleave","touchend","touchcancel"].forEach(ev =>
   canvas.addEventListener(ev, onLeave));
 
@@ -2235,6 +2357,9 @@ function loop() {
   /* Only while it is actually listening to someone, and only in duet -- echo
      is the literal mode and should stay literal. */
   updateMuses(dt, now, echoMode === 2 && state === "listening" && !formWant && !bs);
+
+  if (cfg.idleS > 0.5 && !formWant && !bs && !brain.busy &&
+      now - lastActive > cfg.idleS * 1000) setFormation({ menu: true });
 
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? cfg.wire : 0;
@@ -2665,6 +2790,9 @@ function loop() {
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
     if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
+    // the one under your thumb swells, which is the only feedback a field of
+    // dots can give that reads as "this one"
+    if (menuOn && menuHit >= 0 && menuGroup[i] === menuHit) rad *= 1 + 0.9 * formT;
     if (deep) rad *= persp;              // near is bigger, which is most of the depth
     if (rad > radCap) rad = radCap;
     const sx = cx + rx * persp, sy = cy + ry * persp;
@@ -2734,6 +2862,23 @@ function loop() {
     }
   }
 
+  /* Labels in text, not particles. Six words spelled in dots at this size are
+     a smear, and the point of a menu is that it can be read at a glance. Same
+     canvas and the same typeface as everything else, so it still belongs. */
+  if (menuOn && formT > 0.05) {
+    const s2 = scale * formS;
+    ctx.save();
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = Math.round(13 * k) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.globalAlpha = Math.min(1, formT * 1.4);
+    for (let m = 0; m < menuAt.length; m++) {
+      ctx.fillStyle = m === menuHit ? "#EAFBD2" : "#9FB98B";
+      ctx.fillText(menuAt[m][2], cx + menuAt[m][0] * s2, cy + menuAt[m][1] * s2);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
   if (showBars) {
     const bw = W / BANDS;
     ctx.fillStyle = "rgba(200,244,154,0.30)";
@@ -2762,7 +2907,7 @@ function loop() {
 }
 syncStateBtns();
 caption("", (standalone ? "home screen app · " : "") + (brain.url
-  ? "tap enable mic, then talk. try: \u201cshow me a face\u201d or \u201cspell hello\u201d"
+  ? "I\u2019m Glorb. tap enable mic and talk to me \u2014 or say \u201cmenu\u201d"
   : "no brain endpoint set \u2014 open tune and paste the worker url"));
 buildLut(0);
 loop();

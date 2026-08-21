@@ -354,6 +354,29 @@ already standing near its new slot.
 
 ---
 
+## Menu
+
+Say **`menu`**. The orb stays as a cluster in the middle, six satellites come
+out on arms, and each one is a thing you can ask for — touch it, or say its
+name. While the menu is up its labels **outrank everything, including the
+brain**: saying "head" at a menu with head on it means that one, not a question.
+
+Nothing new was needed to draw it. Satellites and arms are points, the arms are
+edges, and the wireframe pass that grew a mesh out of a point cloud draws them.
+Labels are text rather than particles — six words spelled in dots at that size
+are a smear, and the point of a menu is that it can be read at a glance.
+
+Down highlights and up picks, so a thumb can slide between them and land
+somewhere deliberate rather than firing whatever it touched first.
+
+Edit `MENU` and the menu changes; the geometry is built from its length.
+
+After `idleS` seconds with nothing happening — no touch, no word, no formation —
+it offers the menu on its own rather than sitting there being decorative. 0
+turns that off.
+
+---
+
 ## Muses
 
 What it does while you are talking to it. The field wanders through a handful of
