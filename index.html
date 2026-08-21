@@ -382,20 +382,34 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, recOn = false;
 
 function toggleSTT() {
-  if (recOn) { recOn = false; if (rec) rec.stop(); talkBtn.classList.remove("on"); talkBtn.textContent = "talk"; return; }
-  if (!SR) { caption("", "this browser has no speech recognition"); return; }
+  if (recOn) {
+    recOn = false; if (rec) rec.stop();
+    talkBtn.classList.remove("on"); talkBtn.textContent = "talk";
+    caption("", "mic off"); return;
+  }
+  if (!SR) { caption("", "this browser has no speech recognition (needs Chrome, or Safari 14.5+)"); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+  rec.onstart = () => caption("", "listening… say something");
+  rec.onaudiostart = () => caption("", "hearing audio…");
   rec.onresult = (e) => {
-    let heard = "";
-    for (let i = e.resultIndex; i < e.results.length; i++)
+    let heard = "", interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) heard += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
     heard = heard.trim();
+    // showing the interim text proves recognition is alive even when nothing
+    // ever reaches isFinal, which is the failure that looks like doing nothing
+    if (!heard && interim.trim()) caption("", "… " + interim.trim());
     if (heard) ask(heard);
   };
-  rec.onerror = (e) => { if (e.error !== "no-speech") caption("", "speech error: " + e.error); };
-  rec.onend = () => { if (recOn) { try { rec.start(); } catch (e) {} } };  // Chrome ends sessions on its own
-  try { rec.start(); } catch (e) {}
+  // every error, including no-speech: silence here is what made this invisible
+  rec.onerror = (e) => caption("", "speech error: " + e.error);
+  rec.onend = () => {
+    if (recOn) { try { rec.start(); } catch (err) { caption("", "restart failed: " + err.message); } }
+  };
+  try { rec.start(); } catch (err) { caption("", "could not start: " + err.message); return; }
   recOn = true; talkBtn.classList.add("on"); talkBtn.textContent = "listening";
 }
 
@@ -486,6 +500,18 @@ ep.addEventListener("change", () => {
   caption("", brain.url ? "brain connected" : "scripted mode");
 });
 sgrp.appendChild(ep);
+
+// Typing bypasses speech recognition entirely. With two new moving parts at
+// once, being able to test the brain on its own is the difference between a
+// diagnosis and a guess.
+const say = document.createElement("input");
+say.type = "text"; say.placeholder = "or type a message and press enter";
+say.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const text = say.value.trim();
+  if (text) { say.value = ""; ask(text); }
+});
+sgrp.appendChild(say);
 
 const talkBtn = document.createElement("button");
 talkBtn.textContent = "talk";
