@@ -51,14 +51,30 @@ export default {
        the SDK fall through to its whole credential-resolution chain and report
        "Could not resolve authentication method", which reads like a code bug
        rather than the one-line fix it is. */
-    if (!env.ANTHROPIC_API_KEY) {
+    const raw = env.ANTHROPIC_API_KEY ?? "";
+    const apiKey = raw.trim();
+    if (!apiKey) {
       return new Response(
         "No API key on this Worker. Run: npx wrangler secret put ANTHROPIC_API_KEY",
         { status: 500, headers: { ...headers, "content-type": "text/plain; charset=utf-8" } }
       );
     }
+    /* Pasting a key into a Windows terminal usually drags a carriage return in
+       with it. A header value containing CR or LF is invalid, so the request is
+       rejected at the edge before anything reads it -- which surfaces as a 400
+       with an empty body rather than the 401 a merely-wrong key would give.
+       Trim it, and report the shape (never the key) so a truncated paste is
+       obvious too. */
+    if (raw !== apiKey) {
+      console.warn("orb-brain: key had surrounding whitespace or newline -- trimmed");
+    }
+    console.log(
+      "orb-brain: key length", apiKey.length,
+      "prefix ok", apiKey.startsWith("sk-ant-"),
+      "(a full key is about 100-110 chars)"
+    );
 
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey });
 
     /* Streamed so the orb can start speaking on the first token instead of
        waiting for the whole reply -- that latency is the difference between a
