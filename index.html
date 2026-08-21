@@ -81,7 +81,7 @@ const DEFAULTS = {
   count:626, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
-  rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8, gate:1.0,
+  rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
   attack:0.35, release:0.11,
   dot:0.4, sizeHi:32, falloff:70, follow:1.0, split:0.62,
@@ -138,6 +138,7 @@ const SPEC = [
     ["ellipse","centroid → ellipse",0,2.5,0.05],
     ["jaw","level → jaw",0,2,0.05],
     ["gate","deform gate",0,1,0.02],
+    ["gateFloor","noise gate",0,0.3,0.005],
     ["attack","attack",0.05,1,0.01],
     ["release","release",0.01,0.5,0.01]]],
   ["form", [
@@ -322,9 +323,20 @@ function analyse() {
     // mapping actually uses its full range instead of the bottom tenth
     centroid = (centroid - 0.03) / 0.20;
     if (centroid < 0) centroid = 0; else if (centroid > 1) centroid = 1;
-    drive.hue += (centroid - drive.hue) * 0.06;
-    drive.turbulence += (Math.min(1, zcr * 26) - drive.turbulence) * 0.16;
-    drive.impulse = Math.max(drive.impulse * 0.86, Math.min(1, flux * 0.05));
+
+    /* Noise gate. Below the floor there is no signal, only room tone -- and all
+       three timbre channels read HIGH on near-silence, not low: zero-crossing
+       rate is high for low-level noise, flux fires on FFT jitter, and the
+       centroid of noise is arbitrary. Ungated that means turbulence and impulse
+       sit near 1.0 at lvl 0.00 and blow the orb into the containment wall on
+       nothing at all. scale and spectrum are already amplitude-proportional, so
+       only these three need gating. */
+    let g = (drive.scale - cfg.gateFloor) / 0.12;
+    if (g < 0) g = 0; else if (g > 1) g = 1;
+
+    drive.hue += (centroid * g - drive.hue) * 0.06;
+    drive.turbulence += (Math.min(1, zcr * 26) * g - drive.turbulence) * 0.16;
+    drive.impulse = Math.max(drive.impulse * 0.86, Math.min(1, flux * 0.05) * g);
   } else if (A) {
     drive.impulse *= 0.9;
   }
