@@ -78,16 +78,16 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:626, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
+  count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
   shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
-  rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
+  rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   kickShape:1.0,
   falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
   attack:0.35, release:0.11, dbMargin:12, dbRange:34,
-  dot:0.4, sizeHi:32, falloff:70, follow:1.0, split:0.62,
-  splitEll:0.45, splitJaw:0.35, splitShape:1.0,
-  trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
+  dot:1.3, sizeHi:32, falloff:210, follow:1.0, split:0.46,
+  splitEll:1.6, splitJaw:0.35, splitShape:1.0,
+  trail:0.76, rK:-0.5, gK:7, bK:-2, base:120
 };
 const cfg = Object.assign({}, DEFAULTS);
 
