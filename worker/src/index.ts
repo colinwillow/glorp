@@ -20,11 +20,13 @@ const SYSTEM = `You are the voice of Orb, a small glowing presence that listens 
 
 Your replies are spoken aloud, never read. Keep them to one or two short sentences and at most about forty words. No lists, no markdown, no code, no emoji, no stage directions or action text. Write only words a person would actually say.
 
-If you don't know something, say so in a few words rather than guessing at length. If a question genuinely needs a long answer, give the short version and offer to go deeper.`;
+If you don't know something, say so in a few words rather than guessing at length. If a question genuinely needs a long answer, give the short version and offer to go deeper.
+
+You have a body: a field of particles that normally hovers as a ring reacting to sound. The show tool makes them leave the ring and stand as a word, a short phrase or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and occasionally when a word would land better shown than said. Always speak as well as showing -- say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
 
 const ELEVEN_BASE = "https://api.elevenlabs.io/v1";
 const DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM";   // stock voice; GET /voices to pick another
-const DEFAULT_TTS_MODEL = "eleven_turbo_v2_5";  // low latency tier
+const DEFAULT_TTS_MODEL = "eleven_flash_v2_5";  // lowest latency tier
 
 function cors(origin: string): Record<string, string> {
   return {
@@ -103,7 +105,27 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   console.log("orb-brain: key length", apiKey.length, "prefix ok", apiKey.startsWith("sk-ant-"));
 
   const client = new Anthropic({ apiKey });
-  const base = { model: "claude-opus-5", max_tokens: 1024, system: SYSTEM, messages } as const;
+  /* One turn, not an agent loop. Claude can emit text and a show call in the
+     same response, so the text streams for speech and the call rides out on
+     the end -- no second round trip, no added latency. Deliberately never
+     answered with a tool_result: the call is a command to the page, not a
+     question to Claude. */
+  const tools: Anthropic.Tool[] = [{
+    name: "show",
+    description:
+      "Make the orb's particles leave their ring and stand as something on screen for a few seconds, then return. " +
+      "Give either text (a short word or phrase, about ten characters at most -- longer will not read) or shape.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "A short word or phrase to spell out." },
+        shape: { type: "string", enum: ["face"], description: "A built-in shape." },
+        seconds: { type: "number", description: "How long to hold it. 2 to 15, default 5." },
+      },
+    },
+  }];
+
+  const base = { model: "claude-opus-5", max_tokens: 1024, system: SYSTEM, messages, tools } as const;
 
   // Tried in order, falling through on a 400 only. Voice wants a fast answer
   // far more than a deeper one, but effort is not worth a dead assistant.
@@ -132,6 +154,14 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             wrote = true;
           }
           if (!wrote) controller.enqueue(encoder.encode("I had nothing to say to that."));
+          // Control frame after a NUL, which cannot occur in the spoken text --
+          // so the page can split them without a parser and never speak this.
+          for (const block of final.content) {
+            if (block.type === "tool_use" && block.name === "show") {
+              controller.enqueue(encoder.encode("\u0000" + JSON.stringify({ show: block.input })));
+              console.log("orb-brain show", JSON.stringify(block.input));
+            }
+          }
           console.log("orb-brain ok via", attempt.label);
           lastError = null;
           break;

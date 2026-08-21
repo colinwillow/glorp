@@ -391,14 +391,27 @@ async function ask(text) {
     if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
 
     const reader = res.body.getReader(), dec = new TextDecoder();
+    let raw = "";
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!clock.firstTok) mark("firstTok");
-      full += dec.decode(value, { stream:true });
+      raw += dec.decode(value, { stream:true });
+      // everything past the NUL is a command for the page, never speech
+      const cut = raw.indexOf("\u0000");
+      full = cut >= 0 ? raw.slice(0, cut) : raw;
       caption(text, full);
     }
     mark("lastTok");
+
+    const cut = raw.indexOf("\u0000");
+    if (cut >= 0) {
+      full = raw.slice(0, cut);
+      try {
+        const ctl = JSON.parse(raw.slice(cut + 1));
+        if (ctl.show) setFormation(ctl.show, ctl.show.seconds);
+      } catch (e) { /* a malformed frame must never cost us the reply */ }
+    }
     brain.history.push({ role:"assistant", content: full });
   } catch (err) {
     full = "I couldn't reach my brain.";
@@ -699,7 +712,17 @@ say.type = "text"; say.placeholder = "or type a message and press enter";
 say.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   const text = say.value.trim();
-  if (text) { say.value = ""; ensureTtsCtx(); ask(text); }
+  if (!text) return;
+  say.value = "";
+  // /show <thing> forms it directly -- lets the formation be tuned without
+  // spending a round trip through the brain on every attempt
+  if (text.toLowerCase().startsWith("/show")) {
+    const what = text.slice(5).trim();
+    setFormation(/^face$/i.test(what) ? { shape:"face" } : { text: what || "?" }, 6);
+    caption(null, "showing: " + (what || "?"));
+    return;
+  }
+  ensureTtsCtx(); ask(text);
 });
 sgrp.appendChild(say);
 
@@ -751,7 +774,11 @@ document.getElementById("tuneBtn").onclick = (e) => {
 };
 function syncPanel() {
   const rows = SPEC.flatMap(g => g[1]);
-  panel.querySelectorAll("input").forEach((inp, i) => {
+  /* Sliders only. This maps positionally onto SPEC, so the text fields added
+     for the endpoint, the voice and the typed message silently shifted every
+     slider by three -- reset and the presets have been writing the wrong keys
+     since. */
+  panel.querySelectorAll("input[type=range]").forEach((inp, i) => {
     const key = rows[i][0];
     inp.value = cfg[key]; readouts[key].textContent = cfg[key];
   });
@@ -1023,6 +1050,102 @@ function buildLut(hueShift) {
   }
 }
 
+/* ---------------- formations ----------------
+   The particles can leave the ring and stand somewhere on purpose -- a word, a
+   glyph, a face -- then return. Everything is sampled to whatever `count`
+   happens to be, so the same formation works at 400 particles or 4000.
+
+   Positions are normalised to [-1,1] and blended against the ring target, so a
+   formation is a lerp rather than a mode switch: the physics, the colours and
+   the audio reactivity all keep running underneath it. */
+const formX = new Float32Array(MAX), formY = new Float32Array(MAX);
+let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
+let formCountWas = 0;
+
+/* Draw it, read the pixels back, keep the lit ones. One mechanism covers every
+   glyph the font has, which is what makes arbitrary words free. */
+function sampleGlyphs(str) {
+  const S = 220;
+  const c = document.createElement("canvas");
+  c.width = S; c.height = S;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.fillStyle = "#000"; g.fillRect(0, 0, S, S);
+  g.fillStyle = "#fff";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  let size = Math.min(S * 0.8, (S * 1.6) / Math.max(1, str.length));
+  g.font = "700 " + size + "px sans-serif";
+  const w = g.measureText(str).width || 1;
+  if (w > S * 0.92) { size *= (S * 0.92) / w; g.font = "700 " + size + "px sans-serif"; }
+  g.fillText(str, S / 2, S / 2);
+
+  const d = g.getImageData(0, 0, S, S).data, pts = [];
+  for (let y = 0; y < S; y += 2)
+    for (let x = 0; x < S; x += 2)
+      if (d[(y * S + x) * 4] > 128) pts.push([(x / S) * 2 - 1, (y / S) * 2 - 1]);
+  return pts;
+}
+
+function faceGlyph() {
+  const pts = [];
+  for (let i = 0; i < 90; i++) {                    // head
+    const a = (i / 90) * TAU;
+    pts.push([Math.cos(a) * 0.92, Math.sin(a) * 0.92]);
+  }
+  for (const ex of [-0.34, 0.34])                   // eyes
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * TAU;
+      pts.push([ex + Math.cos(a) * 0.09, -0.28 + Math.sin(a) * 0.13]);
+    }
+  for (let i = 0; i <= 46; i++) {                   // smile
+    const a = Math.PI * 0.18 + (i / 46) * Math.PI * 0.64;
+    pts.push([Math.cos(a) * -0.56, Math.sin(a) * 0.5 + 0.12]);
+  }
+  return pts;
+}
+
+function setFormation(spec, seconds) {
+  const pts = spec && spec.shape === "face" ? faceGlyph()
+            : sampleGlyphs(String((spec && spec.text) || "?").slice(0, 14));
+  if (!pts.length) return false;
+
+  /* Particles are indexed by angle around the ring, so ordering the targets by
+     angle too means the ring unfolds into the shape instead of scrambling
+     through itself. */
+  pts.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));
+
+  /* A ring looks fine with 400 particles; five letters do not. Borrow more for
+     the duration and hand them back afterwards -- the count is what decides
+     whether a word reads at all. */
+  const want = Math.min(MAX, Math.max(Math.round(cfg.count), pts.length));
+  if (want > Math.round(cfg.count)) {
+    if (!formCountWas) formCountWas = cfg.count;
+    cfg.count = want;
+    syncPanel();
+  }
+
+  const n = Math.min(MAX, want);
+  for (let i = 0; i < n; i++) {
+    const p = pts[Math.floor((i / n) * pts.length)];
+    formX[i] = p[0]; formY[i] = p[1];
+  }
+  formN = n;
+  formWant = 1;
+  formUntil = performance.now() + Math.max(1, Math.min(30, seconds || 5)) * 1000;
+  formLabel = spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
+  return true;
+}
+
+function updateFormation(dt) {
+  if (formWant && performance.now() > formUntil) formWant = 0;
+  // ease both ways; a formation that snaps in reads as a glitch, not a gesture
+  const rate = 1 - Math.pow(1 - 0.045, dt / 16.67);
+  formT += (formWant - formT) * rate;
+  if (formT < 0.002 && !formWant) {
+    formT = 0; formLabel = "";
+    if (formCountWas) { cfg.count = formCountWas; formCountWas = 0; syncPanel(); }
+  }
+}
+
 let mx = -9999, my = -9999;
 const onMove = (e) => { const t = e.touches ? e.touches[0] : e; mx = t.clientX; my = t.clientY; };
 const onLeave = () => { mx = my = -9999; };
@@ -1043,6 +1166,7 @@ function loop() {
 
   // states write drive before anything reads it
   updateState(dt);
+  updateFormation(dt);
 
   const baseR = cfg.radius * scale;
 
@@ -1127,8 +1251,9 @@ function loop() {
   const fex = Math.max(0.15, 1 + sEcc * 0.45);
   const fey = Math.max(0.15, 1 - sEcc * 0.45) * (1 + drive.scale * cfg.splitJaw);
 
-  const turb = drive.turbulence * cfg.turbGain;
-  const kick = drive.impulse * cfg.impulseGain;
+  const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
+  const turb = drive.turbulence * cfg.turbGain * hold;
+  const kick = drive.impulse * cfg.impulseGain * hold;
 
   physAcc += dt;
   let steps = 0;
@@ -1152,9 +1277,15 @@ function loop() {
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
       const sqx = 1 - cfg.bloom + cfg.bloom * Math.sin(frame / cfg.rateX * i);
       const sqy = 1 - cfg.bloom + cfg.bloom * Math.cos(frame / cfg.rateY * i);
-      const tx = cx + bx[i] * ringR * sqx * ex;
-      const ty = cy + by[i] * ringR * sqy * ey;
-      const maxF = mSpd[i] * cfg.forceRatio;
+      let tx = cx + bx[i] * ringR * sqx * ex;
+      let ty = cy + by[i] * ringR * sqy * ey;
+      if (formT > 0.002 && i < formN) {
+        tx += (cx + formX[i] * scale * 0.42 - tx) * formT;
+        ty += (cy + formY[i] * scale * 0.42 - ty) * formT;
+      }
+      // These particles are slow on purpose, which is lovely for a ring and
+      // useless for hitting a mark. Lend them force while a shape is holding.
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + formT * 5);
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -1171,7 +1302,7 @@ function loop() {
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
 
-        if (cfg.membrane > 0.001) {
+        if (cfg.membrane * hold > 0.001) {
           const b2 = ((th / TAU) * BANDS) | 0;
           // sample the shape at the current angle too, otherwise the membrane
           // pulls everything back onto a circle and sands the corners off
@@ -1181,7 +1312,7 @@ function loop() {
           const elx = ey * (rx / rd), ely = ex * (ry / rd);
           surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
           if (surf > maxR) surf = maxR;
-          const push = (surf - rd) * 0.02 * cfg.membrane;
+          const push = (surf - rd) * 0.02 * cfg.membrane * hold;
           ax += (rx / rd) * push; ay += (ry / rd) * push;
         }
 
@@ -1270,13 +1401,21 @@ function loop() {
     // distance measured against the deformed boundary: 1.0 is exactly on it, so
     // size still crosses zero there and the colour split rides the new outline
     const ndx = ox / (fRad * fex), ndy = oy / (fRad * fey);
-    const size = (1 - Math.sqrt(ndx * ndx + ndy * ndy)) * sizeHiPx;
+    let size = (1 - Math.sqrt(ndx * ndx + ndy * ndy)) * sizeHiPx;
+    /* Size keys off distance from centre, which is the whole charm of the orb
+       and precisely wrong for a glyph: outer letters bloom shut while the
+       middle ones vanish. Converge toward one size while a shape holds, but
+       not all the way -- a little variation keeps it from looking printed. */
+    if (formT > 0.002) size += (-1.15 * sizeHiPx - size) * formT * 0.88;
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
     // `dot` scales the drawn radius only. `size` (and therefore the LUT
     // index) is deliberately left alone, so this never moves the colour split.
-    let rad = Math.abs(size) * 0.5 * cfg.dot;
+    // A formation throws particles far from centre, where size is very negative
+    // and dots are largest -- exactly the wrong place for legibility. Thin them
+    // while a shape is holding so the glyph reads instead of blooming shut.
+    let rad = Math.abs(size) * 0.5 * cfg.dot * (1 - formT * 0.62);
     if (rad > radCap) rad = radCap;
     if (rad > 0.2) {
       ctx.beginPath();
@@ -1297,7 +1436,8 @@ function loop() {
   acc += dt; frames++;
   if (acc > 500) {
     hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " +
-                      state + (manual ? " (held)" : "");
+                      state + (manual ? " (held)" : "") +
+                      (formLabel ? " · " + formLabel : "");
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
