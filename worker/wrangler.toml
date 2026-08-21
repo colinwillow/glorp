@@ -1,0 +1,12 @@
+name = "orb-brain"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The API key is a secret, never a var:
+#   npx wrangler secret put ANTHROPIC_API_KEY
+#
+# Lock the browser origin down once deployed. Without this any page anywhere
+# can spend your tokens.
+[vars]
+ALLOWED_ORIGIN = "https://colinwillow.github.io"

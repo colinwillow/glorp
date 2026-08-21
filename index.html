@@ -59,6 +59,13 @@
     background:#C8F49A;border:none;cursor:pointer}
   #row{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1E1E1E}
   .brow{display:flex;gap:8px;flex-wrap:wrap}
+  input[type=text]{width:100%;background:#101010;border:1px solid #2A2A2A;color:#9A9A9A;
+    font-family:inherit;font-size:11px;padding:7px 9px;border-radius:4px;margin-bottom:8px}
+  input[type=text]:focus{outline:none;border-color:#C8F49A;color:#E8FFD2}
+  #cap{position:fixed;left:14px;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));
+    font-size:12px;line-height:1.5;color:#6B6B6B;pointer-events:none;text-align:center;
+    max-width:520px;margin:0 auto}
+  #cap b{display:block;color:#C8F49A;font-weight:400;margin-bottom:3px}
 </style>
 </head>
 <body>
@@ -71,6 +78,7 @@
   <button id="tuneBtn">tune</button>
 </div>
 <div id="err"></div>
+<div id="cap"></div>
 <div id="panel"></div>
 
 <script>
@@ -160,6 +168,30 @@ function setState(next) {
 // deterministic per-syllable noise, so speech has structure instead of jitter
 const hash = (i) => { const v = Math.sin(i * 12.9898) * 43758.5453; return v - Math.floor(v); };
 
+/* Vowel -> centroid. These are not arbitrary: /i/ and /e/ carry a high second
+   formant and spread the lips, /o/ and /u/ are low and round them. Feeding real
+   vowels into the hue channel means the mouth shapes the actual words. */
+const VOWEL_TONE = { a:0.42, e:0.86, i:0.95, o:0.24, u:0.12, y:0.72 };
+let plan = null, planMs = 0;
+
+function planSpeech(text) {
+  const out = [];
+  for (const word of String(text).toLowerCase().split(/\s+/)) {
+    let n = 0, prevVowel = false;
+    for (const ch of word) {
+      const v = VOWEL_TONE[ch];
+      if (v === undefined) { prevVowel = false; continue; }
+      if (!prevVowel) { out.push({ v, pause:false }); n++; }  // a vowel run is one syllable
+      prevVowel = true;
+    }
+    // Speech pauses at punctuation, not between every word. A gap per word makes
+    // a short sentence take half again as long as it should to say.
+    if (n && /[,.;:!?]$/.test(word)) out.push({ v:0.3, pause:true });
+  }
+  plan = out.length ? out : null;
+  planMs = plan ? (plan.length / cfg.sylRate) * 1000 : 0;
+}
+
 function srcIdle(t) {
   srcD.scale = 0.05 + 0.035 * Math.sin(t * 0.6);
   srcD.hue = 0.05 + 0.05 * Math.sin(t * 0.17);
@@ -189,9 +221,12 @@ function srcSpeaking(t) {
      the silhouette morphs per syllable exactly as they would on real audio. */
   const sy = t * cfg.sylRate;
   const idx = Math.floor(sy), f = sy - idx;
-  const voiced = hash(idx) > 0.2;
+  // With a plan the syllables are the reply's own; without one it falls back to
+  // the scripted babble, which is what runs when no brain is wired up.
+  const step = plan ? (idx < plan.length ? plan[idx] : { v:0.3, pause:true }) : null;
+  const voiced = step ? !step.pause : hash(idx) > 0.2;
   const env = voiced ? Math.pow(Math.sin(Math.PI * Math.min(1, f * 1.3)), 0.75) : 0;
-  const vowel = hash(idx * 7 + 3);
+  const vowel = step ? step.v : hash(idx * 7 + 3);
   const sib = hash(idx * 3 + 11) > 0.65;           // sibilant syllables hiss
 
   srcD.scale = 0.12 + 0.72 * env;
@@ -219,8 +254,11 @@ function updateState(dt) {
       if (heardVoice && quietT > cfg.holdMs) setState("thinking");
       else if (!heardVoice && quietT > cfg.holdMs * 3) setState("idle");
     } else if (state === "thinking" && stateT > cfg.thinkMs) {
-      setState("speaking");
-    } else if (state === "speaking" && stateT > cfg.speakMs) {
+      // a real request in flight owns the thinking state -- it ends when the
+      // reply lands, not when a timer says so
+      if (!brain.busy) setState("speaking");
+    } else if (state === "speaking" && stateT > (planMs || cfg.speakMs)) {
+      plan = null; planMs = 0;
       setState(A ? "listening" : "idle");
     }
   }
@@ -242,6 +280,93 @@ function updateState(dt) {
   drive.impulse += (srcD.impulse - drive.impulse) * e;
   for (let b = 0; b < BANDS; b++)
     drive.spectrum[b] += (srcD.spectrum[b] - drive.spectrum[b]) * e;
+}
+
+/* ---------------- brain ----------------
+   Speech in via the browser's own recogniser, thinking out to Claude through a
+   proxy, and the reply drives the speaking state. The API key is deliberately
+   NOT here: this page is served from GitHub Pages, so anything in it is public
+   and a leaked key is billable. worker/ holds the proxy that keeps it server
+   side. With no endpoint configured everything below stays dormant and the
+   scripted states run instead. */
+const cap = document.getElementById("cap");
+const brain = {
+  url: (() => { try { return localStorage.getItem("orbBrain") || ""; } catch (e) { return ""; } })(),
+  history: [],
+  busy: false
+};
+
+function caption(said, said2) {
+  cap.innerHTML = "";
+  if (said) { const b = document.createElement("b"); b.textContent = said; cap.appendChild(b); }
+  if (said2) cap.appendChild(document.createTextNode(said2));
+}
+
+async function ask(text) {
+  if (brain.busy) return;
+  caption(text, "");
+  if (!brain.url) { setState("thinking"); return; }   // scripted reply, no brain wired
+
+  brain.busy = true;
+  brain.history.push({ role:"user", content:text });
+  // the proxy is stateless, so trimming here is what bounds the token bill
+  if (brain.history.length > 20) brain.history.splice(0, brain.history.length - 20);
+  setState("thinking");
+
+  let full = "";
+  try {
+    const res = await fetch(brain.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: brain.history })
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
+
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      full += dec.decode(value, { stream:true });
+      caption(text, full);
+      // start the mouth on the first clause rather than waiting for the full
+      // reply -- that wait is the difference between a conversation and a query
+      planSpeech(full);
+      if (state !== "speaking" && full.length > 12) setState("speaking");
+    }
+    brain.history.push({ role:"assistant", content: full });
+  } catch (err) {
+    full = "I couldn't reach my brain.";
+    caption(text, full + "  (" + err.message + ")");
+    brain.history.pop();
+  }
+
+  brain.busy = false;
+  planSpeech(full);
+  if (state !== "speaking") setState("speaking");
+}
+
+/* Recognition is the browser's, not ours -- no key, no proxy. Safari on iOS
+   supports it but is stricter about the gesture and drops the session more
+   often, hence the restart in onend. */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, recOn = false;
+
+function toggleSTT() {
+  if (recOn) { recOn = false; if (rec) rec.stop(); talkBtn.classList.remove("on"); talkBtn.textContent = "talk"; return; }
+  if (!SR) { caption("", "this browser has no speech recognition"); return; }
+  rec = new SR();
+  rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+  rec.onresult = (e) => {
+    let heard = "";
+    for (let i = e.resultIndex; i < e.results.length; i++)
+      if (e.results[i].isFinal) heard += e.results[i][0].transcript;
+    heard = heard.trim();
+    if (heard) ask(heard);
+  };
+  rec.onerror = (e) => { if (e.error !== "no-speech") caption("", "speech error: " + e.error); };
+  rec.onend = () => { if (recOn) { try { rec.start(); } catch (e) {} } };  // Chrome ends sessions on its own
+  try { rec.start(); } catch (e) {}
+  recOn = true; talkBtn.classList.add("on"); talkBtn.textContent = "listening";
 }
 
 /* ---------------- controls ---------------- */
@@ -322,7 +447,22 @@ SPEC.forEach(([title, rows]) => {
 });
 const sgrp = document.createElement("div"); sgrp.className = "grp";
 sgrp.innerHTML = "<h3>state</h3>";
+const ep = document.createElement("input");
+ep.type = "text"; ep.placeholder = "brain endpoint url (leave blank for scripted)";
+ep.value = brain.url;
+ep.addEventListener("change", () => {
+  brain.url = ep.value.trim();
+  try { localStorage.setItem("orbBrain", brain.url); } catch (e) {}
+  caption("", brain.url ? "brain connected" : "scripted mode");
+});
+sgrp.appendChild(ep);
+
+const talkBtn = document.createElement("button");
+talkBtn.textContent = "talk";
+talkBtn.onclick = toggleSTT;
+
 const srow = document.createElement("div"); srow.className = "brow";
+srow.appendChild(talkBtn);
 const stBtns = ["auto"].concat(STATES).map((nm) => {
   const btn = document.createElement("button");
   btn.textContent = nm; btn.dataset.s = nm;
