@@ -83,7 +83,7 @@ const DEFAULTS = {
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
   falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
-  attack:0.35, release:0.11,
+  attack:0.35, release:0.11, dbMargin:12, dbRange:34,
   dot:0.4, sizeHi:32, falloff:70, follow:1.0, split:0.62,
   splitEll:0.45, splitJaw:0.35, splitShape:1.0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
@@ -139,6 +139,8 @@ const SPEC = [
     ["jaw","level → jaw",0,2,0.05],
     ["gate","deform gate",0,1,0.02],
     ["gateFloor","noise gate",0,0.3,0.005],
+    ["dbMargin","gate above room",0,30,0.5],
+    ["dbRange","dynamic range dB",6,60,1],
     ["attack","attack",0.05,1,0.01],
     ["release","release",0.01,0.5,0.01]]],
   ["form", [
@@ -266,7 +268,7 @@ micBtn.onclick = async () => {
     A = { ac, an, stream,
       freq:new Uint8Array(an.frequencyBinCount),
       prev:new Float32Array(an.frequencyBinCount),
-      time:new Float32Array(an.fftSize) };
+      time:new Float32Array(an.fftSize), floorDb:-55, db:-99 };
     micState = "live";
     micBtn.style.display = "none";
     frzBtn.style.display = "";
@@ -298,8 +300,29 @@ function analyse() {
     const rms = Math.sqrt(sum / A.time.length);
     const zcr = zc / A.time.length;
 
-    const k = rms > drive.scale ? cfg.attack : cfg.release;
-    drive.scale += (Math.min(1, rms * 6) - drive.scale) * k;
+    /* Loudness is logarithmic and RMS is not. Conversational speech is about
+       -30 dBFS, i.e. rms ~0.03, which min(1, rms*6) turned into 0.19 while a
+       shout pinned it at 1.0 -- so the form only woke up for shouting even
+       though the spectrum bars, which are already dB-scaled by
+       getByteFrequencyData, looked perfectly lively. Work in dB instead.
+
+       The floor tracks the room: down fast so a pause recalibrates it in a
+       third of a second, up slowly so speech itself cannot desensitise it.
+       That makes the response relative to ambient rather than absolute, which
+       is what keeps a quiet room from being twitchy and a noisy one from being
+       dead. */
+    const db = 20 * Math.log10(rms + 1e-7);
+    A.db = db;
+    A.floorDb += (db - A.floorDb) * (db < A.floorDb ? 0.05 : 0.0006);
+
+    const lo = A.floorDb + cfg.dbMargin;
+    let lvl = (db - lo) / cfg.dbRange;
+    if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
+
+    // compare like with like: rms is 0-0.3 but drive.scale is 0-1, so the old
+    // test went permanently false above 0.3 and attack was never once applied
+    const k = lvl > drive.scale ? cfg.attack : cfg.release;
+    drive.scale += (lvl - drive.scale) * k;
 
     const N = A.freq.length;
     for (let b = 0; b < BANDS; b++) {
@@ -700,7 +723,8 @@ function loop() {
     hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " + micState;
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
-                        "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse);
+                        "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
+                        (A ? "\ndB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");
     acc = 0; frames = 0;
   }
   requestAnimationFrame(loop);
