@@ -52,7 +52,7 @@ export default {
     // Streamed so the orb can start speaking on the first token instead of
     // waiting for the whole reply -- that latency is the difference between a
     // conversation and a lookup.
-    const stream = client.beta.messages.stream({
+    const makeStream = () => client.beta.messages.stream({
       model: "claude-opus-5",
       max_tokens: 1024, // deliberately short: this gets spoken, not read
       system: SYSTEM,
@@ -66,25 +66,33 @@ export default {
     });
 
     const encoder = new TextEncoder();
+    let streamRef: ReturnType<typeof makeStream> | null = null;
     const out = new ReadableStream<Uint8Array>({
       async start(controller) {
         try {
-          for await (const event of stream) {
+          streamRef = makeStream();
+          for await (const event of streamRef) {
             if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
               controller.enqueue(encoder.encode(event.delta.text));
             }
           }
           // A policy decline arrives as HTTP 200 with no text, which would leave
           // the orb silently stuck in its speaking state. Give it something to say.
-          const final = await stream.finalMessage();
+          const final = await streamRef.finalMessage();
           if (final.stop_reason === "refusal") {
             controller.enqueue(encoder.encode("I can't help with that one."));
           }
         } catch (error) {
+          // Say something human, but never swallow the detail -- a generic
+          // "something went wrong" is indistinguishable from every other
+          // failure and leaves nothing to act on.
+          const err = error as { name?: string; message?: string; status?: number };
+          console.error("orb-brain failure", err?.name, err?.status, err?.message, error);
           let say = "Something went wrong reaching my brain.";
           if (error instanceof Anthropic.AuthenticationError) say = "My API key isn't working.";
           else if (error instanceof Anthropic.RateLimitError) say = "I'm being rate limited. Try again in a moment.";
           else if (error instanceof Anthropic.APIError) say = `API error ${error.status}.`;
+          say += ` [${err?.name ?? "Error"}: ${(err?.message ?? String(error)).slice(0, 300)}]`;
           controller.enqueue(encoder.encode(say));
         } finally {
           controller.close();
