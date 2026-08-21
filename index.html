@@ -79,9 +79,10 @@ const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
   count:626, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
-  shape:2.35, shapeGain:1.35,
+  shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18,
   speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
   rmsGain:1.2, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
+  kickShape:1.0,
   falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
   attack:0.35, release:0.11, dbMargin:12, dbRange:34,
   dot:0.4, sizeHi:32, falloff:70, follow:1.0, split:0.62,
@@ -101,7 +102,7 @@ const PRESETS = {
   // to hold particles on it, gate 0 so the resting orb keeps its stretch
   shaped: {
     count:570, radius:0.30, rateX:23000, rateY:6500, bloom:0.25, fit:1.19, contain:0.86,
-    shape:1, shapeGain:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
+    shape:1, shapeGain:0, core:0, coreR:0.18, kickShape:0, speedLo:3.5, speedHi:19.5, forceRatio:0.045,
     fleeRadius:100, fleeMult:1.8, rmsGain:1.15, specGain:0.65, membrane:1.1,
     ellipse:0.45, jaw:0, gate:0, falloffGain:1.7, turbGain:1.6, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
@@ -112,7 +113,7 @@ const PRESETS = {
   // split at a plain fraction of the ring, which is what this was built against
   mouth: {
     count:900, radius:0.16, rateX:14000, rateY:23500, bloom:0.60, fit:0.75, contain:0.56,
-    shape:7, shapeGain:0, speedLo:1, speedHi:3, forceRatio:0.18,
+    shape:7, shapeGain:0, core:0, coreR:0.18, kickShape:0, speedLo:1, speedHi:3, forceRatio:0.18,
     fleeRadius:200, fleeMult:4.6, rmsGain:0.9, specGain:0.7, membrane:0.5,
     ellipse:1.8, jaw:1.2, gate:1, falloffGain:0, turbGain:1.1, impulseGain:2.7,
     hueGain:2.55, attack:0.35, release:0.11, dot:0.65, sizeHi:26, falloff:70,
@@ -133,6 +134,7 @@ const SPEC = [
     ["falloffGain","rms → colour split",0,4,0.05],
     ["turbGain","sibilance → turbulence",0,4,0.1],
     ["impulseGain","onset → impulse",0,5,0.1],
+    ["kickShape","kick along shape",0,1,0.02],
     ["hueGain","centroid → hue",0,4,0.05],
     ["shapeGain","centroid → shape",0,4,0.05],
     ["ellipse","centroid → ellipse",0,2.5,0.05],
@@ -150,6 +152,8 @@ const SPEC = [
     ["fit","fit to screen",0.5,1.2,0.01],
     ["contain","contain",0.3,1,0.02],
     ["shape","shape",0,8,0.01],
+    ["core","core share",0,0.6,0.01],
+    ["coreR","core radius",0.05,0.6,0.01],
     ["rateX","rate x",2000,60000,500],
     ["rateY","rate y",2000,60000,500]]],
   ["motion", [
@@ -438,6 +442,7 @@ const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
 const bx = new Float32Array(MAX), by = new Float32Array(MAX);
 const mSpd = new Float32Array(MAX);
 const bnd = new Float32Array(MAX);
+const pr = new Float32Array(MAX);
 
 function buildBase(cnt) {
   for (let i = 0; i < cnt; i++) {
@@ -514,6 +519,11 @@ function loop() {
       // each particle gets its own wall radius, so a saturated orb rests in a
       // fuzzy band instead of tracing the containment ellipse as a hard edge
       bnd[i] = 0.84 + Math.random() * 0.16;
+      // fixed lottery ticket per particle. Core membership is pr[i] < core, so
+      // the slider re-sorts the field with no reseed, and members are scattered
+      // through the index rather than taken as a contiguous arc, which would
+      // cut a gap out of the ring.
+      pr[i] = Math.random();
     }
     if (!seeded) { seedNear(n, baseR); seeded = true; }
     seededFor = n;
@@ -591,9 +601,18 @@ function loop() {
   while (physAcc >= STEP && steps < 4) {
     physAcc -= STEP; steps++; frame++;
     for (let i = 0; i < n; i++) {
-      const band = (i * BANDS / n) | 0;
-      const sk = (i * SHAPE_N / n) | 0;
-      let ringR = (baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain) * shapeLut[sk];
+      // the core sits out the ring entirely: no spectrum, no shape, no membrane
+      // and no kick, so it holds while the silhouette works. It still breathes,
+      // because gScale is loudness.
+      const isCore = pr[i] < cfg.core;
+      let ringR;
+      if (isCore) {
+        ringR = baseR * gScale * cfg.coreR;
+      } else {
+        const band = (i * BANDS / n) | 0;
+        const sk = (i * SHAPE_N / n) | 0;
+        ringR = (baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain) * shapeLut[sk];
+      }
       if (ringR > maxR) ringR = maxR;
       // bloom 1 = original (sine swings through zero, target crosses centre)
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
@@ -612,23 +631,46 @@ function loop() {
       const am = Math.sqrt(ax * ax + ay * ay);
       if (am > maxF) { ax = ax / am * maxF; ay = ay / am * maxF; }
 
-      if (cfg.membrane > 0.001) {
+      if (!isCore && (cfg.membrane > 0.001 || kick > 0.01)) {
         const rx = px[i] - cx, ry = py[i] - cy;
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
-        const b2 = ((th / TAU) * BANDS) | 0;
         let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
-        // sample the shape at the current angle too, otherwise the membrane
-        // pulls everything back onto a circle and sands the corners off
-        let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2];
-        // radius of the ellipse at this angle, or the membrane rounds the lips
-        // straight back off the way it used to round off the corners
-        const elx = ey * (rx / rd), ely = ex * (ry / rd);
-        surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
-        if (surf > maxR) surf = maxR;
-        const push = (surf - rd) * 0.02 * cfg.membrane;
-        ax += (rx / rd) * push; ay += (ry / rd) * push;
-        if (kick > 0.01) { ax += (rx / rd) * kick * 1.6; ay += (ry / rd) * kick * 1.6; }
+
+        if (cfg.membrane > 0.001) {
+          const b2 = ((th / TAU) * BANDS) | 0;
+          // sample the shape at the current angle too, otherwise the membrane
+          // pulls everything back onto a circle and sands the corners off
+          let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2];
+          // radius of the ellipse at this angle, or the membrane rounds the lips
+          // straight back off the way it used to round off the corners
+          const elx = ey * (rx / rd), ely = ex * (ry / rd);
+          surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
+          if (surf > maxR) surf = maxR;
+          const push = (surf - rd) * 0.02 * cfg.membrane;
+          ax += (rx / rd) * push; ay += (ry / rd) * push;
+        }
+
+        // The kick used to fire straight out from centre, identically in every
+        // direction -- it can only inflate, never shape, which is why every
+        // loud moment collapsed to the same oval. Fire it along the outward
+        // normal of the shape instead, so a hit drives edges out as faces and
+        // corners along their bisector, exaggerating the silhouette.
+        // For P(t) = (r cos t, r sin t) the outward normal is
+        // (r cos t + r' sin t, r sin t - r' cos t), which reduces to radial
+        // when r' is 0, i.e. on a circle.
+        if (kick > 0.01) {
+          // Pushing every particle out by the SAME amount adds a constant to
+          // r(theta), and adding a constant to a radial function is precisely
+          // what rounds it toward a circle -- which is why every onset used to
+          // collapse the silhouette. Scale each push by that particle's own
+          // shape radius instead: pushing by c*r turns r into r*(1+c), a pure
+          // dilation, so the outline stays similar to itself however hard it
+          // is hit.
+          const mag = 1 + (shapeLut[s2] - 1) * cfg.kickShape;
+          ax += (rx / rd) * kick * 1.6 * mag;
+          ay += (ry / rd) * kick * 1.6 * mag;
+        }
       }
 
       if (turb > 0.01) {
