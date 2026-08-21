@@ -82,7 +82,7 @@ const DEFAULTS = {
   rmsGain:1.15, specGain:0.65, membrane:0.35, ellipse:0.45,
   falloffGain:1.7, turbGain:1.6, impulseGain:2.7, hueGain:2.55,
   attack:0.35, release:0.31,
-  sizeHi:26, falloff:45, trail:0.41, rK:-0.5, gK:7, bK:-2, base:130
+  dot:1.0, sizeHi:26, falloff:45, trail:0.41, rK:-0.5, gK:7, bK:-2, base:130
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -116,6 +116,7 @@ const SPEC = [
     ["fleeRadius","flee radius",0,400,10],
     ["fleeMult","flee mult",0,6,0.1]]],
   ["size & colour", [
+    ["dot","dot size",0.1,4,0.05],
     ["sizeHi","size hi",2,80,1],
     ["falloff","falloff",20,600,5],
     ["trail","trail",0.02,1,0.01],
@@ -369,7 +370,7 @@ function loop() {
   const k = scale / 400;
   const falloffPx = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
   const sizeHiPx = cfg.sizeHi * k;
-  const radCap = 22 * k;
+  const radCap = 22 * k * cfg.dot;
 
   const shift = Math.round(drive.hue * cfg.hueGain * 90);
   const lo = -3.4 * sizeHiPx;
@@ -453,7 +454,9 @@ function loop() {
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
-    let rad = Math.abs(size) * 0.5;
+    // `dot` scales the drawn radius only. `size` (and therefore the LUT
+    // index) is deliberately left alone, so this never moves the colour split.
+    let rad = Math.abs(size) * 0.5 * cfg.dot;
     if (rad > radCap) rad = radCap;
     if (rad > 0.2) {
       ctx.beginPath();
