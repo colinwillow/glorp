@@ -564,6 +564,10 @@ let rec = null, recOn = false;
    finalises whatever is pending -- which is exactly the orb's own words. The
    tail covers room reverb after the audio ends. */
 let sttPaused = false, echoUntil = 0;
+/* Browsers will not start recognition without a gesture, and enabling the mic
+   is the only one we are guaranteed. So treat that tap as consent for both and
+   remember the choice -- nobody wants to arm this twice on every load. */
+let talkPref = (() => { try { return localStorage.getItem("orbTalk") !== "0"; } catch (e) { return true; } })();
 
 function pauseSTT() {
   if (!recOn || sttPaused) return;
@@ -579,9 +583,11 @@ function resumeSTT() {
 function toggleSTT() {
   if (recOn) {
     recOn = false; if (rec) rec.stop();
+    talkPref = false; try { localStorage.setItem("orbTalk", "0"); } catch (e) {}
     talkBtn.classList.remove("on"); talkBtn.textContent = "talk";
-    caption("", "mic off"); return;
+    caption("", "not listening"); return;
   }
+  talkPref = true; try { localStorage.setItem("orbTalk", "1"); } catch (e) {}
   ensureTtsCtx();
   if (!SR) { caption("", "this browser has no speech recognition (needs Chrome, or Safari 14.5+)"); return; }
   rec = new SR();
@@ -844,6 +850,9 @@ micBtn.onclick = async () => {
     micBtn.style.display = "none";
     frzBtn.style.display = "";
     analyse();
+    // this click is the gesture; spend it on everything that needs one
+    ensureTtsCtx();
+    if (talkPref && !recOn) toggleSTT();
   } catch (e) {
     micState = "denied";
     micBtn.textContent = "retry mic";
@@ -1457,6 +1466,9 @@ function loop() {
   requestAnimationFrame(loop);
 }
 syncStateBtns();
+caption("", brain.url
+  ? "tap enable mic, then talk. try: \u201cshow me a face\u201d or \u201cspell hello\u201d"
+  : "tap enable mic. add a brain endpoint under tune to talk to it.");
 buildLut(0);
 loop();
 </script>
