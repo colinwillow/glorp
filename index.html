@@ -77,13 +77,14 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:570, radius:0.16, rateX:23000, rateY:6500, bloom:1.0, fit:1.19, contain:0.86,
-  shape:0, shapeGain:2.0,
-  speedLo:3.5, speedHi:19.5, forceRatio:0.045, fleeRadius:100, fleeMult:1.8,
-  rmsGain:1.15, specGain:0.65, membrane:0.35, ellipse:0.45,
-  falloffGain:1.7, turbGain:1.6, impulseGain:2.7, hueGain:2.55,
-  attack:0.35, release:0.31,
-  dot:1.0, sizeHi:26, falloff:45, trail:0.41, rK:-0.5, gK:7, bK:-2, base:130
+  count:513, radius:0.07, rateX:14000, rateY:23500, bloom:0.44, fit:0.75, contain:0.56,
+  shape:1.27, shapeGain:1.35,
+  speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
+  rmsGain:0.9, specGain:0.7, membrane:0.5, ellipse:0.4, jaw:0.8,
+  falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
+  attack:0.35, release:0.11,
+  dot:1.15, sizeHi:26, falloff:70, follow:1.0, split:0.46,
+  trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -101,7 +102,8 @@ const SPEC = [
     ["impulseGain","onset → impulse",0,5,0.1],
     ["hueGain","centroid → hue",0,4,0.05],
     ["shapeGain","centroid → shape",0,4,0.05],
-    ["ellipse","centroid → ellipse",0,1.5,0.05],
+    ["ellipse","centroid → ellipse",0,2.5,0.05],
+    ["jaw","level → jaw",0,2,0.05],
     ["attack","attack",0.05,1,0.01],
     ["release","release",0.01,0.5,0.01]]],
   ["form", [
@@ -110,7 +112,7 @@ const SPEC = [
     ["bloom","bloom",0,1,0.01],
     ["fit","fit to screen",0.5,1.2,0.01],
     ["contain","contain",0.3,1,0.02],
-    ["shape","shape",0,7,0.01],
+    ["shape","shape",0,8,0.01],
     ["rateX","rate x",2000,60000,500],
     ["rateY","rate y",2000,60000,500]]],
   ["motion", [
@@ -123,6 +125,8 @@ const SPEC = [
     ["dot","dot size",0.1,4,0.05],
     ["sizeHi","size hi",2,80,1],
     ["falloff","falloff",20,600,5],
+    ["follow","split follows size",0,1,0.02],
+    ["split","split at",0.1,2,0.02],
     ["trail","trail",0.02,1,0.01],
     ["rK","red k",-20,20,0.5],
     ["gK","green k",-20,20,0.5],
@@ -309,7 +313,11 @@ const SHAPES = [
   (t) => polyR(t, 5, Math.PI / 2),                    // pentagon, point up
   (t) => polyR(t, 6, Math.PI / 2 + Math.PI / 6),      // hexagon, flat top
   (t) => 0.44 + 0.56 * Math.pow(0.5 + 0.5 * Math.cos(5 * (t + Math.PI / 2)), 0.55),  // star
-  (t) => lobeR(t, 6, 0.42)                            // rosette / overlapping circles
+  (t) => lobeR(t, 6, 0.42),                           // rosette / overlapping circles
+  // mouth: |sin| kinks where sin crosses zero, so the corners come out as
+  // cusps at left and right — a lens, not a squashed circle. ellipse and jaw
+  // then work it like lips.
+  (t) => 1 - 0.62 * Math.pow(Math.abs(Math.sin(t)), 0.72)
 ];
 const shapeTab = SHAPES.map((fn) => {
   const tab = new Float32Array(SHAPE_N);
@@ -423,7 +431,16 @@ function loop() {
   // falloff / sizeHi were absolute px, which is why desktop looked nothing
   // like mobile. Normalise against a 400px reference short edge.
   const k = scale / 400;
-  const falloffPx = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
+  // The black ring is wherever size crosses zero, i.e. dist == falloffPx. Fixed
+  // in px it stops tracking the orb: shrink radius and the whole thing ends up
+  // inside the green zone with no ring and no purple at all. follow blends the
+  // split toward a fraction of the current ring radius, so the three layers
+  // hold at any size. falloffGain only rides the absolute term — in follow mode
+  // gScale already carries loudness.
+  const ringNow = baseR * gScale;
+  const fAbs = cfg.falloff * k * (1 + drive.scale * cfg.falloffGain);
+  const fRel = ringNow * cfg.split;
+  const falloffPx = fAbs + (fRel - fAbs) * cfg.follow;
   const sizeHiPx = cfg.sizeHi * k;
   const radCap = 22 * k * cfg.dot;
 
@@ -446,9 +463,12 @@ function loop() {
   if (shift !== lastShift || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
   }
+  // Vowels really do work this way: /i/ has a high second formant, so a bright
+  // centroid spreads the lips wide, and a dark one rounds them tall. jaw then
+  // opens it vertically with loudness, which is what reads as talking.
   const ecc = (drive.hue - 0.5) * 2 * cfg.ellipse;   // bright → wide, dark → tall
-  const ex = 1 + ecc * 0.45;
-  const ey = 1 - ecc * 0.45;
+  const ex = Math.max(0.15, 1 + ecc * 0.45);
+  const ey = Math.max(0.15, 1 - ecc * 0.45) * (1 + drive.scale * cfg.jaw);
   const turb = drive.turbulence * cfg.turbGain;
   const kick = drive.impulse * cfg.impulseGain;
 
@@ -487,6 +507,10 @@ function loop() {
         // sample the shape at the current angle too, otherwise the membrane
         // pulls everything back onto a circle and sands the corners off
         let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2];
+        // radius of the ellipse at this angle, or the membrane rounds the lips
+        // straight back off the way it used to round off the corners
+        const elx = ey * (rx / rd), ely = ex * (ry / rd);
+        surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
         if (surf > maxR) surf = maxR;
         const push = (surf - rd) * 0.02 * cfg.membrane;
         ax += (rx / rd) * push; ay += (ry / rd) * push;
