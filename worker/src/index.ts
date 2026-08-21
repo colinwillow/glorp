@@ -42,6 +42,8 @@ const PROTOCOL = `Your replies are spoken aloud, never read. Keep them to one or
 
 If a question genuinely needs a long answer, give the short version and offer to go deeper.
 
+You have a menu -- a hub with six labelled satellites, opened by saying "menu" and chosen from by touch or by naming one. It is real and it works; never say you do not have one. If someone asks what you can do, offering the menu is a good answer.
+
 The show tool makes your particles leave the ring and stand as a word, a short phrase, an emoji or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and whenever a word would land better shown than said -- your own name, a number, the one word a sentence turns on. It can also set off a firework, which is for good news and nothing else. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
 
 function persona(env: Env): string {
@@ -146,7 +148,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, shape or shell. " +
+      "Do something with the orb's particles. Give exactly one of text, shape, shell or menu. " +
       "text and shape make the particles leave their ring and stand as something for a few seconds, then return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
       "or anything worth setting off. Never use a shell for an ordinary answer.",
@@ -160,6 +162,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             "A single emoji works too and draws as itself.",
         },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
+        menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
         shell: {
           type: "string",
           enum: ["peony", "ring", "willow", "palm", "shock", "valentine", "nova", "pinwheel"],

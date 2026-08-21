@@ -369,6 +369,17 @@ are a smear, and the point of a menu is that it can be read at a glance.
 Down highlights and up picks, so a thumb can slide between them and land
 somewhere deliberate rather than firing whatever it touched first.
 
+Each satellite gets its own lobe count, its own drift and its own colour —
+six identical circles are a diagram, and six in one colour read as one object
+with lumps on it. The wobble is gentle and slow on purpose: the particles chase
+it through a spring, so a fast or deep one is not a wobble, it is a target they
+never catch, and it draws as spikes.
+
+Saying `menu` no longer also asks the brain. It used to answer that it does not
+have a menu and draw the word NO over the menu it was standing on; a local
+command that has already taken the field means the utterance was for us. The
+Worker knows about it now too.
+
 Edit `MENU` and the menu changes; the geometry is built from its length.
 
 After `idleS` seconds with nothing happening — no touch, no word, no formation —
@@ -396,6 +407,19 @@ moving on.
 
 Each one also rotates the palette, so they read as different weather and not
 just different geometry.
+
+They run **whenever there is a live microphone** and nothing else has the field
+— idle included. Gating them on the *listening state* meant they only ran inside
+the second or two between the voice detector firing and the reply starting, and
+they spent most of that fading in. And they **bloom with the sound** rather than
+running flat out: a quiet room leaves the orb as the orb, and talking opens the
+pattern. That difference is the reaction — without it a muse is a thing that
+happens to be playing while you speak.
+
+Every muse carries the spectrum. The first version used level for a third of a
+radius and let time do the rest, which made six clocks that were dimly aware of
+a room. The pattern has to be the carrier and the sound the thing carried, or
+this is a screensaver with a microphone attached.
 
 Each muse is **two numbers per particle** — a radius multiplier and an angle
 offset — applied to the ring target before anything else touches it. That is the

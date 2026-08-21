@@ -76,6 +76,21 @@
   #cap{position:fixed;left:14px;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));
     font-size:12px;line-height:1.5;color:#6B6B6B;pointer-events:none;text-align:center;
     max-width:520px;margin:0 auto}
+  /* The one control that matters, where a thumb already is. The top-right
+     button is still there and still works; nobody found it. */
+  #mic{position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(76px + env(safe-area-inset-bottom));
+    width:64px;height:64px;border-radius:50%;border:2px solid #FF3B4E;
+    background:rgba(255,59,78,.10);display:flex;align-items:center;justify-content:center;
+    cursor:pointer;-webkit-tap-highlight-color:transparent;
+    box-shadow:0 0 0 0 rgba(255,59,78,.45);animation:micPulse 2.4s ease-out infinite}
+  #mic:active{background:rgba(255,59,78,.24)}
+  #mic svg{width:26px;height:26px;fill:#FF6675}
+  #mic.off{display:none}
+  @keyframes micPulse{
+    0%{box-shadow:0 0 0 0 rgba(255,59,78,.40)}
+    70%{box-shadow:0 0 0 16px rgba(255,59,78,0)}
+    100%{box-shadow:0 0 0 0 rgba(255,59,78,0)}}
   #cap b{display:block;color:#C8F49A;font-weight:400;margin-bottom:3px}
   #cap i{display:block;font-style:normal;color:#3E4A38;font-size:10px;
     letter-spacing:.08em;margin-top:5px}
@@ -91,6 +106,7 @@
   <button id="tuneBtn">tune</button>
 </div>
 <div id="err"></div>
+<button id="mic" aria-label="enable microphone"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg></button>
 <div id="cap"></div>
 <div id="panel"></div>
 
@@ -496,7 +512,7 @@ function answerVisual(text, ms) {
   // the picture has to be up slightly before the word is said, not after it
   const delay = Math.max(0, (at / w.length) * (ms || 0) - 260);
   const hold = Math.max(1.6, (ms || 2400) / 1000 * 0.8);
-  answerAt = setTimeout(() => { if (!(form3d && formWant)) setFormation(spec, hold); }, delay);
+  answerAt = setTimeout(() => { if (!((form3d || menuOn) && formWant)) setFormation(spec, hold); }, delay);
 }
 
 /* ---------------- voice out ----------------
@@ -659,6 +675,9 @@ function toggleSTT() {
   if (!SR) { caption("", "this browser has no speech recognition (needs Chrome, or Safari 14.5+)"); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
+  /* Chrome asks twice on purpose: getUserMedia covers the analyser, and the
+     Web Speech API is a separate grant because the audio leaves the machine.
+     Nothing to fix -- but unexplained it reads as the page being broken. */
   rec.onstart = () => caption("", "listening… say something");
   rec.onaudiostart = () => caption("", "hearing audio…");
   rec.onresult = (e) => {
@@ -678,7 +697,12 @@ function toggleSTT() {
     if (!heard && interim.trim()) caption("", "… " + interim.trim());
     if (heard) {
       echoSeen = 0; lastLive = "";        // next utterance starts counting again
-      if (echoMode === 1) caption(heard, "");   // echo is local only: no brain, no wait
+      /* Say "menu" and the menu comes up locally -- and then the sentence went
+         on to the brain anyway, which answered that it does not have one and
+         drew the word NO over the menu it was standing on. If a local command
+         has already taken the field, the utterance was for us. */
+      if (formWant && (menuOn || form3d)) caption(heard, "");
+      else if (echoMode === 1) caption(heard, "");   // echo is local: no brain, no wait
       else ask(heard);
     }
   };
@@ -933,13 +957,16 @@ document.getElementById("bars").onclick = (e) => {
 let A = null, frozen = false;
 const errBox = document.getElementById("err");
 const micBtn = document.getElementById("micBtn");
+const micBig = document.getElementById("mic");
 const frzBtn = document.getElementById("frzBtn");
 const hud = document.getElementById("hud");
 const meter = document.getElementById("meter");
 let micState = "idle";
 
+micBig.onclick = () => micBtn.onclick();
 micBtn.onclick = async () => {
   micState = "asking"; micBtn.textContent = "…";
+  micBig.style.animation = "none";
   errBox.style.display = "none";
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
@@ -957,14 +984,19 @@ micBtn.onclick = async () => {
       prev:new Float32Array(an.frequencyBinCount),
       time:new Float32Array(an.fftSize), floorDb:-55, db:-99 };
     micState = "live";
+    micBig.classList.add("off");
     micBtn.style.display = "none";
     frzBtn.style.display = "";
     analyse();
     // this click is the gesture; spend it on everything that needs one
     ensureTtsCtx();
-    if (talkPref && !recOn) toggleSTT();
+    if (talkPref && !recOn) {
+      caption("", "one more permission — speech is a separate grant from the mic");
+      toggleSTT();
+    }
   } catch (e) {
     micState = "denied";
+    micBig.style.animation = "";
     micBtn.textContent = "retry mic";
     errBox.style.display = "block";
     errBox.textContent = (e.name || "Error") + ": " + (e.message || String(e));
@@ -1789,6 +1821,12 @@ let menuOn = false, menuHit = -1;
 let lastActive = performance.now();
 const stirred = () => { lastActive = performance.now(); };
 const menuAt = [];                         // satellite centres, in formation units
+/* Six satellites in one colour read as one object with lumps on it. Coloured
+   directly rather than by nudging `size`, which is what the first attempt did
+   -- size is also the dot's radius, so half the satellites were pushed through
+   the zero crossing and simply stopped being drawn. */
+const MENU_HUE = [0, 58, 116, 174, 232, 290];
+let menuCols = [];
 
 function menuPoints() {
   const pts = [], E = [], grp = [], N = MENU.length;
@@ -1869,16 +1907,21 @@ const MUSE_N = 6;
 const MUSE_HUE = [0, 34, -30, 74, -64, 18];    // each one shifts the palette too
 const MUSE_NAME = ["rings", "wave", "comet", "twin", "lattice", "sparks"];
 
-function muse(k, i, a, t, lvl, imp) {
+function muse(k, i, a, t, lvl, imp, spec) {
+  /* Every one of these carries the spectrum. The first version used level for a
+     third of a radius and let time do the rest, which made six clocks that were
+     dimly aware of a room -- the pattern has to be the carrier and the sound the
+     thing being carried, or this is a screensaver with a microphone attached. */
+  const sp = spec * 1.9;
   switch (k) {
     case 0: {                                   // three shells, counter-turning
       const band = i % 3;
-      muR = (band === 0 ? 0.48 : band === 1 ? 0.82 : 1.16) * (1 + lvl * 0.30);
-      muA = t * (band - 1) * 0.55;
+      muR = (band === 0 ? 0.48 : band === 1 ? 0.82 : 1.16) * (1 + lvl * 0.9 + sp * 0.55);
+      muA = t * (band - 1) * 0.55 * (0.4 + lvl * 2.2);
       return;
     }
     case 1: {                                   // a wave travelling round the rim
-      muR = 1 + (0.16 + lvl * 0.55) * Math.sin(a * 5 - t * 2.2);
+      muR = 1 + (0.10 + lvl * 1.5) * Math.sin(a * 5 - t * 2.2) + sp * 0.5;
       muA = 0;
       return;
     }
@@ -1886,25 +1929,25 @@ function muse(k, i, a, t, lvl, imp) {
       let d = a - t * 1.1;
       d = d - TAU * Math.round(d / TAU);        // wrap to the short way round
       const w = 1 / (1 + 16 * d * d);
-      muR = 1 + (0.30 + lvl * 0.7) * w;
+      muR = 1 + (0.16 + lvl * 1.9) * w + sp * 0.42;
       muA = -0.55 * d * w;                      // and it bunches as it passes
       return;
     }
     case 3: {                                   // two lobes orbiting each other
-      muR = 1 + (0.26 + lvl * 0.55) * Math.cos(2 * (a - t * 0.5));
+      muR = 1 + (0.14 + lvl * 1.5) * Math.cos(2 * (a - t * 0.5)) + sp * 0.45;
       muA = 0;
       return;
     }
     case 4: {                                   // snapped to a polar grid
       const step = TAU / 18;
       muA = Math.round(a / step) * step - a;
-      muR = (0.55 + 0.22 * ((i * 7) % 4)) * (1 + lvl * 0.35);
+      muR = (0.55 + 0.22 * ((i * 7) % 4)) * (1 + lvl * 0.9) + sp * 0.7;
       return;
     }
     default: {                                  // every fifth one thrown on onsets
       const out = i % 5 === 0;
-      muR = out ? 1 + imp * 1.3 + lvl * 0.2 : 1 - imp * 0.16;
-      muA = out ? imp * 0.5 : 0;
+      muR = (out ? 1 + imp * 2.2 + lvl * 0.7 : 1 - imp * 0.2) + sp * 0.5;
+      muA = out ? imp * 0.7 : 0;
       return;
     }
   }
@@ -2154,7 +2197,7 @@ function setFormation(spec, seconds) {
      had a word in it. One or the other -- and that includes a firework, which
      would take the whole field out from under the model mid-turn. Another model
      may replace it, since that is a deliberate choice rather than a collision. */
-  const owned = form3d && formWant;
+  const owned = (form3d || menuOn) && formWant;
   if (owned && !(spec && (spec.points || spec.solid || spec.model))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
@@ -2202,6 +2245,11 @@ function setFormation(spec, seconds) {
     for (let i = 0; i < ord2.length; i++) inv[ord2[i]] = i;
     formE = Int32Array.from(formE, (v) => inv[v]);
     pts = ord2.map((i) => pts[i]);
+    /* And anything else indexed by point. The menu's group labels were left
+       behind by this sort, so every satellite ended up wobbling about another
+       satellite's centre and wearing another satellite's colour -- which drew
+       as spiky blobs at twice the radius they were supposed to have. */
+    if (asMenu) asMenu.groups = ord2.map((i) => asMenu.groups[i]);
   } else {
     pts.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));
   }
@@ -2359,7 +2407,12 @@ function loop() {
     view.turn = Math.min(1, view.turn + Math.abs(cfg.spin) * (dt / 1000));
   /* Only while it is actually listening to someone, and only in duet -- echo
      is the literal mode and should stay literal. */
-  updateMuses(dt, now, echoMode === 2 && state === "listening" && !formWant && !bs);
+  /* Whenever there is a live microphone and nothing else has the field --
+     which includes idle. Gating it on the listening STATE meant it only ran
+     inside the second or two between the voice detector firing and the reply
+     starting, and it spent most of that fading in. The visualiser is the point;
+     it should be on whenever there is something to visualise. */
+  updateMuses(dt, now, echoMode === 2 && !!A && !formWant && !bs);
 
   if (cfg.idleS > 0.5 && !formWant && !bs && !brain.busy &&
       now - lastActive > cfg.idleS * 1000) setFormation({ menu: true });
@@ -2412,7 +2465,12 @@ function loop() {
   // by the largest dot we can draw so blobs don't clip on the edge.
   const hx = Math.max(20, W * 0.5 - radCap);
   const hy = Math.max(20, H * 0.5 - radCap);
-  const softSpan = Math.max(0.02, 1 - cfg.contain);
+  /* The wall exists to keep the ORB on screen. A menu is a deliberate layout
+     that wants the whole frame, and at the tuned 0.56 its satellites sat
+     outside the wall and got shoved back into the middle -- which is why they
+     came out as spiky blobs at twice their radius rather than as rings. */
+  const containNow = menuOn ? Math.max(cfg.contain, 0.93) : cfg.contain;
+  const softSpan = Math.max(0.02, 1 - containNow);
   const wall = 3.5 * k;
 
   const sIdx = cfg.shape + drive.hue * cfg.shapeGain + wander;
@@ -2422,6 +2480,7 @@ function loop() {
   const museHue = muses.amt * cfg.muse *
     (MUSE_HUE[muses.a] + (MUSE_HUE[muses.b] - MUSE_HUE[muses.a]) * muses.mix);
   const shift = Math.round(drive.hue * cfg.hueGain * 90 + museHue) + (bs ? bs.hue : 0);
+  if (menuOn) menuCols = MENU_HUE.map((h) => toRgb(255, 40, 255, shift + h));
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
@@ -2452,7 +2511,12 @@ function loop() {
      into a dead circle for as long as the word is up -- which looks worse than
      no perimeter at all. */
   const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
-  const muAmt = muses.amt * cfg.muse, muHeld = muAmt * hold;
+  /* And it blooms with the sound rather than running flat out. Quiet room, it
+     is barely there and the orb is the orb; talk to it and the pattern opens.
+     That difference IS the reaction -- without it a muse is a thing that
+     happens to be playing while you speak. */
+  const muAmt = muses.amt * cfg.muse * (0.22 + 0.78 * Math.min(1, drive.scale * 3.2));
+  const muHeld = muAmt * hold;
   const turbFree = drive.turbulence * cfg.turbGain, turb = turbFree * hold;
   const kickFree = drive.impulse * cfg.impulseGain * pull, kick = kickFree * hold;
   /* The membrane is a spring toward the ring surface, and at rest it is the
@@ -2497,10 +2561,11 @@ function loop() {
       const mu = held ? muHeld : muAmt;
       if (mu > 0.001 && !isCore) {
         const ang = i * TAU / n;
-        muse(muses.b, i, ang, tt, drive.scale, drive.impulse);
+        const spc = drive.spectrum[(i * BANDS / n) | 0];
+        muse(muses.b, i, ang, tt, drive.scale, drive.impulse, spc);
         let dR = muR, dA = muA;
         if (muses.mix < 1) {
-          muse(muses.a, i, ang, tt, drive.scale, drive.impulse);
+          muse(muses.a, i, ang, tt, drive.scale, drive.impulse, spc);
           dR += (dR - muR) * -(1 - muses.mix); dA += (dA - muA) * -(1 - muses.mix);
         }
         ringMul *= 1 + (dR - 1) * mu;
@@ -2546,6 +2611,24 @@ function loop() {
       if (fT > 0.002) {
         tx += (cx + formX[i] * scale * formS - tx) * fT;
         ty += (cy + formY[i] * scale * formS - ty) * fT;
+        /* A menu of six identical circles is a diagram. Each satellite gets its
+           own lobe count and its own drift, so they read as six live things
+           rather than six instances of the same one -- and they breathe with
+           the room, because everything else here does. */
+        const g2 = menuGroup[i];
+        if (g2 >= 0) {
+          const sxg = cx + menuAt[g2][0] * scale * formS;
+          const syg = cy + menuAt[g2][1] * scale * formS;
+          const dxg = tx - sxg, dyg = ty - syg;
+          const ag = Math.atan2(dyg, dxg);
+          /* Gentle, and slow. The particles chase this target through a spring,
+             so a fast or deep wobble is not a wobble -- it is a target they
+             never catch, and it draws as spikes. */
+          const w = 1 + (0.09 + drive.scale * 0.20) * Math.sin(ag * (3 + g2) + tt * (0.22 + g2 * 0.06))
+                      + 0.045 * Math.sin(ag * (5 + g2) - tt * 0.3);
+          tx = sxg + dxg * w * fT + dxg * (1 - fT);
+          ty = syg + dyg * w * fT + dyg * (1 - fT);
+        }
       }
       /* z has no shape, no membrane, no wall and no mouse: it is only ever
          pulled toward a target, so one damped spring is the entire model. Its
@@ -2670,12 +2753,12 @@ function loop() {
       const bi = bnd[i];
       const qx = (px[i] - cx) / (hx * bi), qy = (py[i] - cy) / (hy * bi);
       const q = Math.sqrt(qx * qx + qy * qy);
-      if (q > cfg.contain) {
+      if (q > containNow) {
         const wx = px[i] - cx, wy = py[i] - cy;
         const wd = Math.sqrt(wx * wx + wy * wy) || 0.0001;
         const wnx = wx / wd, wny = wy / wd;
         // quadratic ramp — barely there at the soft edge, firm at the wall
-        let over = (q - cfg.contain) / softSpan; if (over > 1) over = 1;
+        let over = (q - containNow) / softSpan; if (over > 1) over = 1;
         const pull = over * over * wall;
         vx[i] -= wnx * pull; vy[i] -= wny * pull;
         if (q > 1) {
@@ -2796,7 +2879,8 @@ function loop() {
     }
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
-    ctx.fillStyle = lut[li];
+    ctx.fillStyle = menuOn && menuGroup[i] >= 0 && menuCols.length
+                  ? menuCols[menuGroup[i]] : lut[li];
     // `dot` scales the drawn radius only. `size` (and therefore the LUT
     // index) is deliberately left alone, so this never moves the colour split.
     // A formation throws particles far from centre, where size is very negative
