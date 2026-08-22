@@ -13,6 +13,9 @@ export interface Env {
   /** Who the orb is. Set it in the dashboard to change the personality with
    *  no deploy and no computer; unset falls back to PERSONA below. */
   ORB_PERSONA?: string;
+  /** Which model answers. Dashboard variable for the same reason: it is the
+   *  one knob worth trying against your own ear, and it wants no deploy. */
+  ORB_MODEL?: string;
 }
 
 /* Two halves, and the split is the point.
@@ -178,7 +181,20 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     },
   }];
 
-  const base = { model: "claude-opus-5", max_tokens: 1024, system: persona(env), messages, tools } as const;
+  /* Everything a voice reply asks of a model is short: forty words, one
+     optional tool call, no reasoning anyone will read. That is Haiku's shape,
+     not Opus's -- so the model is a dashboard variable, and the request adapts
+     to whichever one is set rather than sending parameters it will reject.
+
+     Fast mode exists on Opus 5 and 4.8 only. `effort` is rejected outright by
+     Haiku 4.5 and Sonnet 4.5, and is a no-op worth skipping elsewhere. Sending
+     either to a model that does not take it is a 400 and a wasted round trip
+     before the fallback, which on a voice assistant is exactly the thing being
+     optimised away. */
+  const model = (env.ORB_MODEL ?? "claude-opus-5").trim() || "claude-opus-5";
+  const canFast = /^claude-opus-(5|4-8)$/.test(model);
+  const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
+  const base = { model, max_tokens: 1024, system: persona(env), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:
@@ -197,12 +213,14 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      orb saying the word "show" out loud and drawing nothing. Low effort buys
      most of the speed without that. */
   const attempts = [
-    { label: "fast", run: () => client.beta.messages.stream({
+    canFast && { label: "fast", run: () => client.beta.messages.stream({
         ...base, speed: "fast", betas: ["fast-mode-2026-02-01"],
         output_config: { effort: "low" } }) },
-    { label: "effort:low", run: () => client.messages.stream({ ...base, output_config: { effort: "low" } }) },
+    canEffort && { label: "effort:low", run: () =>
+        client.messages.stream({ ...base, output_config: { effort: "low" } }) },
     { label: "plain", run: () => client.messages.stream({ ...base }) },
-  ];
+  ].filter(Boolean) as { label: string; run: () => ReturnType<typeof client.messages.stream> }[];
+  console.log("orb-brain model", model, "fast", canFast, "effort", canEffort);
 
   /* The page can only see its own round trip, which lumps network in with
      Claude. Time the leg that happens here so the two can be told apart --
@@ -290,7 +308,8 @@ export default {
        dashboard is the one change that needs no deploy, so this is the only way
        to confirm from a phone that the edit took. */
     if (path === "/persona" && request.method === "GET") {
-      return new Response(persona(env), {
+      return new Response("model: " + ((env.ORB_MODEL ?? "claude-opus-5").trim() || "claude-opus-5") +
+                          "\n\n" + persona(env), {
         headers: { ...headers, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       });
     }

@@ -1794,9 +1794,13 @@ const TRIGGERS = {
   celebrate:{shell:"ring"},
   boom:{shell:"shock"}, blast:{shell:"shock"},
   // a display is worth watching only if each break is a different silhouette
-  fireworks:{show:[["peony",0],["nova",760],["valentine",1520],["pinwheel",2280],["willow",3060]]},
-  finale:{show:[["shock",0],["palm",560],["nova",1120],["valentine",1680],
-                ["pinwheel",2240],["ring",2800],["peony",3400]]},
+  /* Spaced so each one gets to open, hold and be looked at before the next.
+     At 620ms apart they overlapped into one long bang; a shaped shell reads
+     best around 450ms and wants roughly a second of clear air after that. */
+  fireworks:{show:[["peony",0],["spokes",1500],["valentine",3000],
+                   ["frame",4500],["willow",6000]]},
+  finale:{show:[["shock",0],["prism",1400],["nova",2800],["crown",4200],
+                ["valentine",5600],["frame",7000],["peony",8400]]},
   // things
   fire:{text:"\u{1F525}"}, star:{text:"\u2B50"}, sun:{text:"\u2600\uFE0F"},
   moon:{text:"\u{1F319}"}, music:{text:"\u{1F3B5}"}, eyes:{text:"\u{1F440}"},
@@ -2007,6 +2011,8 @@ function updateMuses(dt, now, listening) {
      drag     air. What makes a star slow and hang before it falls
      hue      degrees of rotation on the whole palette: the shell's colour
      form     optional. Packs the stars into a shape on the way out
+     formPow  how hard to exaggerate that shape. A figure with shallow corners
+              needs more of it than one with deep ones
      swirl    optional. Tangential speed, which turns a shell into a pinwheel
      star     drawn radius. Everywhere else in this program a dot's size comes
               from its distance, which for a shell is backwards -- the further
@@ -2065,7 +2071,16 @@ const FORMS = (() => {
     for (let i = 0; i < SHAPE_N; i++)
       if (!heart[i]) heart[i] = heart[(i + SHAPE_N - 1) % SHAPE_N];
 
-  return { heart: norm(heart), star: fromFn(SHAPES[5]), hex: fromFn(SHAPES[4]) };
+  /* Hard-edged ones. A rounded pattern disperses into a cloud within half a
+     second; a corner stays a corner, because the stars either side of it are
+     travelling at visibly different speeds and keep the discontinuity alive. */
+  const rays = (n) => fromFn((t) => {
+    const step = TAU / n, d = Math.abs(((t % step) + step) % step - step / 2);
+    return 0.24 + 1.9 / (1 + 90 * d * d);       // n needle-thin spokes
+  });
+  return { heart: norm(heart), star: fromFn(SHAPES[5]), hex: fromFn(SHAPES[4]),
+           tri: fromFn(SHAPES[1]), square: fromFn(SHAPES[2]),
+           rays8: rays(8), rays16: rays(16) };
 })();
 
 const SHELLS = {
@@ -2089,7 +2104,20 @@ const SHELLS = {
   nova:      { speed:[8.2, 8.8], shell:1, spokes:0, up:0.8, gravity:0.008, drag:0.020,
                form:"star", hue:325, star:2.4, trail:0.32, flash:0.55, sparkle:0.8, dur:2800 },
   pinwheel:  { speed:[7.4, 8.0], shell:1, spokes:0, up:0.5, gravity:0.010, drag:0.024,
-               swirl:0.75, hue:135, star:2.3, trail:0.30, flash:0.45, sparkle:0.3, dur:2900 }
+               swirl:0.75, hue:135, star:2.3, trail:0.30, flash:0.45, sparkle:0.3, dur:2900 },
+
+  /* Straight-edged. These read as figures rather than as explosions, which is
+     the whole reason they are here: a display of six round bursts is one burst
+     six times. Low drag and almost no gravity, because an outline only survives
+     as long as nothing is pulling parts of it around. */
+  prism:  { speed:[8.2, 8.6], shell:1, spokes:0, up:0.5, gravity:0.005, drag:0.014,
+            form:"tri", formPow:3.0, hue:265, star:2.5, trail:0.36, flash:0.5, sparkle:0.2, dur:3000 },
+  frame:  { speed:[8.0, 8.4], shell:1, spokes:0, up:0.4, gravity:0.005, drag:0.014,
+            form:"square", formPow:4.2, hue:200, star:2.4, trail:0.36, flash:0.5, sparkle:0.2, dur:3000 },
+  spokes: { speed:[7.6, 8.2], shell:1, spokes:0, up:0.4, gravity:0.004, drag:0.012,
+            form:"rays16", hue:15, star:2.6, trail:0.40, flash:0.55, sparkle:0.15, dur:3200 },
+  crown:  { speed:[7.8, 8.4], shell:1, spokes:0, up:1.0, gravity:0.006, drag:0.016,
+            form:"rays8", swirl:0.28, hue:95, star:2.6, trail:0.38, flash:0.5, sparkle:0.2, dur:3200 }
 };
 
 /* A ring reads at 400 particles; a sky full of sparks does not. Borrowed for
@@ -2123,9 +2151,12 @@ function fireShell(name) {
     if (form) {
       let t = a % TAU; if (t < 0) t += TAU;
       let k = ((t / TAU) * SHAPE_N) | 0; if (k >= SHAPE_N) k = SHAPE_N - 1;
-      // raised, not used flat. The heart's own radius only spans 0.44 to 1.28
-      // and at that contrast the shell reads as a circle with a dent in it.
-      sp *= Math.pow(form[k], 1.8);
+      /* Raised, not used flat, and by how much depends on the figure. A heart
+         spans 0.66 to 1.39 and needs a little; a square spans corner to edge by
+         only 1.41, which after normalising is nearly nothing -- at 1.8 it came
+         out as a round green mass. A polygon needs its corners exaggerated into
+         points before a field of dots reads it as having corners at all. */
+      sp *= Math.pow(form[k], s.formPow || 1.8);
     }
     vx[i] = Math.cos(a) * sp;
     vy[i] = Math.sin(a) * sp - s.up * kk;

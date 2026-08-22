@@ -85,6 +85,15 @@ The prompt is deliberately two halves:
   kept in code: a personality that says "answer in bullet points" or "use
   emoji" gets read aloud, literally, by a text-to-speech engine.
 
+**`ORB_MODEL`** is a dashboard variable too, for the same reason: the model is
+the one knob worth trying against your own ear. Unset it is `claude-opus-5`. The
+request adapts to whatever is set rather than sending parameters the model will
+reject — fast mode exists on Opus 5 and 4.8 only, and `effort` is rejected
+outright by Haiku 4.5 and Sonnet 4.5. Sending either to a model that will not
+take it costs a 400 and a wasted round trip before the fallback, which on a
+voice assistant is exactly the thing being optimised away. `GET /persona`
+reports which model is live.
+
 ### Changing the personality without deploying anything
 
 Set an **`ORB_PERSONA`** variable in the Cloudflare dashboard — Workers &

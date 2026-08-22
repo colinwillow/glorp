@@ -295,8 +295,12 @@ decay make of it, which is why `congratulations` and `boom` do not look alike.
 | `birthday` | willow | orange, slow and heavy, long drooping arcs that hang and fall |
 | `party` | palm | green, seven thick fingers instead of a cloud |
 | `boom` `blast` | shock | hot pink, one enormous fast shockwave, brief |
-| `fireworks` | five in sequence | peony, nova, valentine, pinwheel, willow |
+| `fireworks` | five in sequence | peony, spokes, valentine, frame, willow |
 | `finale` | seven in sequence | opens on the shock |
+
+Breaks are **1.4–1.5 s apart**, not 620 ms. Closer than that and they overlap
+into one long bang; a shaped shell reads best around 450 ms and wants roughly a
+second of clear air after it.
 
 Three of them are **pattern shells**, reachable by `/show` or by the brain. A
 real pattern shell packs its stars into a shape inside the casing, so the wall
@@ -309,6 +313,19 @@ angle, and the expanding front carries the outline out with it.
 | `valentine` | a heart, hot pink |
 | `nova` | a five-pointed star, violet |
 | `pinwheel` | a ring given tangential speed, so it opens turning |
+| `prism` | a triangle, indigo |
+| `frame` | a square, cyan — opens hollow, with an X of slow stars in the middle |
+| `spokes` | sixteen needle-thin rays, orange |
+| `crown` | eight rays given a slight turn, lime |
+
+How hard to exaggerate a figure is per-shell (`formPow`), because it depends on
+the figure. A heart spans 0.66 to 1.39 and needs a little. A square spans corner
+to edge by only 1.41, which after normalising is nearly nothing — at the heart's
+setting it came out as a round green mass. A polygon needs its corners
+exaggerated into points before a field of dots reads it as having corners.
+
+The straight-edged ones run almost no gravity and very little drag, because an
+outline only survives as long as nothing is pulling parts of it around.
 
 Two things the heart needed that the star did not. It is **centred on its own
 bounding box** first: the parametric heart's origin sits up near the cleft, not
