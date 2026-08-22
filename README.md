@@ -534,6 +534,57 @@ turns that off.
 
 ---
 
+### What made it stop reacting
+
+The mouth config that became the default set `membrane` to 0.1, and that one
+number is the whole of what went missing.
+
+The membrane is a spring toward the ring surface — it is what ties the cloud to
+the ring, and therefore what makes the cloud breathe when the ring does. At 0.1
+the particles are loose enough to drift beautifully and far too loose to follow:
+the ring swells with the voice and the cloud stays roughly where it was.
+Measured against a fixed syllable train, raising it alone very nearly doubles
+every reaction the field has — median-distance swing 27.7% → 52.8%, per-frame
+motion 5.5% → 13.8% — and matches the old default across the board. No other
+parameter moves those numbers by more than a few percent; eleven of them were
+tried one at a time.
+
+But a heavy membrane at rest is a different orb, and the resting look was tuned
+deliberately. So it rides on level instead: `membGain` adds to the membrane in
+proportion to loudness, which is exactly zero in a quiet room. A voice pulls the
+field taut; silence gives the slack straight back.
+
+**And it fixed the colour on its own,** which was not expected. The negative-space
+ring is the set of points where size crosses zero, and that boundary tracks the
+ring radius. With a loose membrane the cloud lags behind the ring, so the
+boundary sweeps *through* the cloud every time the voice rises and the whole
+field flips colour at once. Tie the cloud to the ring and the two move together.
+
+Measured at the level a real voice reads (`lvl 0.42` on the meter):
+
+| | before | with `membGain` |
+|---|---|---|
+| median radius under voice | 118 px | **146 px** |
+| breathing (radius variation) | 1.4% | **2.4%** |
+| colour churn per frame | 0.79% | **0.38%** |
+| colour swing over a take | 41% | **15.8%** |
+
+At silence both are identical — median 79.9 vs 79.4 px, which is inside the
+run-to-run noise.
+
+One wrong turn worth recording. Measured *before* the membrane fix, raising
+`falloffGain` looked like the colour fix: it pushes the boundary outward with
+level, and it cut the swing from 88% to 3%. It was compensating for the lag, not
+removing it. With the membrane doing its job, the same change makes colour churn
+nearly four times **worse** (0.38% → 1.48%), because now the boundary is
+over-pushed past a cloud that was already keeping up. It stays at 0. Two rigs
+disagreed and the second one was right; the first was measuring a symptom.
+
+The `shaped`, `lips` and `mouth` presets carry `membGain: 0` — they are
+historical configs and must not inherit a knob they predate.
+
+---
+
 ## Muses
 
 What it does while you are talking to it. The field wanders through a handful of
