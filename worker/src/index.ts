@@ -189,7 +189,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     name: "show",
     description:
       "Do something with the orb's particles. Give exactly one of text, image, shape, shell or menu. " +
-      "text and shape make the particles leave their ring and stand as something for a few seconds, then return. " +
+      "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
       "or anything worth setting off. Never use a shell for an ordinary answer.",
     input_schema: {
@@ -219,7 +219,6 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             "The last three come out as figures: valentine a pink heart, nova a violet " +
             "five-pointed star, pinwheel a lime ring that opens turning.",
         },
-        seconds: { type: "number", description: "How long to hold a text or shape. 2 to 15, default 5." },
       },
     },
   }];

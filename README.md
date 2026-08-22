@@ -358,7 +358,35 @@ otherwise the hostname is read backwards into an owner and a repo and GitHub is
 asked for the folder. The list rides up with every question and is named in the
 system prompt, and the `show` tool takes an `image`. Neither method working is
 fine — it just means the brain is never told, which beats it offering a picture
-that is not there. Asked once at startup, so nothing waits on it mid-sentence.
+that is not there, and `/images` in the box says what was actually found. Both
+sources are merged rather than tried in turn: the manifest is the one that can
+be relied on, the listing is what means a file dropped in the folder needs no
+other edit. Asked once at startup, so nothing waits on it mid-sentence.
+
+### A glimpse, not a placard
+
+A word Glorb shows is a word it is *saying*, and that turned out to be the whole
+design. Thrown up as soon as the reply text arrived, it did two wrong things at
+once: it stood there for five seconds, which is most of a spoken reply, and the
+field cannot be a word and a mouth at the same time — so the sentence the word
+was meant to punctuate went by with nothing moving. And it appeared at the
+start, whatever the word was, when the word it draws is usually somewhere in the
+middle. Shown first and said later reads as two unrelated events.
+
+So it waits for the audio. Only then is the reply's real duration known, and
+therefore where in it the word falls; the formation is scheduled for that
+moment, a little early, because a picture arriving *with* the word reads as
+arriving late. It holds for `FLASH_S` — about half a second — and goes, and the
+mouth has the rest of the sentence back.
+
+One thing had to change underneath. The ease is a fixed fraction per frame,
+which takes about a second to arrive: fine for a shape that then stands there,
+useless for something meant to be glimpsed. A show under two seconds eases in
+nearly three times faster, so it has time to actually be a word before it
+leaves. Measured: up at 6128ms into a 6667ms reply — which is exactly where
+*galaxies* falls in it — peak 0.98, gone by 6960ms.
+
+Fireworks and meshes are events in their own right and still fire on arrival.
 
 One thing had to be added for pictures that glyphs never needed. A glyph arrives
 on a transparent canvas; artwork usually does not, and art exported on white
