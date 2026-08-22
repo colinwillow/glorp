@@ -2140,21 +2140,39 @@ const menuAt = [];                         // satellite centres, in formation un
    directly rather than by nudging `size`, which is what the first attempt did
    -- size is also the dot's radius, so half the satellites were pushed through
    the zero crossing and simply stopped being drawn. */
-const MENU_HUE = [0, 58, 116, 174, 232, 290];
-let menuCols = [];
+/* Shared with the draw, which needs to know how big a satellite is in order to
+   put its colour split in the right place. */
+const MENU_HUB_R = 0.235, MENU_SAT_R = 0.265;
 
 function menuPoints() {
   const pts = [], E = [], grp = [], N = MENU.length;
   // hub -1, satellite k as k, the arm to satellite k as -(2 + k) -- so an arm
   // can be told from a hub and can find its own spoke
-  const HUB = 110, SAT = 96, ARM = 16, R = 0.80, sr = 0.265;
+  const HUB = 380, SAT = 380, ARM = 16, R = 0.80, sr = MENU_SAT_R;
   menuAt.length = 0;
 
-  // the hub: what is left of the orb, still a ring
-  for (let i = 0; i < HUB; i++) {
-    const a = (i / HUB) * TAU;
-    pts.push([Math.cos(a) * 0.235, Math.sin(a) * 0.235]); grp.push(-1);
-  }
+  /* Every node is a small orb. The old menu wore six hues off a wheel, which
+     read as a toy -- and the field already knows how to draw exactly one thing
+     beautifully, so the answer was to draw that thing seven times rather than
+     to pick better colours. A ring bloomed inward, a core, and a gap between
+     them where size crosses zero: it is the orb's own distribution, at a
+     seventh of the size. The colour comes out of the same palette by itself. */
+  const orb = (ox, oy, r, n2, g) => {
+    /* The radius has to be uncorrelated with the angle. A linear fraction of the
+       index looked like a fine dither and drew a clean spiral, because the angle
+       is a linear fraction of the index too -- two arithmetic sequences beating
+       against each other. */
+    const h = (n3) => { const x = Math.sin(n3 * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+    for (let i = 0; i < n2; i++) {
+      const a = i * 2.399963;                       // golden angle: even, never banded
+      const core = i % 4 === 3;                     // a quarter of them inside
+      const rr = core ? r * 0.32 * Math.sqrt(h(i))  // sqrt, or the core clots at its middle
+                      : r * (1 - 0.34 * h(i + 0.5));
+      pts.push([ox + Math.cos(a) * rr, oy + Math.sin(a) * rr]); grp.push(g);
+    }
+  };
+
+  orb(0, 0, MENU_HUB_R, HUB, -1);
   for (let k = 0; k < N; k++) {
     // -PI/2 puts the first one straight up, which is where a menu starts
     const a = -Math.PI / 2 + (k / N) * TAU;
@@ -2167,13 +2185,8 @@ function menuPoints() {
       pts.push([Math.cos(a) * R * t, Math.sin(a) * R * t]); grp.push(-(2 + k));
       if (j) E.push(armFrom + j - 1, armFrom + j);
     }
-    const satFrom = pts.length;
-    for (let j = 0; j < SAT; j++) {
-      const b = (j / SAT) * TAU;
-      pts.push([cxk + Math.cos(b) * sr, cyk + Math.sin(b) * sr]); grp.push(k);
-      // closing the ring is what makes it read as a sphere rather than beads
-      E.push(satFrom + j, satFrom + ((j + 1) % SAT));
-    }
+    // no edges on a satellite any more: an orb is not an outline
+    orb(cxk, cyk, sr, SAT, k);
   }
   return { pts, edges: Int32Array.from(E), groups: grp };
 }
@@ -2841,7 +2854,6 @@ function loop() {
   const museHue = muses.amt * cfg.muse *
     (MUSE_HUE[muses.a] + (MUSE_HUE[muses.b] - MUSE_HUE[muses.a]) * muses.mix);
   const shift = Math.round(drive.hue * cfg.hueGain * 90 + museHue) + (bs ? bs.hue : 0);
-  if (menuOn) menuCols = MENU_HUE.map((h) => toRgb(255, 40, 255, shift + h));
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
@@ -3269,13 +3281,26 @@ function loop() {
     } else if (fT > 0.002) {
       size += (-1.15 * sizeHiPx - size) * fT * 0.88;
     }
+    /* A menu node keys its size off the distance to its OWN centre rather than
+       the field's. Everything that makes the orb an orb then happens for free,
+       seven times over: fat magenta outside, black where size crosses zero, a
+       green core inside it -- in one colour scheme instead of six. The arms are
+       connective tissue and take a flat faint value, or they would read as
+       enormous magenta blobs simply for being far from the middle. */
+    if (menuOn && fT > 0.002) {
+      const g3 = menuGroup[i], s4 = scale * formS;
+      let want2;
+      if (g3 >= 0) {
+        const dxm = ox - menuAt[g3][0] * s4, dym = oy - menuAt[g3][1] * s4;
+        want2 = (1 - Math.sqrt(dxm * dxm + dym * dym) / (MENU_SAT_R * s4 * 0.55)) * sizeHiPx;
+      } else if (g3 === -1) {
+        want2 = (1 - Math.sqrt(ox * ox + oy * oy) / (MENU_HUB_R * s4 * 0.55)) * sizeHiPx;
+      } else want2 = -0.30 * sizeHiPx;
+      size += (want2 - size) * fT;
+    }
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
-    /* Arms wear the colour of the satellite they run to, so the whole spoke
-       reads as one thing rather than a coloured ball on a grey stick. */
-    ctx.fillStyle = menuOn && menuCols.length && menuGroup[i] !== -1
-                  ? menuCols[menuGroup[i] >= 0 ? menuGroup[i] : -menuGroup[i] - 2]
-                  : lut[li];
+    ctx.fillStyle = lut[li];
     // `dot` scales the drawn radius only. `size` (and therefore the LUT
     // index) is deliberately left alone, so this never moves the colour split.
     // A formation throws particles far from centre, where size is very negative
@@ -3376,9 +3401,18 @@ function loop() {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.font = Math.round(13 * k) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
     ctx.globalAlpha = Math.min(1, formT * 1.4);
+    /* Under the satellite, not through it. The label used to sit in the middle,
+       which was empty when a satellite was a ring and is now a bright green
+       core -- so it read as text printed over a light. */
+    const off = (MENU_SAT_R + 0.20) * s2, pad = 14 * k;
     for (let m = 0; m < menuAt.length; m++) {
       ctx.fillStyle = m === menuHit ? "#EAFBD2" : "#9FB98B";
-      ctx.fillText(menuAt[m][2], cx + menuAt[m][0] * s2, cy + menuAt[m][1] * s2);
+      const lx = cx + menuAt[m][0] * s2;
+      // below by default; above for the one at the bottom of a short viewport,
+      // where below is off the end of the canvas
+      let ly = cy + menuAt[m][1] * s2 + off;
+      if (ly > H - pad) ly = cy + menuAt[m][1] * s2 - off;
+      ctx.fillText(menuAt[m][2], lx, ly);
     }
     ctx.globalAlpha = 1;
     ctx.restore();
