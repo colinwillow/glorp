@@ -872,6 +872,7 @@ say.addEventListener("keydown", (e) => {
     const what = text.slice(5).trim(), key = what.toLowerCase();
     if (SOLIDS[key]) setFormation({ solid:key }, 12);
     else if (/^model /i.test(what)) showModel(what.slice(6).trim(), 14);
+    else if (/^image /i.test(what)) showImage(what.slice(6).trim(), 8);
     else setFormation(SHELLS[key] ? { shell:key }
                : TRIGGERS[key] ? TRIGGERS[key]
                : /^face$/i.test(what) ? { shape:"face" }
@@ -1320,24 +1321,14 @@ let formCountWas = 0;
    the font in its own palette and its face is a solid disc -- fill that and the
    eyes and mouth disappear. Those get traced instead: silhouette edges,
    interior colour edges, and the dark features themselves. */
-function sampleGlyphs(str) {
-  const S = 220, K = 3, STEP = 2;
-  const NB = [[K, 0], [-K, 0], [0, K], [0, -K]];
-  const c = document.createElement("canvas");
-  c.width = S; c.height = S;
-  const g = c.getContext("2d", { willReadFrequently: true });
-  // Left transparent and thresholded on alpha rather than painted black and
-  // thresholded on red -- a multi-coloured glyph has no reliable red channel,
-  // and alpha is the one thing every glyph shares. This is what lets emoji in.
-  g.fillStyle = "#fff";
-  g.textAlign = "center"; g.textBaseline = "middle";
-  let size = Math.min(S * 0.8, (S * 1.6) / Math.max(1, str.length));
-  g.font = "700 " + size + "px sans-serif";
-  const w = g.measureText(str).width || 1;
-  if (w > S * 0.92) { size *= (S * 0.92) / w; g.font = "700 " + size + "px sans-serif"; }
-  g.fillText(str, S / 2, S / 2);
+const GLYPH_S = 220;
 
-  const d = g.getImageData(0, 0, S, S).data;
+/* Pixels in, places to be out. Shared, because a font glyph, an emoji and a
+   drawing off disk are the same problem once they are pixels -- and the tricky
+   half of that problem, deciding what counts as lit, is the same too. */
+function samplePixels(d, S) {
+  const K = 3, STEP = 2;
+  const NB = [[K, 0], [-K, 0], [0, K], [0, -K]];
   const lum = new Float32Array(S * S), on = new Uint8Array(S * S);
   let n = 0, sum = 0, chroma = 0, lo = 1e9, hi = -1e9;
   for (let i = 0; i < S * S; i++) {
@@ -1372,6 +1363,114 @@ function sampleGlyphs(str) {
       if (keep) pts.push([(x / S) * 2 - 1, (y / S) * 2 - 1]);
     }
   return pts;
+}
+
+function sampleGlyphs(str) {
+  const S = GLYPH_S;
+  const c = document.createElement("canvas");
+  c.width = S; c.height = S;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  // Left transparent and thresholded on alpha rather than painted black and
+  // thresholded on red -- a multi-coloured glyph has no reliable red channel,
+  // and alpha is the one thing every glyph shares. This is what lets emoji in.
+  g.fillStyle = "#fff";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  let size = Math.min(S * 0.8, (S * 1.6) / Math.max(1, str.length));
+  g.font = "700 " + size + "px sans-serif";
+  const w = g.measureText(str).width || 1;
+  if (w > S * 0.92) { size *= (S * 0.92) / w; g.font = "700 " + size + "px sans-serif"; }
+  g.fillText(str, S / 2, S / 2);
+  return samplePixels(g.getImageData(0, 0, S, S).data, S);
+}
+
+/* ---------------- pictures ----------------
+   A drawing is a glyph the font does not have. Same sampler, one thing added:
+   a font glyph arrives on a transparent canvas and a PNG usually does not.
+   Artwork exported on white, or on any flat colour, would otherwise sample as a
+   solid rectangle -- so the four corners are read first, and if they agree, that
+   colour is the background and gets knocked out. If they disagree the image has
+   a real background, and it is left alone rather than guessed at. */
+function imageToPoints(img) {
+  const S = GLYPH_S;
+  const c = document.createElement("canvas");
+  c.width = S; c.height = S;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  // fitted, not stretched: a squashed character is worse than a small one
+  const k = Math.min(S * 0.94 / img.width, S * 0.94 / img.height);
+  const w = img.width * k, h = img.height * k;
+  const dx = Math.round((S - w) / 2), dy = Math.round((S - h) / 2);
+  g.drawImage(img, dx, dy, w, h);
+
+  const im = g.getImageData(0, 0, S, S), d = im.data;
+  const at = (x, y) => { const i = (y * S + x) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]]; };
+  // The corners of the picture, not the corners of the canvas. Fitting leaves a
+  // transparent margin, so canvas corners read as empty however the artwork was
+  // exported -- which let a white background straight through, to sample as a
+  // filled rectangle with a frame around it.
+  const ax = dx + 1, ay = dy + 1, bx = Math.ceil(dx + w) - 2, by = Math.ceil(dy + h) - 2;
+  const cs = [at(ax, ay), at(bx, ay), at(ax, by), at(bx, by)].filter((p) => p[3] > 200);
+  if (cs.length >= 3) {
+    const near = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 36;
+    if (cs.every((p) => near(p, cs[0]))) {
+      const [br, bg, bb] = cs[0];
+      const off = (i) => Math.abs(d[i] - br) + Math.abs(d[i + 1] - bg) + Math.abs(d[i + 2] - bb);
+      for (let i = 0; i < d.length; i += 4) if (off(i) < 60) d[i + 3] = 0;
+      // Then two passes of erosion. Where the background meets the drawing the
+      // renderer leaves a ramp of blended pixels; the ones nearest the paint
+      // survive the knock-out and ring the whole figure in a second contour.
+      // A ramp pixel is the pixel that is still nearly the background AND
+      // touches the background -- real edges fail the first half of that.
+      for (let pass = 0; pass < 2; pass++) {
+        const doomed = [];
+        for (let y = 1; y < S - 1; y++)
+          for (let x = 1; x < S - 1; x++) {
+            const i = (y * S + x) * 4;
+            if (!d[i + 3] || off(i) > 130) continue;
+            if (!d[i - 4 + 3] || !d[i + 4 + 3] || !d[i - S * 4 + 3] || !d[i + S * 4 + 3]) doomed.push(i + 3);
+          }
+        for (const j of doomed) d[j] = 0;
+      }
+    }
+  }
+  return samplePixels(d, S);
+}
+
+const imageCache = {};
+async function showImage(src, seconds) {
+  const key = src.toLowerCase();
+  if (!imageCache[key]) {
+    caption(null, "loading " + src + "…");
+    const named = /\.(png|jpe?g|webp|gif|svg)$/i.test(src) || /^https?:/i.test(src);
+    const urls = named ? [src]
+      : ["png", "jpg", "jpeg", "webp", "svg"].map((e) => "images/" + src + "." + e);
+    let last = null;
+    for (const url of urls) {
+      try {
+        const img = await new Promise((res, rej) => {
+          const im2 = new Image();
+          im2.onload = () => res(im2);
+          im2.onerror = () => rej(new Error("not there"));
+          im2.src = url;
+        });
+        const pts = imageToPoints(img);
+        if (!pts.length) throw new Error("nothing in it once the background came off");
+        imageCache[key] = pts;
+        last = null;
+        break;
+      } catch (e) { last = e; }
+    }
+    if (last || !imageCache[key]) {
+      /* Say why in the caption, then draw the name anyway. A picture that is
+         not there is nearly always a picture that is not there YET -- leaving
+         the field blank makes it look broken, when what actually happened is
+         that a file is waiting to be dropped into images/. */
+      caption(null, "image " + src + ": " + ((last && last.message) || "not found"));
+      return setFormation({ text: src.slice(0, 14).toUpperCase() }, seconds || 5);
+    }
+  }
+  const ok = setFormation({ points: imageCache[key], label: src }, seconds || 6);
+  if (ok) caption(null, "showing " + src + " · " + imageCache[key].length + " points");
+  return ok;
 }
 
 /* ---------------- solids ----------------
@@ -1890,7 +1989,7 @@ const MENU = [
   { label: "fireworks", act: { show: [["peony", 0], ["nova", 760], ["valentine", 1520],
                                       ["pinwheel", 2280], ["willow", 3060]] } },
   { label: "about",     act: { text: "GLORB" } },
-  { label: "images",    act: { text: "SOON" } }
+  { label: "images",    act: { image: "glorb" } }
 ];
 
 const menuGroup = new Int8Array(MAX);      // -1 hub or arm, 0..n satellite
@@ -2288,7 +2387,7 @@ function feedWords(finalText, interimText) {
       if (k >= 0) { menuPick(k); echoSeen = settled; return; }
     }
     const trig = TRIGGERS[w2];
-    if (trig && (trig.solid || trig.model)) { setFormation(trig, 10); continue; }
+    if (trig && (trig.solid || trig.model || trig.image)) { setFormation(trig, 10); continue; }
     if (trig) setFormation(trig, cfg.flashMs / 1000);
     /* Only echo spells what it hears. Duet used to as well, and a transcript
        drawn in particles turns out to be the least interesting thing this can
@@ -2312,6 +2411,7 @@ function setFormation(spec, seconds) {
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
   if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
+  if (spec && spec.image) { showImage(spec.image, seconds); return true; }
   /* Everything arrives here as a list of places to be. A glyph, a face, a
      procedural solid and a mesh off disk differ only in how the list was made
      -- which is why depth cost the formation system one extra column. */
@@ -2370,12 +2470,21 @@ function setFormation(spec, seconds) {
      frame rate on a phone, not for the drawing. */
   // a wireframe cannot skip vertices: every one of them anchors edges
   const want = formE ? Math.min(MAX, pts.length)
-                     : Math.min(MAX, 2600, Math.max(Math.round(cfg.count),
-                                                   Math.ceil(pts.length / share)));
-  if (want > Math.round(cfg.count)) {
+                     : Math.min(MAX, Math.max(Math.round(cfg.count),
+                                              Math.min(2600, Math.ceil(pts.length / share))));
+  /* Borrowing more was always here; handing some back was not -- and every
+     particle above `want` was left standing with no target while the rest went
+     off to be the picture. The index is ordered by angle, so "everything above
+     want" is one contiguous arc: it read as a bright clot off to one side of
+     the drawing, belonging to nothing in it. The borrow ceiling is still there
+     so a busy emoji cannot drag a phone under, but it sits inside the max now,
+     where it can cap the borrowing without pulling the field below its own
+     size -- only a mesh smaller than the field asks for fewer now. */
+  const have = Math.round(cfg.count);
+  if (want !== have) {
     if (!formCountWas) formCountWas = cfg.count;
-    cfg.count = want;
-    syncPanel();
+    if (want < have) handBack(want);   // spread the survivors rather than truncate
+    else { cfg.count = want; syncPanel(); }
   }
 
   const n = Math.min(MAX, want);

@@ -302,6 +302,42 @@ One particle per sampled point, so the count follows the drawing: ❤️ samples
 about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
 duration and hands them back after.
 
+### Pictures
+
+A drawing is a glyph the font does not have. Drop a PNG into `images/` and
+
+```
+/show image hero
+```
+
+fits it, samples it with the same sampler the emoji use, and forms it. A bare
+name tries `.png .jpg .jpeg .webp .svg` in that order; a name with an extension,
+or a URL, is taken at its word. The `images` item in the menu is a slot pointed
+at `images/glorb.*` — put a file there and it fills. If a picture is missing the
+caption says so and the orb draws the name instead of nothing, because a picture
+that is not there is nearly always a picture that is not there *yet*.
+
+One thing had to be added for pictures that glyphs never needed. A glyph arrives
+on a transparent canvas; artwork usually does not, and art exported on white
+would sample as a solid rectangle. So the four corners **of the picture** are
+read first, and if they agree, that colour is the background and gets knocked
+out. If they disagree, the image has a real background and it is left alone
+rather than guessed at.
+
+Two details, both learned the hard way and both worth keeping:
+
+**Corners of the picture, not of the canvas.** Fitting leaves a transparent
+margin, so the canvas corners read as empty no matter how the art was exported
+— which let white straight through. The same drawing sampled to 760 points on
+transparency and 2,657 on white: a filled silhouette with a frame around it.
+
+**Then erode twice.** Where a background meets the drawing the renderer leaves a
+ramp of blended pixels, and the ones nearest the paint survive the knock-out and
+ring the whole figure in a second contour. A ramp pixel is one that is still
+nearly the background *and* touches the background; a real edge fails the first
+half of that. With both fixes the same artwork samples to 819 points
+transparent and 842 on white — within three percent, which is resampling noise.
+
 ---
 
 ## Shells
@@ -747,6 +783,12 @@ value that was current at the time.
 - Anything that swallows an error costs a debugging round. An empty `catch`,
   a discarded `no-speech`, a generic failure message — each one hid a
   one-line fix behind an hour of guessing.
+- A formation must account for **every** particle, not just the ones it wants.
+  Particles are indexed by angle, so "everything above the count the shape
+  asked for" is one contiguous arc — leave it without a target and it does not
+  scatter, it clots, as a bright blob off to one side of the drawing with
+  nothing to do with it. Borrowing more was always handled; handing some back
+  was not.
 
 ---
 
