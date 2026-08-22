@@ -1705,6 +1705,34 @@ part and keeps the part that reads.
 
 ---
 
+## Bare
+
+Everything on this screen except the field itself is a readout — the frame rate,
+the levels, the microphone state, the timing breakdown, the caption, the buttons,
+the spectrum, the stage chooser. All of it is for building with. At some point
+this is a thing people look at, and none of it should be there.
+
+The dim circle in the top-right corner takes it all off. One class on the body
+hides the DOM chrome; `showBars` is set separately because the spectrum is drawn
+*into* the canvas, where a CSS rule cannot reach it. The button slides up into
+the corner the button row leaves behind, and stays visible at 22% — a way out
+you cannot see is not a way out.
+
+It **survives a reload**, which is the whole point of it: the moment it gets used
+is when somebody is handed the phone, and having to strip the screen down again
+every time would mean it never gets used then.
+
+The microphone button stays. It is a control, not a readout, and it takes itself
+off the screen once the microphone is running.
+
+One bug, and it is the same shape as three others in here: the startup call to
+`syncBare()` went in at the first `syncStateBtns()` the file contained, which is
+inside `setState` — so the class was applied on the next state change rather
+than on load, and the setting appeared not to persist at all. It persisted
+perfectly; it just was not being read until something else happened.
+
+---
+
 ## Presets
 
 `base · shaped · lips · mouth`, in the tune panel. `lips` is the previous

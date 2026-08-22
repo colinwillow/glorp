@@ -33,6 +33,26 @@
     padding:7px 12px;border-radius:4px;cursor:pointer}
   button:hover,button:focus-visible{border-color:#C8F49A;color:#E8FFD2}
   button.on{color:#C8F49A;border-color:#C8F49A}
+  /* Bare mode. Everything on this screen except the field itself is a readout,
+     and a readout is for building with -- at some point this is a thing people
+     look at, and none of it should be there. One class on the body takes all of
+     it off; the toggle stays, very dim, because a way out that you cannot see
+     is not a way out. It survives a reload, so "show somebody" is one tap and
+     not a setup. */
+  body.bare #hud, body.bare #meter, body.bare #tr, body.bare #cap,
+  body.bare #fig, body.bare #panel { display:none !important }
+  /* Under the button row while the chrome is up, and slid into the corner the
+     row leaves behind when it goes. Not at the bottom: the caption lives across
+     the full width down there and a long reply runs straight under it. */
+  #bareBtn{position:fixed;right:14px;top:calc(58px + env(safe-area-inset-top));
+    z-index:8;width:30px;height:30px;padding:0;border-radius:50%;
+    font-size:15px;line-height:1;letter-spacing:0;color:#4A5A40;
+    background:rgba(11,11,11,.6);border:1px solid #2A3325;opacity:.5;
+    transition:top .18s ease,opacity .18s ease}
+  body.bare #bareBtn{top:calc(12px + env(safe-area-inset-top))}
+  #bareBtn:hover,#bareBtn:focus-visible{opacity:1}
+  body.bare #bareBtn{opacity:.22}
+  body.bare #bareBtn:hover{opacity:.8}
   #err{position:fixed;top:calc(52px + env(safe-area-inset-top));right:14px;left:14px;
     max-width:340px;margin-left:auto;background:rgba(40,16,16,.94);border:1px solid #4A2020;
     color:#D89A94;font-size:11.5px;line-height:1.55;padding:11px 13px;border-radius:6px;display:none}
@@ -124,6 +144,7 @@
 <canvas id="gl"></canvas>
 <div id="hud">— fps</div>
 <div id="meter"></div>
+<button id="bareBtn" aria-label="hide the readouts" title="hide the readouts">◦</button>
 <div id="tr">
   <button id="micBtn">enable mic</button>
   <button id="frzBtn" style="display:none">freeze</button>
@@ -1172,11 +1193,32 @@ document.getElementById("cpy").onclick = (e) => {
   navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
   e.target.textContent = "copied"; setTimeout(() => e.target.textContent = "copy preset", 1400);
 };
+/* Remembered, because the whole point of it is the moment somebody is handed
+   the phone -- and having to strip the screen down again on every reload would
+   mean it never gets used at that moment. */
+let bare = (() => { try { return localStorage.getItem("orbBare") === "1"; } catch (e) { return false; } })();
+const bareBtn = document.getElementById("bareBtn");
+function syncBare() {
+  document.body.classList.toggle("bare", bare);
+  // the spectrum is drawn INTO the canvas, so a CSS rule cannot reach it
+  showBars = !bare && barsWant;
+  bareBtn.textContent = bare ? "\u25CB" : "\u25CF";
+  bareBtn.setAttribute("aria-label", bare ? "show the readouts" : "hide the readouts");
+  bareBtn.title = bare ? "show the readouts" : "hide the readouts";
+}
+bareBtn.onclick = (e) => {
+  e.preventDefault(); e.stopPropagation();
+  bare = !bare;
+  try { localStorage.setItem("orbBare", bare ? "1" : "0"); } catch (e2) {}
+  syncBare();
+};
+let barsWant = true;
 let showBars = true;
 document.getElementById("bars").onclick = (e) => {
-  showBars = !showBars;
-  e.target.textContent = showBars ? "hide bars" : "show bars";
-  e.target.classList.toggle("on", showBars);
+  barsWant = !barsWant;
+  showBars = barsWant && !bare;
+  e.target.textContent = barsWant ? "hide bars" : "show bars";
+  e.target.classList.toggle("on", barsWant);
 };
 
 /* ---------------- audio ---------------- */
@@ -5805,6 +5847,7 @@ syncStateBtns();
 caption("", (standalone ? "home screen app · " : "") + (brain.url
   ? "I\u2019m Glorb. tap enable mic and talk to me \u2014 or say \u201cmenu\u201d"
   : "no brain endpoint set \u2014 open tune and paste the worker url"));
+syncBare();
 buildLut(0);
 loop();
 </script>
