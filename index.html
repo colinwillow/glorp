@@ -118,8 +118,8 @@ const DEFAULTS = {
   count:3200, radius:0.26, rateX:4200, rateY:6900, bloom:0.34, fit:0.75, contain:0.56,
   shape:0, shapeGain:0, core:0.2, coreR:0.34, drift:0.1, depth:0, spin:0, tilt:0, solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
   speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
-  rmsGain:0.9, specGain:0.5, membrane:0.1, membGain:1.7, ellipse:1, jaw:1.05, gate:1, gateFloor:0.09, kickShape:0,
-  falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55, attack:0.34, release:0.16, dbMargin:9, dbRange:31,
+  rmsGain:0.9, specGain:0.5, membrane:0.1, membGain:1.7, ellipse:1, jaw:1.05, gate:1, gateFloor:0.05, kickShape:0,
+  falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55, attack:0.34, release:0.16, dbMargin:2, dbRange:18,
   dot:0.52, sizeHi:26, falloff:70, follow:1, split:0.44, splitEll:0, splitJaw:0, splitShape:0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
   vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4, snap:0.3, flashMs:1100
@@ -151,9 +151,12 @@ const PRESETS = {
     shape:7, shapeGain:0, core:0.1, coreR:0.19, drift:0.44, depth:0, spin:0, tilt:0,
     solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
     speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
-    rmsGain:0.9, specGain:0.5, membrane:0.1, membGain:0, ellipse:1, jaw:1.05, gate:1, gateFloor:0.09,
+    rmsGain:0.9, specGain:0.5, membrane:0.1, membGain:0, ellipse:1, jaw:1.05, gate:1, gateFloor:0.05,
     kickShape:0, falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55,
-    attack:0.34, release:0.16, dbMargin:9, dbRange:31,
+    /* Its own 9 and 31 are gone. They were tuned against a noise floor that ran
+       28 dB below the room, and against a floor that is actually the room they
+       reject an ordinary voice outright -- the preset would come back deaf. */
+    attack:0.34, release:0.16, dbMargin:2, dbRange:18,
     dot:0.65, sizeHi:26, falloff:70, follow:1, split:0.46, splitEll:0, splitJaw:0, splitShape:0,
     trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
   },
@@ -1188,6 +1191,16 @@ function analyse() {
       A.floorDb = q[Math.floor(q.length * 0.2)];
     }
 
+    /* dbMargin is how far above the room a sound has to be before it counts,
+       and dbRange is how much louder again reaches full scale. Both used to be
+       large -- 9 and 31 -- because the floor they were measured against sat
+       nearly 30 dB below the room, so the gate had to be huge to reject silence
+       and the range had to be huge to reach the top from there. Against a floor
+       that IS the room, the same numbers reject the voice as well: a phone held
+       at arm's length reads about 6 dB over its own room, and 9 dB of margin
+       threw all of it away. Measured on a voice 3 dB over ambient, 9/31 peaked
+       at 0.06 -- dead -- where 2/18 peaks at 0.50 and silence still reads 0.00,
+       because the floor is doing the rejecting now instead of the margin. */
     const lo = A.floorDb + cfg.dbMargin;
     let lvl = (db - lo) / cfg.dbRange;
     if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;

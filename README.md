@@ -208,6 +208,33 @@ orb, and it also explains why voice had nothing left to say: ambient was already
 eating half the range, so speech peaked at 0.99 and saturated. With the floor
 where it belongs, silence is 0.00 and the entire range is the voice.
 
+**And then the gate had to move with it,** which was missed and cost a round.
+`dbMargin` is how far above the room a sound must be before it counts and
+`dbRange` is how much louder again reaches full scale. Both were large — 9 and
+31 — because they had been tuned against a floor sitting nearly 30 dB *below*
+the room: the gate had to be huge to reject silence, and the range had to be
+huge to climb to the top from down there. Against a floor that genuinely is the
+room, the same two numbers reject the **voice**. A phone at arm's length reads
+only a few dB over its own room, and 9 dB of margin threw all of it away.
+
+Fixing one end and leaving the other is how a correct change lands as a
+regression: silence went still, and so did speech.
+
+Swept against a voice 3 dB over ambient, through the real analysis path:
+
+| margin | range | silence | voice mean | voice peak |
+|---|---|---|---|---|
+| 9 | 31 | 0.00 | 0.01 | **0.06** |
+| 4.5 | 18 | 0.00 | 0.07 | 0.35 |
+| **2** | **18** | **0.00** | **0.17** | **0.43** |
+| 1.5 | 10 | 0.00 | 0.25 | 0.93 |
+
+Silence stays at 0.00 for any margin at or above 1.5, so the margin was pure
+loss — the floor is doing the rejecting now, which is what a floor is for.
+`gateFloor` came down from 0.09 to 0.05 for the same reason: it gates the timbre
+channels off the level, and at the new levels it was holding turbulence shut
+through ordinary speech.
+
 ---
 
 ## Timing
