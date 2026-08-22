@@ -930,6 +930,19 @@ wall exists to keep the *orb* on screen, and a room is meant to reach the edges.
 [-1,1] on its longest axis and the grid under it is 2 across, so `modelH` is 2.
 At 1.42 the head came out short and wide — squashed against its own footprint.
 
+**Only the form and the floor.** The model used to stand inside the faint lattice
+it was carved out of — a box of lines around it, which is one thing too many in
+a picture whose whole subject is a shape made of light. Unlit points are not
+emitted at all now, which also buys back three thousand particles: they go into
+the resolution of the shape instead, 26 cells and 17 layers rather than 18 and
+12, for fewer points than before and 61fps rather than 47.
+
+**No edge of the floor is ever on screen.** Its far rows are spaced
+geometrically rather than evenly — each a little further than the last, which is
+what perspective does to them anyway — so twenty-six rows reach out to z = 120
+and land on top of each other at the horizon. An evenly spaced floor either
+stops somewhere visible or spends hundreds of rows not stopping.
+
 **Lines, not dots**, with the fill coming from stroke width: a stroke about a
 cell across at very low alpha, then a thin bright core. Neighbouring columns
 overlap in the wide pass, so a solid reads as a translucent body rather than as

@@ -2067,17 +2067,20 @@ async function loadModel(src) {
    and reads as a room rather than as a plinth -- and stays inside the
    containment wall, which at the old size was shredding it into a tangle. */
 const HOLO = {
-  cells: 18, layers: 12,          // the volume standing on the pad
+  cells: 26, layers: 17,          // the volume standing on the pad
   fs: 0.25,
-  floorX: 2.4, floorNear: -1.6, floorFar: 3.4, floorStep: 0.30,
-  /* modelH is 2 because the grid under it is 2 across: a model arrives fitted
-     to [-1,1] on its longest axis, so anything less squashes it against its own
-     footprint -- the head came out short and wide. */
+  /* The floor has to run off every edge, so its far rows are spaced
+     geometrically rather than evenly: each one a little further than the last,
+     which is what perspective does to them anyway. Twenty rows reach out to
+     z = 26 and land on top of each other at the horizon, so there is no far
+     edge to see -- an evenly spaced floor either stops somewhere visible or
+     spends hundreds of rows not stopping. */
+  floorX: 6.8, floorNear: -2.4, floorFar: 120, floorStep: 0.34, floorGrow: 1.17,
   y0: 0.9, colH: 2.4, modelH: 2,        // floor, line height, and the model on it
 };
 
 function hologramPoints(verts, yaw0, shell, slices) {
-  const C = HOLO.cells, L = HOLO.layers, N = C * C;
+  const C = HOLO.cells, L = HOLO.layers, N = C * C, S1 = L + 1;
   /* Facing baked in rather than turned to. The lattice is a fixed thing in the
      room -- one edge across the front, both sides running away to the same
      point -- so the model has to be rotated into it before it is measured,
@@ -2093,10 +2096,6 @@ function hologramPoints(verts, yaw0, shell, slices) {
     if (v[1] > bot[j]) bot[j] = v[1];
   }
 
-  /* Bias, not position, is what makes this a hologram: every particle stands on
-     the same lattice whether it is lit or not, so the lines stay lines. A lit
-     one is driven to the green end of the palette and a dark one barely off
-     zero, and the gap between them is the model. */
   const pts = [], E = [];
   const y0 = HOLO.y0, h = HOLO.colH / L;
   /* The model has to be stood ON the floor, not left in its own box. It arrives
@@ -2106,54 +2105,57 @@ function hologramPoints(verts, yaw0, shell, slices) {
   const mapY = (ym) => y0 - ((1 - ym) / 2) * HOLO.modelH;
 
   /* The floor first, and it is much bigger than the model -- it is the room,
-     not a plinth. Its own grid, coarser and wider than the volume's, wired both
-     ways so it draws as a lattice rather than as a scatter. */
+     not a plinth. Wired both ways so it draws as a lattice rather than as a
+     scatter, and wide and deep enough that no edge of it is ever on screen. */
   const gx = [], gz = [];
   for (let x = -HOLO.floorX; x <= HOLO.floorX + 1e-6; x += HOLO.floorStep) gx.push(x);
-  for (let z = HOLO.floorNear; z <= HOLO.floorFar + 1e-6; z += HOLO.floorStep) gz.push(z);
-  const fBase = 0;
+  for (let z = HOLO.floorNear, st = HOLO.floorStep; z < HOLO.floorFar; z += st, st *= HOLO.floorGrow)
+    gz.push(z);
   for (let iz = 0; iz < gz.length; iz++)
     for (let ix = 0; ix < gx.length; ix++) {
-      pts.push([gx[ix], y0, gz[iz], 0, 0, 0, -0.46]);
-      const j = fBase + iz * gx.length + ix;
+      pts.push([gx[ix], y0, gz[iz], 0, 0, 0, -0.55]);
+      const j = iz * gx.length + ix;
       if (ix) E.push(j - 1, j);
       if (iz) E.push(j - gx.length, j);
     }
 
-  /* Then the volume: a line standing out of the pad under the model, one per
-     cell, in segments so the lit stretch can be told from the rest. */
-  const vBase = pts.length, S1 = L + 1;
-  const at = (ix, iz, l) => vBase + (iz * C + ix) * S1 + l;
-  const on = new Uint8Array(C * C * S1);
+  /* Then the model, and ONLY the model. The unlit lattice it used to stand in
+     was a box of faint lines around it, which is one thing too many in a
+     picture whose whole subject is a shape made of light -- and dropping it
+     buys back three thousand particles, which go into the resolution of the
+     shape instead. Twenty-six cells and seventeen layers rather than eighteen
+     and twelve, for fewer points than before. */
+  const idx = new Int32Array(N * S1).fill(-1);
   for (let iz = 0; iz < C; iz++)
     for (let ix = 0; ix < C; ix++) {
       const j = iz * C + ix;
+      if (top[j] > 8) continue;
       const x = ((ix + 0.5) / C) * 2 - 1, z = ((iz + 0.5) / C) * 2 - 1;
-      const t2 = top[j] < 8 ? mapY(top[j]) : 9, b2 = top[j] < 8 ? mapY(bot[j]) : -9;
+      const t2 = mapY(top[j]), b2 = mapY(bot[j]);
       for (let l = 0; l < S1; l++) {
         const y = y0 - l * h;
         /* Solid: every layer between the model's top and bottom over this cell.
            `shell` lights only the two ends instead, which is more literally a
            surface and, at this many layers, mostly holes. */
-        const lit = top[j] < 8 && (shell
-          ? Math.abs(y - t2) < h || Math.abs(y - b2) < h
-          : y >= t2 - h * 0.5 && y <= b2 + h * 0.5);
-        on[j * S1 + l] = lit ? 1 : 0;
-        pts.push([x, y, z, 0, 0, 0, lit ? 0.95 : -0.10]);
+        const lit = shell ? Math.abs(y - t2) < h || Math.abs(y - b2) < h
+                          : y >= t2 - h * 0.5 && y <= b2 + h * 0.5;
+        if (!lit) continue;
+        idx[j * S1 + l] = pts.length;
+        pts.push([x, y, z, 0, 0, 0, 0.95]);
       }
-      /* Runs, not steps. A standing line is one line however many particles it
-         passes through, and a lit stretch is one line too -- wiring every step
-         separately drew the same picture out of five times as many segments,
-         and a segment costs two line caps whether or not anything is between
-         them. Straight either way: these are lattice, not a surface. */
-      E.push(at(ix, iz, 0), at(ix, iz, L));
-      for (let l = 0; l < S1; l++) {
-        if (!on[j * S1 + l]) continue;
-        let e2 = l;
-        while (e2 + 1 < S1 && on[j * S1 + e2 + 1]) e2++;
-        E.push(at(ix, iz, l), at(ix, iz, e2 === l ? Math.min(L, l + 1) : e2));
-        l = e2;
-      }
+    }
+
+  /* Runs, not steps. A lit stretch is one line however many particles it passes
+     through -- wiring every step separately draws the same picture out of five
+     times as many segments, and a segment costs two line caps whether or not
+     anything is between them. */
+  for (let j = 0; j < N; j++)
+    for (let l = 0; l < S1; l++) {
+      if (idx[j * S1 + l] < 0) continue;
+      let e2 = l;
+      while (e2 + 1 < S1 && idx[j * S1 + e2 + 1] >= 0) e2++;
+      if (e2 > l) E.push(idx[j * S1 + l], idx[j * S1 + e2]);
+      l = e2;
     }
 
   /* And, across. Vertical lines alone cannot show a face, and that is
@@ -2162,15 +2164,17 @@ function hologramPoints(verts, yaw0, shell, slices) {
      of every other, so what you get is the silhouette. Joining lit neighbours
      at the SAME height draws the model's cross-section at that height instead,
      and a stack of cross-sections is a head -- it is also what a volumetric
-     display actually does. Only between lit cells, so the plates are the model
-     and the standing lattice stays a lattice. */
+     display actually does. */
   if (slices)
     for (let l = 0; l < S1; l++)
       for (let iz = 0; iz < C; iz++)
         for (let ix = 0; ix < C; ix++) {
-          if (!on[(iz * C + ix) * S1 + l]) continue;
-          if (ix + 1 < C && on[(iz * C + ix + 1) * S1 + l]) E.push(at(ix, iz, l), at(ix + 1, iz, l));
-          if (iz + 1 < C && on[((iz + 1) * C + ix) * S1 + l]) E.push(at(ix, iz, l), at(ix, iz + 1, l));
+          const a = idx[(iz * C + ix) * S1 + l];
+          if (a < 0) continue;
+          const r = ix + 1 < C ? idx[(iz * C + ix + 1) * S1 + l] : -1;
+          const d = iz + 1 < C ? idx[((iz + 1) * C + ix) * S1 + l] : -1;
+          if (r >= 0) E.push(a, r);
+          if (d >= 0) E.push(a, d);
         }
   return { pts, edges: Int32Array.from(E) };
 }
@@ -3576,8 +3580,7 @@ function loop() {
        the same green as the model and the volume lost its silhouette entirely. */
     const PASS = holo
       ? [{ g: 0, b: -0.55, w: 1.1 * k, a: 0.55 },             // the floor, underneath
-         { g: 1, b: -0.30, w: 0.9 * k, a: 0.14 },             // the standing lines
-         /* and the model on top: a body, a middle, and an edge. The number of
+         /* and the model on top: a body and an edge. The number of
             depth slices is a fill-rate budget, not a look -- a stroke a cell
             wide, drawn six times over every lit edge, was five screens of
             overdraw a frame and took a phone-sized canvas to 20fps. The body
