@@ -3294,15 +3294,51 @@ function loop() {
       // bloom scatters a target across radii, which is depth on a ring and just
       // noise on an arc
       const bl = cfg.bloom * (1 - mu * 0.8) * (held ? 1 : 1 - formT * 0.85);
-      /* Phase runs off the index, so raising the count used to raise the
-         frequency of the bloom wave with it -- 900 particles gave a slow fold
-         across the ring and 4777 gave a fine scatter, and the same numbers no
-         longer meant the same look. Normalised against a reference count, so
-         count is density again and rateX/rateY keep what they were tuned to.
-         900 because that is what the mouth preset was built at. */
-      const ph = i * (900 / n);
-      const sqx = 1 - bl + bl * Math.sin(frame / cfg.rateX * ph);
-      const sqy = 1 - bl + bl * Math.cos(frame / cfg.rateY * ph);
+      /* And a fixed offset per particle, or the wave has a place where every
+         particle agrees -- which is a knot.
+
+         `ph` multiplies the FREQUENCY, so this is a chirp along the index: fine
+         and shimmering at high index, slower and slower toward low index, and
+         at index 0 the argument is exactly 0 for ever. Index 0 is angle 0 is
+         three o'clock, so a few hundred particles there sat at one static
+         radius while the rest of the ring was smeared across many -- a dense
+         coherent lump at the right of the orb with a trail of dots running out
+         of it, in every screenshot, at every setting, for the life of the
+         project. Nothing there was clumping. Everything else was spreading.
+
+         The offset gives the chirp no anchor. It costs nothing anywhere else:
+         a fixed phase per particle is what bloom already is. */
+      /* Radially, and with no anchor. Two things were wrong and they made the
+         same lump.
+
+         `ph` multiplied the FREQUENCY, so this was a chirp along the index:
+         fine and shimmering at high index, slower and slower toward low index,
+         and at index 0 the argument was exactly 0 for ever. Index 0 is angle 0
+         is three o'clock. A fixed offset per particle gives the wave nowhere
+         that every particle agrees.
+
+         And x and y were smeared independently, which is an ELLIPTICAL scatter,
+         not the radial one this is for. Independent axes mean the mean radius
+         depends on the angle -- larger on the diagonals, where two draws are
+         averaged, than on the axes, where there is only one -- and the particles
+         chase those targets through a capped force, so they lag and pool where
+         the flow is slowest. Measured off the lit pixels: 1.72x the mean
+         density at four o'clock, against 1.33x now, and what is left is a clean
+         top-to-bottom symmetry that comes from the containment wall matching a
+         tall screen.
+
+         The chirp is kept, because the chirp IS the depth -- a particle whose
+         target moves slowly follows it and spreads across the band, one whose
+         target moves fast cannot and hovers near the middle of it, and the ring
+         having both is what makes it look thick rather than drawn. It is drawn
+         per particle now instead of read off the index, so the same mixture is
+         scattered through the field rather than laid out around it: slow ones
+         at three o'clock and fast ones everywhere else was the lump. */
+      const jit = hash(i + 7) * TAU;
+      const sw = 900 * hash(i + 3);
+      const sq = 1 - bl + bl * (0.6 * Math.sin(frame / cfg.rateX * sw + jit) +
+                                0.4 * Math.sin(frame / cfg.rateY * sw * 1.7 + jit * 1.31));
+      const sqx = sq, sqy = sq;
       let tx = cx + ux * ringR * sqx * ex;
       let ty = cy + uy * ringR * sqy * ey;
       /* The free particles part rather than surround. A ring big enough to

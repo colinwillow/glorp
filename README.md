@@ -1186,6 +1186,44 @@ value that was current at the time.
 
 ---
 
+## The lump on the right
+
+Every screenshot of this project, at every setting, had a denser lobe at three
+or four o'clock with a trail of dots running out of it. It was not clumping.
+Everything else was spreading, and two things in the bloom decided where.
+
+**`ph` multiplied the frequency, not the phase.** `sin(frame / rateX * ph)` with
+`ph` proportional to the index is a *chirp along the ring*: fine and shimmering
+at high index, slower and slower toward low index, and at index 0 the argument
+is exactly zero for ever. Index 0 is angle 0 is three o'clock.
+
+**And x and y were smeared independently**, which is an elliptical scatter, not
+the radial one bloom is for. With independent axes the mean radius depends on
+the angle — larger on the diagonals, where two draws are averaged, than on the
+axes, where there is only one — and particles chase those targets through a
+capped force, so they lag and pool where the flow is slowest.
+
+Measured off the lit pixels, sampled every seven seconds:
+
+| | peak density | where |
+|---|---|---|
+| before | 1.61 – 1.91× | 0–90°, **every sample** |
+| after | 1.26 – 1.54× | wanders |
+
+**The chirp had to stay, because the chirp is the depth.** A particle whose
+target moves slowly follows it and spreads across the band; one whose target
+moves fast cannot, and hovers near the middle. The ring having both is what
+makes it look thick rather than drawn — take the chirp out entirely and the orb
+fills in to a flat disc with no gap and no core. So the rate is drawn **per
+particle** now rather than read off the index: the same mixture, scattered
+through the field instead of laid out around it. Slow ones at three o'clock and
+fast ones everywhere else was the whole of the lump.
+
+Radius band and median are unchanged — 74px and 89px, against 76 and 88 — so it
+is the same orb, without the lopsidedness.
+
+---
+
 ## Gotchas
 
 - **Never shadow a name** between a function parameter and an outer `const`.
