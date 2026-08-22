@@ -1100,6 +1100,17 @@ let micState = "idle";
 
 micBig.onclick = () => micBtn.onclick();
 micBtn.onclick = async () => {
+  /* Already live? Then this is somebody telling us it is not working, and they
+     are right -- the HUD says SILENT and they tapped it. A user gesture is also
+     the one moment a browser will hand over audio without argument, so rebuild
+     the whole chain here rather than waiting for the watchdog. */
+  if (A && micState === "live") {
+    caption("", "reopening the microphone…");
+    await regrabMic();
+    if (A) { A.deadAt = 0; A.grabAt = performance.now(); }
+    caption("", micWord() === "live" ? "microphone back" : "microphone still silent — " + micWord());
+    return;
+  }
   micState = "asking"; micBtn.textContent = "…";
   micBig.style.animation = "none";
   errBox.style.display = "none";
@@ -1122,7 +1133,7 @@ micBtn.onclick = async () => {
       hist:new Float32Array(240), histAt:0, histN:0, histTick:0 };
     micState = "live";
     micBig.classList.add("off");
-    micBtn.style.display = "none";
+    micBtn.textContent = "mic";
     frzBtn.style.display = "";
     analyse();
     // this click is the gesture; spend it on everything that needs one
@@ -1181,8 +1192,15 @@ frzBtn.onclick = () => {
    case where a prompt is the honest thing to show. */
 async function regrabMic() {
   try {
-    const live = A.stream.getAudioTracks()[0];
-    const stream = live && live.readyState === "live" ? A.stream
+    const t0 = A.stream.getAudioTracks()[0];
+    // free, and needs no permission: something may simply have switched it off
+    if (t0) { try { t0.enabled = true; } catch (e) {} }
+    /* Reuse the stream only if the track is actually delivering. A track that
+       has been taken away is not "ended" -- it is LIVE and MUTED, and the last
+       version of this reused it on that basis and rebuilt a fresh context
+       around a dead track, for ever. That is why this kept coming back. */
+    const usable = t0 && t0.readyState === "live" && t0.muted !== true;
+    const stream = usable ? A.stream
       : await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
         });
@@ -1200,6 +1218,18 @@ async function regrabMic() {
       hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0 };
     micState = "live";
   } catch (e) { micState = "denied"; }
+}
+
+/* Not "live" when it is delivering nothing. And when it is not, say WHY --
+   which of the two things that can be wrong is wrong. This has been diagnosed
+   from guesses three times; a HUD that can be read out loud ends that. */
+function micWord() {
+  if (!A || micState !== "live") return micState;
+  if (A.db > -139) return "live";
+  const t = A.stream.getAudioTracks()[0] || {};
+  return "SILENT[" + (A.ac.state || "?").slice(0, 4) +
+         (t.muted ? " muted" : "") + (t.enabled === false ? " off" : "") +
+         (t.readyState && t.readyState !== "live" ? " " + t.readyState : "") + "] tap mic";
 }
 
 function analyse() {
@@ -1222,7 +1252,8 @@ function analyse() {
     const now2 = performance.now();
     if (!dead) A.deadAt = 0;
     else if (!A.deadAt) A.deadAt = now2;
-    else if (now2 - A.deadAt > 3000 && now2 - (A.grabAt || 0) > 10000) {
+    else if (now2 - A.deadAt > 3000 && now2 - (A.grabAt || 0) > 20000 &&
+             document.visibilityState === "visible") {
       A.grabAt = now2; A.deadAt = 0;
       micState = "silent — reopening";
       regrabMic();
@@ -4492,8 +4523,7 @@ function loop() {
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
-                        "\nmic " + (A && A.db <= -139 && micState === "live" ? "SILENT" : micState) +
-                        "  in " + f2(mic.scale) +
+                        "\nmic " + micWord() + "  in " + f2(mic.scale) +
                         (standalone ? "  [standalone]" : "") +
                         (brain.url ? "" : "  [no endpoint]") +
                         (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");

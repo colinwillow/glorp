@@ -1206,6 +1206,43 @@ word to spell further down — and in an object literal the second one silently
 wins, so it was the only one of the eight that did nothing. Three of four routes
 home passed on the first test, and that is how the fourth was found.
 
+### Live and muted is not ended
+
+This came back four times, and three of those were my patches missing the point.
+The failure is always the same reading — `dB -140`, which is 20·log₁₀ of nothing
+— with the speech recogniser working perfectly beside it. Two consumers, one
+microphone, and the other one wins.
+
+The bug that made it *unrecoverable* was a distinction I got wrong. A stolen
+track is **not `ended`**. It is `readyState: "live"` with `muted: true`. The
+recovery reused the existing stream whenever the track was live, so it rebuilt a
+fresh context around a dead track — correctly, repeatedly, for ever.
+
+Reproduced by disconnecting the source behind a `MediaStreamDestination` and
+faking `muted`, which is faithful in the way that matters: a new analyser on the
+same stream stays silent, exactly as it does on the phone. Only a new
+`getUserMedia` recovers.
+
+| | before | after |
+|---|---|---|
+| stolen | `-140`, HUD says **live** | `-140`, HUD says `SILENT[runn muted] tap mic` |
+| 6s later | `-140`, 1 grab | **`-57`, 2 grabs** |
+| 12s later | `-140` forever | level reading again |
+
+Three things now, and the first is the one that matters:
+
+- **The HUD names the fault.** `SILENT[runn muted]` says the context is running
+  and the track is muted; `SILENT[susp]` would say the context was suspended.
+  Those want completely different fixes and for four rounds there was no way to
+  tell them apart from outside. A status line that can be read out loud is worth
+  more than another guess.
+- **The watchdog takes a genuinely new stream** when the track is muted, ended
+  or disabled — and reuses the old one only when it is actually delivering.
+  Every 20s at most, and only while the page is visible.
+- **Tapping the mic while it is live rebuilds the whole chain.** If somebody taps
+  a microphone that claims to be live, they are telling you it is not, and a user
+  gesture is the one moment a browser hands over audio without argument.
+
 ### A microphone that is live and delivering silence
 
 `dB -140` is not a quiet room. It is 20·log₁₀ of *nothing at all*, and it turned
