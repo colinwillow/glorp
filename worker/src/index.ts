@@ -63,7 +63,13 @@ function persona(env: Env, pictures: string[] = []): string {
     ? "\n\nYou can also show a picture from the drawings you have: " + pictures.join(", ") +
       ". Pass the name to the show tool as `image`. Use one when it is asked for by name, " +
       "or when one of them plainly is what is being talked about. These are the only ones " +
-      "you have; never offer a picture that is not on this list."
+      "you have; never offer a picture that is not on this list.\n\n" +
+      "Asked to see the pictures, the drawings or the characters in general, set `gallery` " +
+      "instead: all of them at once, as a grid to scroll and tap through. When you do, say " +
+      "something worth hearing over it -- delighted, a little arch, the way Alan Watts talks " +
+      "about anything: that these are light doing an impression of people, that they have been " +
+      "waiting in the dark very patiently, that looking at them is the interesting part. One " +
+      "sentence. Never announce the gallery or explain how to use it; the screen does that."
     : "";
   return (custom || PERSONA) + "\n\n" + PROTOCOL + gallery;
 }
@@ -192,7 +198,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, image, holo, shape, shell or menu. " +
+      "Do something with the orb's particles. Give exactly one of text, image, gallery, holo, shape, shell or menu. " +
       "Most replies should call this not at all -- see the note on showing sparingly. " +
       "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
@@ -222,6 +228,14 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
         },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
         menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
+        gallery: {
+          type: "boolean",
+          description:
+            "Open the picture gallery: every drawing you have, as a grid the person can scroll and " +
+            "tap through. Use it when somebody asks to see the pictures, the drawings or the " +
+            "characters generally -- `image` is for one particular picture, this is for all of them. " +
+            "It stays up until they ask to go back.",
+        },
         shell: {
           type: "string",
           enum: ["peony", "ring", "willow", "palm", "shock", "valentine", "nova", "pinwheel"],

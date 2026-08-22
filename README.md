@@ -437,10 +437,24 @@ sizes, which is what they are.
 
 ### The gallery is a page
 
-Say **images** and you get a grid: three across, tiles folding in one after
-another from alternating sides, drag to scroll with inertia, tap one to open it,
-swipe sideways between them, swipe down back to the grid, **home** to leave. It
-stays until you leave it.
+Say **images** and you get a grid: three across, a row at a time sliding in from
+alternating sides, drag to scroll with inertia, tap one to open it, swipe
+sideways between them, tap again — or swipe down — to shrink it back to the grid,
+**home** to leave. It stays until you leave it.
+
+The entrance alternated per **tile** first, which with three columns means both
+directions inside every row and a separate start time for each, so the grid
+assembled on a diagonal and nothing read as coming from one side or the other.
+The **row** is the unit that reads as horizontal. It also starts a full screen
+width out rather than 42% of one: a right-column tile offset by `0.42W` begins in
+the middle of the screen and slides a short way, which looks like a nudge.
+Travelling the whole width is what makes it arrive *from* somewhere.
+
+Tapping closes an open picture, because tapping a tile is how it opened — the
+gesture a thumb tries first. Swipe-down still works, but a gesture you have to
+be told about cannot be the only way out. The threshold is the same as the
+grid's tap: under a finger's width in under 400ms, so a finger that moved is
+still a swipe.
 
 The particles do not go away — they line the **top and bottom** of the screen as
 a slow wave, so the field is still there holding the frame rather than
@@ -486,6 +500,31 @@ One bug worth keeping. `photo.img` is cleared once the fade has run out, and
 that cleanup ran on the very frame after the picture was handed over — throwing
 it away before its own fade-in had started. Alpha climbing, correctly, on
 nothing at all. A pending fade now blocks the clear.
+
+### It should say something
+
+Opening the gallery is handled on the page — the word **images** is a command, and
+a command is answered by doing it, so it never reaches the brain. Which meant the
+most theatrical thing this does happened in **total silence**: six pictures slid
+in and the orb had nothing to say about them.
+
+`remark(lines)` is a spoken line with no round trip: it goes through the same
+`/speak` path a reply does, so the field reacts to it like any other sentence
+rather than sitting still through its own big moment. The lines are Watts,
+roughly — delighted by the thing in front of him and unable to resist pointing
+out that you are the one looking at it. *"Behold: light, pretending very
+convincingly to be people."*
+
+The guard is the interesting part. `showGallery` awaits the folder listing and
+six image loads before anything is on screen, and by the time it finishes the
+brain may already be speaking — so a check at the end finds a clear coast and
+talks straight over it. The decision is made **before the first await**, from the
+state at the moment the gallery was asked for. It never picks the same line twice
+running, either; a random choice out of eight repeats often enough to be noticed.
+
+The brain has a `gallery` option on the show tool now as well, for the phrasings
+the trigger words miss (*"can I see your drawings"*), and is told to say something
+in the same key when it uses it. When it does, the page stays quiet.
 
 ### Pictures
 
@@ -1242,6 +1281,44 @@ Three things now, and the first is the one that matters:
 - **Tapping the mic while it is live rebuilds the whole chain.** If somebody taps
   a microphone that claims to be live, they are telling you it is not, and a user
   gesture is the one moment a browser hands over audio without argument.
+
+### Whoever asks last keeps it
+
+The report that solved this: *"I granted it the first two times it asked and the
+form still didn't move — it was hearing me, my words were on screen — and then I
+messed around with it and it asked a **third** time, and then the form started
+moving."*
+
+Three grants, and only the third worked. That is not a permissions bug, it is an
+**ordering** bug. The tap on the mic button did this:
+
+```
+getUserMedia()   →  the analyser has the microphone
+toggleSTT()      →  recognition asks for it, and takes it
+```
+
+Two consumers, one microphone, and **the one that asks last is the one that
+keeps it**. So the analyser was losing the mic on the very same tap that
+acquired it, every single time, and only a later accident — a grant that landed
+after recognition had already settled — put it the right way round.
+
+So it asks in the surviving order now: speech first, wait for `rec.onstart`
+(up to 1.5s), *then* open the analyser.
+
+```js
+if (talkPref && !recOn) { toggleSTT(); await recReady(1500); }
+await openAnalyser();
+```
+
+`openAnalyser(stream)` came out of this — building the context, analyser and
+buffers was written inline in three places (first tap, tap-on-a-lying-mic, the
+watchdog) and only one of them had the fixes. `regrabMic` delegates to it too,
+and reuses an existing stream only when the track is genuinely delivering.
+
+This is the fourth time this bug came back, and the first three times I patched
+a symptom from a guess. What ended it was a rig that faithfully models a stolen
+stream — live, muted, not ended — instead of a rig that models what I assumed a
+stolen stream looks like.
 
 ### A microphone that is live and delivering silence
 

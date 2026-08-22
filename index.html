@@ -518,7 +518,8 @@ async function ask(text) {
            firing on arrival. */
         if (ctl.show) {
           shown = true;
-          if (ctl.show.shell || ctl.show.model || ctl.show.menu) setFormation(ctl.show, ctl.show.seconds);
+          if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery)
+            setFormation(ctl.show, ctl.show.seconds);
           else pendingShow = ctl.show;
         }
         if (ctl.ms && ctl.ms.claude) clock.claudeMs = ctl.ms.claude;
@@ -746,6 +747,42 @@ async function playReply(text) {
   }
 }
 
+/* Something to say, with nobody asked. Opening the gallery is handled here --
+   the word "images" never reaches the brain, because a command is answered by
+   doing it -- and the result was that the most theatrical thing this does
+   happened in total silence. So the page keeps a few lines of its own and puts
+   them through the same voice, which means the field reacts to them like any
+   other reply rather than sitting still through its own big moment.
+
+   Not a fallback for the brain and not a conversation: one line, said once,
+   about a thing that just happened on screen. */
+let remarkLast = -1;
+async function remark(lines) {
+  if (brain.busy) return;                 // a real reply is on its way; do not talk over it
+  let k = Math.floor(Math.random() * lines.length);
+  if (k === remarkLast) k = (k + 1) % lines.length;   // never the same one twice running
+  remarkLast = k;
+  const line = lines[k];
+  caption(null, line);
+  const spoke = await playReply(line);
+  if (!spoke) planSpeech(line);
+  setState("speaking");
+}
+
+/* Watts, roughly: delighted by the thing in front of him and unable to resist
+   pointing out that you are the one looking at it. Short, because they are said
+   over an animation, and the animation is the point. */
+const GALLERY_LINES = [
+  "Here they are. Faces that never had to eat or sleep, and look how smug they are about it.",
+  "Behold: light, pretending very convincingly to be people.",
+  "Six little dreams, holding remarkably still. Do have a wander.",
+  "You asked to see them, which means part of you already has. But go on, look properly.",
+  "There. Arrangements of colour that your brain insists are somebody. Marvellous, isn't it.",
+  "The gallery. None of them will look back, and I think they know it.",
+  "Pictures of nobody, painted by nothing, and yet here you are, interested.",
+  "Ah, the characters. They have been waiting in the dark with infinite patience, which is easy for them."
+];
+
 /* Recognition is the browser's, not ours -- no key, no proxy. Safari on iOS
    supports it but is stricter about the gesture and drops the session more
    often, hence the restart in onend. */
@@ -792,7 +829,10 @@ function toggleSTT() {
   /* Chrome asks twice on purpose: getUserMedia covers the analyser, and the
      Web Speech API is a separate grant because the audio leaves the machine.
      Nothing to fix -- but unexplained it reads as the page being broken. */
-  rec.onstart = () => caption("", "listening… say something");
+  rec.onstart = () => {
+    caption("", "listening… say something");
+    if (recStart) { const r = recStart; recStart = null; r(); }
+  };
   rec.onaudiostart = () => caption("", "hearing audio…");
   rec.onresult = (e) => {
     if (sttPaused || performance.now() < echoUntil) return;   // that was us
@@ -1117,31 +1157,24 @@ micBtn.onclick = async () => {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
       throw new Error("getUserMedia unavailable — needs https or localhost");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
-    });
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
-    await ac.resume();
-    const an = ac.createAnalyser();
-    an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
-    ac.createMediaStreamSource(stream).connect(an);
-    A = { ac, an, stream,
-      freq:new Uint8Array(an.frequencyBinCount),
-      prev:new Float32Array(an.frequencyBinCount),
-      time:new Float32Array(an.fftSize), floorDb:-55, db:-99,
-      // four seconds of loudness history, which is what the floor is read from
-      hist:new Float32Array(240), histAt:0, histN:0, histTick:0 };
-    micState = "live";
+    // this click is the gesture; spend it on everything that needs one
+    ensureTtsCtx();
+    /* SPEECH FIRST, then the analyser. Two consumers want one microphone and
+       the one that asks LAST is the one that keeps it -- which is why the
+       analyser used to go dead the moment recognition started, and why granting
+       a THIRD time, after recognition was already running, was what fixed it.
+       Both prompts still happen, but in the order that survives, and inside the
+       same tap. */
+    if (talkPref && !recOn) {
+      caption("", "two permissions: speech first, then the microphone");
+      toggleSTT();
+      await recReady(1500);
+    }
+    await openAnalyser();
     micBig.classList.add("off");
     micBtn.textContent = "mic";
     frzBtn.style.display = "";
     analyse();
-    // this click is the gesture; spend it on everything that needs one
-    ensureTtsCtx();
-    if (talkPref && !recOn) {
-      caption("", "one more permission — speech is a separate grant from the mic");
-      toggleSTT();
-    }
   } catch (e) {
     micState = "denied";
     micBig.style.animation = "";
@@ -1190,6 +1223,40 @@ frzBtn.onclick = () => {
    a fresh context and a fresh analyser on the SAME stream is the whole repair.
    Only a track that has genuinely ended needs a new grant, and that is the one
    case where a prompt is the honest thing to show. */
+/* Taking the microphone for the analyser. Its own function because it happens
+   in three places now -- the first tap, a tap on a microphone that is lying
+   about being live, and the watchdog. */
+async function openAnalyser(stream) {
+  const st = stream || await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+  });
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  await ac.resume();
+  const an = ac.createAnalyser();
+  an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
+  ac.createMediaStreamSource(st).connect(an);
+  A = { ac, an, stream: st,
+    freq: new Uint8Array(an.frequencyBinCount),
+    prev: new Float32Array(an.frequencyBinCount),
+    time: new Float32Array(an.fftSize), floorDb: -55, db: -99,
+    // four seconds of loudness history, which is what the floor is read from
+    hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0 };
+  micState = "live";
+  return A;
+}
+
+/* Recognition actually running, not merely asked for. Resolves on its own
+   onstart, or gives up waiting -- a timeout here costs one bad ordering, and
+   hanging costs the microphone entirely. */
+let recStart = null;
+function recReady(ms) {
+  return new Promise((res) => {
+    if (recOn && recStart === null) return res();
+    recStart = res;
+    setTimeout(() => { if (recStart === res) { recStart = null; res(); } }, ms);
+  });
+}
+
 async function regrabMic() {
   try {
     const t0 = A.stream.getAudioTracks()[0];
@@ -1200,23 +1267,13 @@ async function regrabMic() {
        version of this reused it on that basis and rebuilt a fresh context
        around a dead track, for ever. That is why this kept coming back. */
     const usable = t0 && t0.readyState === "live" && t0.muted !== true;
-    const stream = usable ? A.stream
-      : await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
-    const ac = new (window.AudioContext || window.webkitAudioContext)();
-    await ac.resume();
-    const an = ac.createAnalyser();
-    an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
-    ac.createMediaStreamSource(stream).connect(an);
+    const old = A;
+    await openAnalyser(usable ? A.stream : null);
     // close the old context, but never stop a stream we are about to keep using
-    try { if (stream !== A.stream) A.stream.getTracks().forEach((t) => t.stop()); A.ac.close(); } catch (e) {}
-    A = { ac, an, stream,
-      freq: new Uint8Array(an.frequencyBinCount),
-      prev: new Float32Array(an.frequencyBinCount),
-      time: new Float32Array(an.fftSize), floorDb: -55, db: -99,
-      hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0 };
-    micState = "live";
+    try {
+      if (A.stream !== old.stream) old.stream.getTracks().forEach((t) => t.stop());
+      old.ac.close();
+    } catch (e) {}
   } catch (e) { micState = "denied"; }
 }
 
@@ -1897,6 +1954,11 @@ async function fetchImage(src) {
 }
 
 async function showGallery() {
+  /* Whether the page has to say something itself, decided BEFORE the first
+     await. When the brain opened the gallery it is already writing a line about
+     it, and by the time the pictures have loaded it may well be speaking -- so
+     asking then would find a clear coast and talk over it. Ask now. */
+  const quiet = brain.busy || ttsPlaying;
   // glorb is the app's own mark, sat in images/ so the menu slot has something
   // to point at. It is not one of the pictures anybody came to look at.
   const list = (await listImages()).filter((n2) => n2 !== "glorb");
@@ -1915,6 +1977,7 @@ async function showGallery() {
   // the field lines the frame rather than leaving
   setFormation({ points: edgePoints(), label: "gallery", fs: EDGE_FS, wide: 1 }, 3600);
   caption(null, shots.length + " pictures · drag to scroll · tap one");
+  if (!quiet) remark(GALLERY_LINES);
   return true;
 }
 
@@ -1978,16 +2041,26 @@ function drawGallery(dt) {
     if (gallery.scroll > mx2) { gallery.scroll = mx2; gallery.vel = 0; }
 
     for (let k = 0; k < gallery.shots.length; k++) {
-      /* Folded in one after another, alternating sides. A grid that simply
-         appears is a screenshot; a grid that arrives is a place. */
-      const age = (now3 - gallery.at - k * 70) / 420;
+      /* A row at a time, sliding in from alternate sides: the first row from
+         the left, the next from the right. It used to alternate per TILE, which
+         with three columns means both directions inside every row and a
+         staggered start for each -- so the grid assembled on a diagonal and
+         nothing read as coming from one side or the other. A row is the unit
+         that reads as horizontal.
+
+         And it starts a full screen out, not 42% of one. A tile in the right
+         column offset by 0.42W begins in the middle of the screen and slides a
+         short way, which looks like a nudge; travelling the whole width is what
+         makes it arrive FROM somewhere. */
+      const row = (k / GRID.cols) | 0;
+      const age = (now3 - gallery.at - row * 90) / 380;
       if (age <= 0) continue;
       const e = age >= 1 ? 1 : 1 - Math.pow(1 - age, 3);
       const r = tileRect(k);
       if (r.y > H || r.y + r.h < 0) continue;
       if (gallery.shrink && gallery.shrink.k === k) continue;   // it is on its way in
-      const side = k % 2 ? 1 : -1;
-      const off = (1 - e) * W * 0.42 * side;
+      const side = row % 2 ? 1 : -1;
+      const off = (1 - e) * (W + GRID.edge) * side;
       drawCover(gallery.shots[k].img, r.x + off, r.y, r.w, r.h, e);
     }
   } else {
@@ -3506,6 +3579,13 @@ const onUp = (e) => {
     }
     void wasDrag;
     return;
+  }
+  /* A tap closes it. Tapping a tile is how it opened, so tapping it again is
+     what a thumb tries first -- and a swipe down is a gesture you have to be
+     told about. Same threshold as the grid's tap, so a finger that moved is
+     still a swipe. */
+  if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && took < 400) {
+    e.preventDefault(); galleryClose(); return;
   }
   if (took > 900) return;                       // a rest, not a flick
   if (Math.abs(dx) > far && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); galleryGo(dx < 0 ? 1 : -1); }
