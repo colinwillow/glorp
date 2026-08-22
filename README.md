@@ -675,8 +675,8 @@ before the one below it has finished:
 |---|---|
 | **dots** | particles leave the ring and stand on the vertices |
 | **lines** | edges appear between dots that are already in place |
-| **fill** | the surface closes over the lines, in the orb's own palette |
-| **texture** | the model's own colours arrive on the surface |
+| **fill** | the surface closes over the lines, in the orb's own green |
+| **texture** | the real model arrives, textured and lit, on the GPU |
 
 Measured, one frame per 500ms: at 1.4s the legs are a wireframe and everything
 above the hips is still a cloud; at 2.3s the shoes are textured, the jeans are a
@@ -696,6 +696,98 @@ takes the height of its *lowest* corner, so each stage arrives as one front
 rather than a fringe; taking the highest made the surface trail the lines by a
 whole limb across the shoulders, where one triangle can span a lot of body.
 
+#### The GPU, and why it had to be one
+
+The first version of this rendered the figure in Canvas 2D like everything else,
+and next to the model's own render it looked like a PlayStation 1 character. Not
+a tuning problem. Canvas 2D is a **2D rasteriser**: it cannot map a texture
+across a triangle, it cannot interpolate a normal, and it will not antialias a
+fill. Working around all three meant
+
+- one flat colour per face, sampled at its centroid,
+- three levels of flat shading,
+- a 49-colour quantised palette,
+- and the mesh decimated to an eighth of its vertices so the fills could keep up.
+
+Every one of those is visible in the picture, and no amount of tuning closes the
+gap, because what was there was a software renderer written by hand.
+
+So **the figure, and only the figure, is rendered by three.js** on a second
+canvas and composited into this one. The orb, the menu, the gallery, the
+holograms, the shells and the whole particle field are untouched — they are what
+Canvas 2D is good at. What changed is that the thing the particles resolve into
+is now the real mesh at full resolution, with its own PBR material and its own
+texture, lit by an environment map.
+
+three is **vendored, not fetched from a CDN**, and resolved by the browser's own
+`<script type="importmap">` rather than by a bundler — which keeps the one thing
+this project is built on, that there is no build step. 876KB in `vendor/`.
+
+**Composited, not layered.** The 2D canvas paints its trail over the whole frame
+every frame, so a WebGL canvas behind it is invisible and one in front of it
+covers the particles. Drawing it *into* the 2D context, immediately after the
+trail and before the dots, is what lets the model sit between them.
+
+**The camera is not a choice.** The 2D projection is `FOC / (FOC + depth)` with
+`FOC = scale * 1.7` in pixels, which is a pinhole a distance FOC in front of a
+projection plane through the origin. Put three's camera at exactly that distance
+and give it the field of view that makes the viewport's height come out at H
+pixels on that plane, and the two projections are the same projection — so the
+particles land on the model rather than near it.
+
+**The wipe is a shader, not a clipping plane.** A plane cuts at a height in the
+world; the 2D side gates on a vertex's height in the *bind* pose. Those disagree
+by however far the pose has moved that vertex, which on a raised arm is most of
+a limb — the dots would be up there waiting and the surface would refuse to
+arrive. So `onBeforeCompile` injects a varying carrying the bind height and the
+fragment shader discards above the front. It has the better behaviour anyway: a
+hand builds when the hand's place *on the body* is reached, not when it crosses
+a line in the room.
+
+**The ghost is a second mesh**, sharing the first one's geometry and skeleton,
+in the orb's green — that is the fill stage, the surface arriving before its
+colours do. It occupies the band between the surface front and the texture
+front; below the texture line it would be a translucent film over the finished
+model, which is not a stage, it is a mistake.
+
+**The dots hand over.** Once the real surface has arrived under a particle it
+has done its job — the same bargain the photographs make with the drawings that
+introduce them. Except on the silhouette: `nzv`, the vertex normal's component
+along the view axis, is already computed for the back-surface culling, and a
+particle whose normal is nearly perpendicular to the camera is standing on the
+edge of the figure. Those stay. A rim of dots around him is the one place the
+field and the model are obviously the same object.
+
+Two bugs on the way through:
+
+- **`lo || gl.uGhoLo`** gave the textured mesh the *ghost's* lower bound, which
+  is the texture front itself — so every fragment was both below the top and
+  below the bottom and the entire model discarded. 1,297 lit pixels out of
+  369,800, with three draw calls and 137,604 triangles going through them, which
+  is the shape of a shader problem rather than a scene problem.
+- **The build clock started before the load.** Three quarters of a second of
+  parsing a 3.6MB file went by with the wipes already climbing, so the first
+  thing on screen was a figure two thirds assembled.
+
+And one that had been sitting there unseen: the particle side flipped **only y**
+on the way from model space into formation space. The 2D renderer is left-handed
+the way a screen is — x right, y down, z away — and glTF is right-handed with y
+up and z toward the viewer, so the conversion needs **two** flips. One flip is a
+mirror. With nothing to compare against, a mirrored figure is just a figure; the
+moment there was a real render beside it, it was obvious.
+
+Lighting was swept against the model's own render. Exposure 1.55 with the
+environment at 1.5 washed the denim to grey and the hoodie to mid-tone — which
+is what over-lighting a PBR material with white does, the albedo stops being
+visible under it. It sits two stops below that, with a cool rim from behind
+because on a black background the far edge of a figure has nothing to separate
+it from the void.
+
+*Not yet measured on real hardware.* This container has no GPU — Chromium falls
+back to software rasterisation, where the numbers are meaningless. The one cost
+that is real on a phone and not visible here is the per-frame `drawImage` of the
+WebGL canvas into the 2D one.
+
 #### What had to be built
 
 - **Skinning.** Sample the keyframe curves, walk the node tree for each joint's
@@ -708,12 +800,12 @@ whole limb across the shoulders, where one triangle can span a lot of body.
   one representative's skin weights and texture coordinates. Averaging weights
   across a cluster that spans two limbs tears the mesh apart the moment they
   separate.
-- **Texture.** Canvas 2D cannot draw a perspective-correct textured triangle, so
-  "textured" here is the mesh wearing its own colours, one flat patch per face,
-  sampled at each triangle's centroid. UVs do not change when the model moves —
-  that is what UVs are — so this is baked once at load rather than looked up
-  60 times a second. The map is quantised to 49 colours so the surface can still
-  batch by colour; a character's texture is four or five materials.
+- **A software surface, now the fallback.** One flat colour per face sampled at
+  each triangle's centroid, baked once at load (UVs do not change when the model
+  moves — that is what UVs are) and quantised to 49 colours so the surface can
+  still batch by colour. It is what draws when three is missing, WebGL is off,
+  or the file will not parse. It is also, on its own, the whole reason the GPU
+  had to come in.
 - **A stage chooser.** Five buttons while a figure is up: the four states and
   `auto`. Holding a state freezes the wipes where that state covers the whole
   body. The build is over in four seconds and the interesting middle of it is

@@ -88,6 +88,11 @@
     color:#9FB98B;background:rgba(11,11,11,.72);border:1px solid #3B4A31;
     border-radius:11px;padding:6px 9px;cursor:pointer}
   #fig button.at{color:#0B0B0B;background:#B6E08A;border-color:#B6E08A}
+  /* Never on screen. It is rendered to and then drawn INTO the 2D canvas, which
+     is the only way the model can be layered between the trail and the
+     particles rather than simply on top of everything. */
+  #gl{position:fixed;left:0;top:0;pointer-events:none;opacity:0;
+    width:1px;height:1px}
   #mic{position:fixed;left:50%;transform:translateX(-50%);
     bottom:calc(76px + env(safe-area-inset-bottom));
     width:64px;height:64px;border-radius:50%;border:2px solid #FF3B4E;
@@ -108,6 +113,15 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<!-- The GPU layer. Everything in this program is drawn with Canvas 2D, which is
+     a 2D rasteriser -- and a 2D rasteriser cannot map a texture across a
+     triangle, interpolate a normal, or antialias a fill. A model rendered
+     through it is a software renderer written by hand, and it looks like one.
+     A rigged character is where that stops being acceptable. So the figure, and
+     only the figure, is rendered by three.js on its own canvas and composited
+     into the 2D one. Everything else -- the orb, the menu, the gallery, the
+     holograms -- is untouched. -->
+<canvas id="gl"></canvas>
 <div id="hud">— fps</div>
 <div id="meter"></div>
 <div id="tr">
@@ -120,6 +134,27 @@
 <div id="cap"></div>
 <div id="fig"></div>
 <div id="panel"></div>
+
+<!-- Vendored, not from a CDN, and resolved by the browser's own import map
+     rather than by a bundler. The whole bargain this file is built on is that
+     there is no build step; an import map keeps that true while still letting
+     three's own modules use bare specifiers. -->
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "./vendor/GLTFLoader.js";
+  import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
+  /* Handed to the classic script through the window, because the classic script
+     is four thousand lines of top-level consts that everything else -- onclick
+     handlers, the test rigs -- reaches by name. Module scope would hide all of
+     it. Module scripts are deferred, so this runs after the page below; the
+     figure waits on the event. */
+  window.THREE = THREE; window.GLTFLoader = GLTFLoader; window.RoomEnvironment = RoomEnvironment;
+  window.__three = 1;
+  window.dispatchEvent(new Event("threeready"));
+</script>
 
 <script>
 "use strict";
@@ -3198,6 +3233,209 @@ async function showSequence(src) {
   return true;
 }
 
+/* ---------------- the GPU layer ----------------
+   Canvas 2D is a 2D rasteriser. It cannot map a texture across a triangle, it
+   cannot interpolate a normal, and it will not antialias a fill. The figure's
+   first version worked around all three -- one flat colour per face sampled at
+   its centroid, three levels of flat shading, a 49-colour quantised palette,
+   and the mesh decimated to an eighth of its vertices so the fills would keep
+   up. Next to the model's own render it looked like a PlayStation 1 character,
+   and no amount of tuning was going to close that: it was a software renderer
+   written by hand.
+
+   So the figure -- and only the figure -- is rendered by three.js on a second
+   canvas and composited into this one. Everything else in the program stays
+   exactly as it was. The particles keep announcing it, the wireframe keeps
+   drawing itself in, and the thing they resolve into is now the real mesh with
+   its real texture on it, at full resolution, lit by an environment map.
+
+   Composited rather than layered, because the 2D canvas paints its trail over
+   the whole frame every frame -- so a WebGL canvas behind it is invisible, and
+   one in front of it covers the particles. Drawing it INTO the 2D context at
+   the right moment is what lets the model sit between the trail and the dots. */
+const glCanvas = document.getElementById("gl");
+const gl = {
+  ok: 0, ready: 0, R: null, scene: null, cam: null, root: null, group: null,
+  mesh: null, ghost: null, mixer: null, action: null, W: 0, H: 0, src: "",
+  /* The wipe, as three uniforms rather than as clipping planes. A plane cuts at
+     a height in the WORLD, and the 2D side gates on a vertex's height in the
+     BIND pose -- so the two disagree by however far the pose has moved that
+     vertex, which on a raised arm is most of a limb: the dots would be up there
+     waiting and the surface would refuse to arrive. Discarding on bind height
+     instead makes the two wipes the same wipe, and has the better behaviour
+     anyway: a hand builds when the hand's place on the body is reached, not
+     when it happens to cross a line in the room. */
+  uTex: { value: 0 }, uGhoHi: { value: 0 }, uGhoLo: { value: 0 },
+  /* The textured mesh has no lower bound -- it runs from the feet to its own
+     front. Sharing the ghost's lower uniform with it, which is what `lo ||
+     gl.uGhoLo` quietly did, set that bound to the texture front itself: every
+     fragment was both below the top and below the bottom, and the entire model
+     discarded. 1297 lit pixels out of 369800, with three draw calls and 137,604
+     triangles going through them, which is the shape of a shader problem rather
+     than a scene problem. */
+  uNone: { value: -1 },
+  uLo: { value: 0 }, uSpan: { value: 1 }
+};
+
+/* Injected into whatever material the file brought with it, rather than
+   replacing it. The whole reason for rendering this on a GPU is that the
+   model's own material is what makes it look like the model. */
+function glWipeMat(m, hi, lo) {
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uWipe = hi;
+    sh.uniforms.uWipeLo = lo || gl.uNone;
+    sh.uniforms.uLo = gl.uLo;
+    sh.uniforms.uSpan = gl.uSpan;
+    sh.vertexShader = "varying float vFigH;\nuniform float uLo;\nuniform float uSpan;\n" +
+      sh.vertexShader.replace("#include <begin_vertex>",
+        "#include <begin_vertex>\n  vFigH = (position.y - uLo) / uSpan;");
+    sh.fragmentShader = "varying float vFigH;\nuniform float uWipe;\nuniform float uWipeLo;\n" +
+      sh.fragmentShader.replace("void main() {",
+        "void main() {\n  if (vFigH > uWipe || vFigH <= uWipeLo) discard;");
+  };
+  // or three caches one compiled program for both materials and the second one
+  // silently gets the first one's uniforms
+  m.customProgramCacheKey = () => "figwipe" + (lo ? "g" : "t");
+  m.needsUpdate = true;
+}
+function threeReady() {
+  return window.__three ? Promise.resolve()
+       : new Promise((r) => window.addEventListener("threeready", r, { once: true }));
+}
+
+function glInit() {
+  if (gl.R || !window.THREE) return gl.ok;
+  const T = window.THREE;
+  try {
+    gl.R = new T.WebGLRenderer({ canvas: glCanvas, antialias: true, alpha: true,
+                                 premultipliedAlpha: false });
+  } catch (e) { console.log("orb webgl:", e.message); gl.ok = -1; return gl.ok; }
+  gl.R.setPixelRatio(dpr);
+  gl.R.setClearAlpha(0);
+  gl.R.outputColorSpace = T.SRGBColorSpace;
+  /* Neutral rather than ACES. ACES is a film curve -- it desaturates and lifts
+     the blacks, which is right for a scene with a sky in it and wrong for a
+     character standing in a black void, where it read as a grey wash over the
+     hoodie. */
+  /* Swept against the model's own render: exposure 1.55 with the environment
+     at 1.5 washed the denim to grey and the hoodie to mid-tone, which is what
+     over-lighting a PBR material with white does -- the albedo stops being
+     visible under it. These are two stops down from that. */
+  gl.R.toneMapping = T.NeutralToneMapping;
+  gl.R.toneMappingExposure = 1.18;
+  gl.scene = new T.Scene();
+  gl.cam = new T.PerspectiveCamera(40, 1, 1, 40000);
+  /* An environment map, from three's own room. This is most of the difference
+     between "a mesh with a texture on it" and "a render": a single light gives
+     one bright side and one black one, and a room gives soft light from every
+     direction with the shape still readable. */
+  const pm = new T.PMREMGenerator(gl.R);
+  gl.scene.environment = pm.fromScene(new window.RoomEnvironment(), 0.03).texture;
+  gl.scene.environmentIntensity = 1.0;
+  pm.dispose();
+  // and a key, off to the left and above -- the same direction the 2D shading
+  // uses, so the figure is lit the way everything else in here is lit
+  const key = new T.DirectionalLight(0xFFFFFF, 2.5);
+  key.position.set(-5, 6, 7);
+  gl.scene.add(key);
+  /* A rim from behind and the other side. On a black background the far edge of
+     a figure has nothing to separate it from the void, so it dissolves; a rim
+     light is what draws the line that says where he stops. */
+  const rim = new T.DirectionalLight(0xC9D8FF, 1.45);
+  rim.position.set(4, 3, -6);
+  gl.scene.add(rim);
+  gl.scene.add(new T.AmbientLight(0xFFFFFF, 0.24));
+  gl.root = new T.Group();
+  gl.scene.add(gl.root);
+  gl.ok = 1;
+  return gl.ok;
+}
+
+/* The same file, parsed twice, from one download. three needs the full mesh and
+   its own skeleton to render; the particle side needs a decimated copy it can
+   skin in JavaScript, because a dot has to have a position on the CPU to be
+   drawn as a dot. Fetching it twice for that would be three and a half
+   megabytes of nothing. */
+function glLoad(buf, src) {
+  const T = window.THREE;
+  return new Promise((res, rej) => {
+    new window.GLTFLoader().parse(buf.slice(0), "", (g) => {
+      if (gl.group) { gl.root.remove(gl.group); }
+      gl.group = new T.Group();
+      gl.root.add(gl.group);
+      gl.group.add(g.scene);
+      let mesh = null;
+      g.scene.traverse((o) => { if (o.isSkinnedMesh && !mesh) mesh = o; });
+      if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
+      // never culled: the wipe means most of it is clipped away most of the
+      // time, and a bounding sphere computed on the bind pose is wrong anyway
+      mesh.frustumCulled = false;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const m of mats) glWipeMat(m, gl.uTex, null);
+      /* The ghost: the same geometry and the same skeleton, a second time, in
+         the orb's own green. It is the "fill" step -- the surface arriving
+         before its colours do -- and it is a real second mesh rather than a
+         material swap because both have to be on screen at once, one above the
+         other, while the texture wipe is between them. */
+      const gm = new T.MeshStandardMaterial({
+        color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
+        roughness: 0.55, metalness: 0, transparent: true, opacity: 0.72
+      });
+      glWipeMat(gm, gl.uGhoHi, gl.uGhoLo);
+      const ghost = new T.SkinnedMesh(mesh.geometry, gm);
+      ghost.bind(mesh.skeleton, mesh.bindMatrix);
+      ghost.frustumCulled = false;
+      mesh.parent.add(ghost);
+      gl.mesh = mesh; gl.ghost = ghost;
+      gl.mixer = g.animations.length ? new T.AnimationMixer(g.scene) : null;
+      gl.action = gl.mixer ? gl.mixer.clipAction(g.animations[0]) : null;
+      if (gl.action) gl.action.play();
+      gl.src = src;
+      res(g);
+    }, rej);
+  });
+}
+
+/* Where the model has to stand so that the particles land on it.
+
+   Two coordinate systems, and they disagree about two axes. The 2D renderer is
+   left-handed the way a screen is -- x right, y DOWN, z away -- and three is
+   right-handed with y up and z toward the viewer. So three gets the model as
+   authored, and the PARTICLE side is the one that converts: y and z both
+   negated on the way into formation space. Flipping two axes preserves
+   handedness, which is the whole reason it can be done at all; flipping one
+   would mirror him.
+
+   The camera is not a choice either. The 2D projection is FOC/(FOC + depth)
+   with FOC = scale * 1.7 in pixels, which is a pinhole a distance FOC in front
+   of a projection plane through the origin. Put three's camera at exactly that
+   distance and give it the field of view that makes the viewport's height come
+   out at H pixels on that plane, and the two projections are the same
+   projection. */
+function glFrame(K, FOC) {
+  const T = window.THREE;
+  if (gl.W !== W || gl.H !== H) { gl.R.setSize(W, H, false); gl.W = W; gl.H = H; }
+  gl.cam.aspect = W / H;
+  gl.cam.fov = 2 * Math.atan((H / 2) / FOC) * 180 / Math.PI;
+  gl.cam.position.set(0, 0, FOC);
+  gl.cam.lookAt(0, 0, 0);
+  gl.cam.updateProjectionMatrix();
+  const f = rig.R.fit;
+  gl.root.scale.setScalar(K);
+  gl.root.position.set(-f.c[0] * K, -f.c[1] * K, -f.c[2] * K);
+  gl.root.rotation.set(-view.pitch * formT, view.yaw, 0);
+  /* The wipes, in the shader's terms. The ghost occupies the band between the
+     surface front and the texture front: below the texture line it would be a
+     translucent green film over the finished model, which is not a stage, it is
+     a mistake. */
+  gl.uTex.value = rig.wipe[3];
+  gl.uGhoHi.value = rig.wipe[2];
+  gl.uGhoLo.value = rig.wipe[3];
+  gl.ghost.visible = rig.wipe[2] > rig.wipe[3] + 0.001;
+  gl.mesh.visible = rig.wipe[3] > 0.001;
+  gl.R.render(gl.scene, gl.cam);
+}
+
 /* ---------------- the figure ----------------
    A rigged model does not arrive, it is BUILT -- and then it keeps moving. Four
    wipes climb it from the floor: dots, then lines between the dots, then the
@@ -3242,7 +3480,9 @@ async function loadRig(src) {
   const url = named ? src : "models/" + src + ".glb";
   const res = await fetch(url);
   if (!res.ok) throw new Error("HTTP " + res.status);
-  const R = readGlbRig(await res.arrayBuffer());
+  const buf = await res.arrayBuffer();
+  const R = readGlbRig(buf);
+  R.buf = buf;
   R.world = new Array(R.nodes.length);
   R.jm = new Float32Array(R.joints.length * 16);
   R.wp = new Float32Array(R.dec.n * 3);
@@ -3323,12 +3563,19 @@ async function bakeRigTexture(R) {
 }
 
 // where the fit puts a skinned vertex, in formation space
+/* y AND z negated, not just y. The 2D renderer is left-handed the way a screen
+   is -- x right, y down, z away -- and glTF is right-handed with y up and z
+   toward the viewer. Two flips preserve handedness, which is the only reason
+   this conversion is possible at all; one flip would put his parting on the
+   wrong side and nobody would be able to say why the figure looked off. The z
+   flip was missing while the 2D renderer was the only consumer, because with
+   nothing to compare against, a mirrored figure is just a figure. */
 function rigPoint(R, v, o) {
   const f = R.fit, P = R.wp, N = R.wn;
   o[0] = (P[v * 3] - f.c[0]) * f.k;
   o[1] = -(P[v * 3 + 1] - f.c[1]) * f.k;
-  o[2] = (P[v * 3 + 2] - f.c[2]) * f.k;
-  o[3] = N[v * 3]; o[4] = -N[v * 3 + 1]; o[5] = N[v * 3 + 2];
+  o[2] = -(P[v * 3 + 2] - f.c[2]) * f.k;
+  o[3] = N[v * 3]; o[4] = -N[v * 3 + 1]; o[5] = -N[v * 3 + 2];
 }
 
 async function showFigure(src) {
@@ -3364,6 +3611,22 @@ async function showFigure(src) {
 
   // no beat before the lines: the wipe schedule owns their timing now
   wireAt = 0;
+  /* The GPU copy, same file, same pose clock. Awaited only far enough to know
+     whether it worked: if three is missing, WebGL is off, or the file will not
+     parse, the 2D surface below is still there and the build still runs -- it
+     just looks the way it looked before there was a GPU in here. */
+  gl.ready = 0;
+  try {
+    await threeReady();
+    if (glInit() === 1) {
+      gl.uLo.value = lo; gl.uSpan.value = sp;
+      if (gl.src !== src || !gl.mesh) await glLoad(R.buf, src);
+      gl.ready = 1;
+    }
+  } catch (e) { console.log("orb three:", e.message); gl.ready = 0; }
+  /* Started AFTER the GPU copy is in, not before it. Three quarters of a second
+     of parsing a 3.6MB file went by with the build clock already running, so
+     the first thing on screen was a figure two thirds assembled. */
   rig.R = R; rig.src = src; rig.on = 1; rig.out = 0;
   rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
   rig.wipe = [0, 0, 0, 0];
@@ -3380,6 +3643,7 @@ function figStop() {
 }
 function figClear() {
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
+  gl.ready = 0;
   figChooser(0);
 }
 
@@ -3433,6 +3697,11 @@ function updateFigure(dt, now) {
   figWipes(now);
   const R = rig.R;
   rig.t += (dt / 1000) * rig.speed;
+  /* setTime, not update(dt). Two skinning implementations are running -- three's
+     on the GPU for the render, this file's on the CPU for the dots -- and they
+     have to be at the same instant of the same take or the particles crawl
+     around on a body that is somewhere else. One clock, pushed to both. */
+  if (gl.ready && gl.mixer) gl.mixer.setTime(rig.t % R.dur);
   rigPose(R, rig.t);
   rigSkin(R, R.wp, R.wn);
   const f = R.fit, P = R.wp, N = R.wn, ord = rig.ord;
@@ -3441,8 +3710,8 @@ function updateFigure(dt, now) {
     const v = ord[i] * 3;
     formX[i] = (P[v] - f.c[0]) * f.k;
     formY[i] = -(P[v + 1] - f.c[1]) * f.k;
-    formZ[i] = (P[v + 2] - f.c[2]) * f.k;
-    fnx[i] = N[v]; fny[i] = -N[v + 1]; fnz[i] = N[v + 2];
+    formZ[i] = -(P[v + 2] - f.c[2]) * f.k;
+    fnx[i] = N[v]; fny[i] = -N[v + 1]; fnz[i] = -N[v + 2];
   }
   // the surface only exists once its own wipe has started climbing
   solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
@@ -4959,6 +5228,15 @@ function loop() {
   ctx.fillStyle = "rgba(11,11,11," + cfg.trail + ")";
   ctx.fillRect(0, 0, W, H);
 
+  /* The figure, rendered on the GPU and drawn in here. This is the one moment
+     in the frame where it belongs: after the trail, which would otherwise paint
+     over it, and before the particles, which are announcing it and should be in
+     front. */
+  if (rig.on && gl.ready) {
+    glFrame(rig.R.fit.k * scale * formS, scale * 1.7);
+    ctx.drawImage(glCanvas, 0, 0, W, H);
+  }
+
   const span = LUT_HI - LUT_LO;
   const shaped = cfg.splitShape > 0.001;
 
@@ -5111,6 +5389,24 @@ function loop() {
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
               // the rim is a frame, not a second drawing competing with the first
               * (held ? 1 : 1 - formT * 0.72);
+    /* And the dots hand over. The particles are announcing the figure, not
+       standing in for it -- the same bargain the photographs make with the
+       drawings that introduce them -- so once the real surface has arrived
+       under a particle it has done its job and gets out of the way.
+
+       Except on the silhouette. `nzv` is the vertex normal's component along
+       the view axis, already computed above for the back-surface culling, and a
+       particle whose normal is nearly perpendicular to the camera is standing
+       on the edge of the figure. Those stay: a rim of dots around him is the
+       one place the field and the model are obviously the same object. */
+    if (rig.on && gl.ready) {
+      const g4 = figGate(i, 3);
+      if (g4 > 0) {
+        const nzv2 = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
+        const edge = 1 - Math.min(1, Math.abs(nzv2) / 0.34);
+        rad *= 1 - g4 * (1 - edge * 0.85);
+      }
+    }
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
     if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
@@ -5161,7 +5457,11 @@ function loop() {
      there -- they are culled by winding, and what is left of a closed mesh
      barely overlaps itself. The vertices are the particles, so the surface
      breathes with the audio exactly as the outline does. */
-  if (solidT > 0.002 && formTri) {
+  /* Skipped entirely when the GPU has the figure. The flat-shaded,
+     centroid-sampled, 49-colour surface below is the fallback now, not the
+     drawing -- it runs when three is missing, WebGL is off, or the file will
+     not parse, and for every mesh that is not a rig. */
+  if (solidT > 0.002 && formTri && !(rig.on && gl.ready)) {
     /* Shade buckets INSIDE depth buckets, drawn far to near. Shade alone was
        not enough: a head is not convex, so the lit back of the skull is still
        front-facing and drew straight over the shadowed face in front of it --
