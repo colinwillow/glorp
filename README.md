@@ -350,6 +350,16 @@ at `images/glorb.*` — put a file there and it fills. If a picture is missing t
 caption says so and the orb draws the name instead of nothing, because a picture
 that is not there is nearly always a picture that is not there *yet*.
 
+**Glorb has to be told they exist**, or it answers that it has no pictures —
+true from where it is standing, and it reads as the feature being broken rather
+than unwired. A static host cannot list a directory, so the page works out the
+contents itself: a checked-in `images/index.json` wins if there is one, and
+otherwise the hostname is read backwards into an owner and a repo and GitHub is
+asked for the folder. The list rides up with every question and is named in the
+system prompt, and the `show` tool takes an `image`. Neither method working is
+fine — it just means the brain is never told, which beats it offering a picture
+that is not there. Asked once at startup, so nothing waits on it mid-sentence.
+
 One thing had to be added for pictures that glyphs never needed. A glyph arrives
 on a transparent canvas; artwork usually does not, and art exported on white
 would sample as a solid rectangle. So the four corners **of the picture** are
