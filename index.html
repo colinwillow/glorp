@@ -1085,7 +1085,9 @@ micBtn.onclick = async () => {
     A = { ac, an, stream,
       freq:new Uint8Array(an.frequencyBinCount),
       prev:new Float32Array(an.frequencyBinCount),
-      time:new Float32Array(an.fftSize), floorDb:-55, db:-99 };
+      time:new Float32Array(an.fftSize), floorDb:-55, db:-99,
+      // four seconds of loudness history, which is what the floor is read from
+      hist:new Float32Array(240), histAt:0, histN:0, histTick:0 };
     micState = "live";
     micBig.classList.add("off");
     micBtn.style.display = "none";
@@ -1158,14 +1160,31 @@ function analyse() {
        though the spectrum bars, which are already dB-scaled by
        getByteFrequencyData, looked perfectly lively. Work in dB instead.
 
-       The floor tracks the room: down fast so a pause recalibrates it in a
-       third of a second, up slowly so speech itself cannot desensitise it.
-       That makes the response relative to ambient rather than absolute, which
-       is what keeps a quiet room from being twitchy and a noisy one from being
-       dead. */
+       The floor is the room, and the room is not the quietest thing that ever
+       happened in it. This used to dive fast and climb back over half a minute,
+       which makes it a minimum tracker: one unusually quiet instant -- a gap
+       between two words, a moment of gain riding -- pinned it far below the
+       ambient level and left it there. Measured in a quiet room it sat at -79
+       while the air itself was -51, so ordinary silence came out 28 dB "above
+       the floor" and the orb sat wide open at 0.63 with nobody talking.
+
+       A percentile of the recent past instead. Four seconds of history, and the
+       floor is the level a fifth of it falls below -- which in a quiet room is
+       the air, and while somebody is talking is still the air, because the gaps
+       between words are more of the take than the words are. Speech cannot
+       desensitise it and one quiet frame cannot deafen it. Sorted at 10Hz
+       rather than every frame; the floor does not move fast enough to care. */
     const db = 20 * Math.log10(rms + 1e-7);
     A.db = db;
-    A.floorDb += (db - A.floorDb) * (db < A.floorDb ? 0.05 : 0.0006);
+    A.hist[A.histAt] = db;
+    A.histAt = (A.histAt + 1) % A.hist.length;
+    if (A.histN < A.hist.length) A.histN++;
+    if (++A.histTick >= 6) {
+      A.histTick = 0;
+      const q = A.hist.slice(0, A.histN);
+      q.sort((a, b) => a - b);
+      A.floorDb = q[Math.floor(q.length * 0.2)];
+    }
 
     const lo = A.floorDb + cfg.dbMargin;
     let lvl = (db - lo) / cfg.dbRange;

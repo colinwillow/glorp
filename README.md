@@ -170,6 +170,46 @@ at all. `hue`, `turbulence` and `impulse` are gated by level above `gateFloor`;
 
 ---
 
+### The floor is the room, not the quietest thing that ever happened in it
+
+With the microphone off, the orb sits as a compact magenta ring around a green
+core. Switch the microphone on in the same silent room and it used to blow open
+to fill the screen: `lvl 0.63`, `turb 1.00`, with nobody talking.
+
+The level is measured relative to a noise floor, which is right — a quiet room
+should not be twitchy and a noisy one should not be dead. But the floor was
+tracked by falling fast and climbing back over about half a minute, which makes
+it a **minimum tracker**. One unusually quiet instant — a gap between two words,
+a moment of gain riding, a still second — pinned it far below the ambient level
+and left it there. On the phone it sat at −79 dB while the air itself was −51,
+so ordinary silence came out 28 dB "above the floor" and the orb read it as
+somebody shouting.
+
+It is a percentile of the recent past now. Four seconds of history, and the floor
+is the level a fifth of it falls below: in a quiet room that is the air, and
+while somebody is talking it is *still* the air, because the gaps between words
+are more of the take than the words are. Speech cannot desensitise it and one
+quiet frame cannot deafen it. Sorted at 10Hz rather than every frame — the floor
+does not move fast enough to care.
+
+Measured end to end, with a WAV played into `getUserMedia` so everything below
+the microphone is the code the phone runs. Four seconds of room tone at −51
+dBFS with **one 150ms near-silence at 2s**, then speech-shaped signal, then room:
+
+| | floor | the silent room reads |
+|---|---|---|
+| before the dip | −56 | lvl 0.00 |
+| after the dip, old | **−82** | **lvl 0.55, turb 1.00** |
+| after the dip, new | −56 | **lvl 0.00, turb 0.00** |
+
+The old floor never recovered — five seconds later the same silence still read
+0.31 with turbulence pinned at 1.00. That is the whole of the screen-filling
+orb, and it also explains why voice had nothing left to say: ambient was already
+eating half the range, so speech peaked at 0.99 and saturated. With the floor
+where it belongs, silence is 0.00 and the entire range is the voice.
+
+---
+
 ## Timing
 
 Physics runs on a **fixed 60Hz accumulator**, decoupled from rendering:
