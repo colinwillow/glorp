@@ -229,6 +229,39 @@ speaker and answers its own reply forever. `abort()` rather than `stop()`,
 because `stop()` finalises whatever is pending — which at that moment is the
 orb's own words. `echoTail` covers how long the room keeps ringing afterwards.
 
+### Where the wait actually goes
+
+The pipeline is serial — whole reply, then whole clip, then speak — so the line
+under the caption breaks it into legs. Optimising the loud one instead of the
+big one is the failure mode this exists to prevent.
+
+```
+endpoint 1740ms  think 5229ms (claude 5022 via plain, net 207)  tried fast [400] 391ms
+then effort:low [400] 288ms then plain 4343ms  write 0ms  voice 412ms  = 7381ms to first sound
+```
+
+- **endpoint** — recognition deciding you have stopped talking. It happens after
+  your last word and before any of our code runs, so it used to fall outside the
+  measurement entirely and read as the model being slow. Timed from the last
+  *interim* result: the last moment there was evidence of talking.
+- **think** — the request leaving the page to its first token, with the Worker's
+  own measurement of the Claude leg split out, so a slow network and a slow model
+  can be told apart.
+- **tried** — every attempt the Worker made, in order, with failures and their
+  status codes. One slow answer and two dead round trips add up to exactly the
+  same `claude` number and want completely different fixes. Shown only when
+  there was more than one.
+- **write** — first token to last. **voice** — reply complete to first sound.
+
+Two things came straight out of reading that line. Attempts that fail with a
+**400** are retired for the life of the isolate rather than being paid for on
+every single turn (a 429 is a limit that lifts, so that one stands off for a
+minute instead). And the default model is **Haiku 4.5**, not Opus 5: Opus was
+taking 5.0–5.7s to its first token, three quarters of the total wait and more
+than everything else in the pipeline put together, for a reply that is two
+sentences long by design. `ORB_MODEL` in the dashboard puts a bigger one back
+without a deploy.
+
 ---
 
 ## Formations

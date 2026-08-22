@@ -86,13 +86,29 @@ The prompt is deliberately two halves:
   emoji" gets read aloud, literally, by a text-to-speech engine.
 
 **`ORB_MODEL`** is a dashboard variable too, for the same reason: the model is
-the one knob worth trying against your own ear. Unset it is `claude-opus-5`. The
-request adapts to whatever is set rather than sending parameters the model will
-reject — fast mode exists on Opus 5 and 4.8 only, and `effort` is rejected
+the one knob worth trying against your own ear. Unset it is **`claude-haiku-4-5`**.
+
+It used to be `claude-opus-5`, and the timing line on the page is what changed
+it: Opus was taking 5.0–5.7 seconds to its first token, three quarters of the
+whole wait and more than every other leg put together, for a reply that the
+protocol caps at two sentences. That is not a question a bigger model answers
+better, and the wait is the whole experience — somebody is stood in a room
+listening to silence. Set this to `claude-opus-5` to put it back; that is what
+the dial is for, and it needs no deploy.
+
+The request adapts to whatever is set rather than sending parameters the model
+will reject — fast mode exists on Opus 5 and 4.8 only, and `effort` is rejected
 outright by Haiku 4.5 and Sonnet 4.5. Sending either to a model that will not
 take it costs a 400 and a wasted round trip before the fallback, which on a
-voice assistant is exactly the thing being optimised away. `GET /persona`
-reports which model is live.
+voice assistant is exactly the thing being optimised away.
+
+An attempt that fails is now **retired for the life of the isolate** rather than
+retried on every turn, and every attempt is timed and reported back to the page
+alongside the reply. A failed attempt was previously billed into the same number
+as the one that worked, so a wasted round trip was indistinguishable from a slow
+model — from a phone, with no access to the Worker log, it was invisible. A 400
+retires the attempt outright; a 429 is a limit that lifts, so that one stands
+off for a minute instead. `GET /persona` reports which model is live.
 
 ### Changing the personality without deploying anything
 

@@ -402,22 +402,38 @@ function caption(said, said2) {
 /* Where the wait actually goes. The pipeline is serial -- full reply, then
    full clip, then speak -- so knowing which leg dominates is the difference
    between optimising the right thing and the loud thing. */
-const clock = { t0:0, firstTok:0, lastTok:0, audio:0, claudeMs:0 };
+const clock = { t0:0, firstTok:0, lastTok:0, audio:0, claudeMs:0, endpoint:0, via:"", legs:null };
+
+/* When the words stopped, which is not when the question was sent. Recognition
+   decides on its own when a sentence has ended, and that decision happens after
+   the last word and before anything here has run -- so the whole of it fell
+   outside the measurement and read as the model being slow. Kept as the time of
+   the last INTERIM result: the last moment there was evidence of talking. */
+let sawSpeechAt = 0, endpointMs = 0;
 function mark(k) { clock[k] = performance.now(); }
 function reportTiming() {
   const ms = (a, b) => Math.round(clock[b] - clock[a]);
   const parts = [];
+  if (clock.endpoint) parts.push("endpoint " + clock.endpoint + "ms");
   if (clock.firstTok) {
     // split the wait: what Claude spent, and what the trip cost on top
     const think = ms("t0", "firstTok");
     parts.push(clock.claudeMs
-      ? "think " + think + "ms (claude " + clock.claudeMs + ", net " + (think - clock.claudeMs) + ")"
+      ? "think " + think + "ms (claude " + clock.claudeMs + (clock.via ? " via " + clock.via : "")
+        + ", net " + Math.max(0, think - clock.claudeMs) + ")"
       : "think " + think + "ms");
+    /* Every attempt the worker made, in order, including the ones that failed.
+       One slow answer and two dead round trips add up to the same number and
+       want completely different fixes. */
+    const legs = clock.legs && Object.keys(clock.legs);
+    if (legs && legs.length > 1)
+      parts.push("tried " + legs.map((k) => k + " " + clock.legs[k] + "ms").join(" then "));
   }
   if (clock.lastTok) parts.push("write " + ms("firstTok", "lastTok") + "ms");
   if (clock.audio) parts.push("voice " + ms("lastTok", "audio") + "ms");
   const total = clock.audio ? ms("t0", "audio") : 0;
-  if (total) parts.push("= " + total + "ms to first sound");
+  // from when the talking stopped, because that is when the waiting starts
+  if (total) parts.push("= " + (total + clock.endpoint) + "ms to first sound");
   lastTiming = parts.join("   ");
   if (!lastTiming) return;
   console.log("orb timing:", lastTiming);
@@ -436,6 +452,7 @@ async function ask(text) {
 
   brain.busy = true;
   clock.t0 = performance.now(); clock.firstTok = clock.lastTok = clock.audio = 0; clock.claudeMs = 0;
+  clock.endpoint = endpointMs; endpointMs = 0; clock.via = ""; clock.legs = null;
   brain.history.push({ role:"user", content:text });
   // the proxy is stateless, so trimming here is what bounds the token bill
   if (brain.history.length > 20) brain.history.splice(0, brain.history.length - 20);
@@ -471,6 +488,8 @@ async function ask(text) {
         const ctl = JSON.parse(raw.slice(cut + 1));
         if (ctl.show) { setFormation(ctl.show, ctl.show.seconds); shown = true; }
         if (ctl.ms && ctl.ms.claude) clock.claudeMs = ctl.ms.claude;
+        if (ctl.via) clock.via = ctl.via;
+        if (ctl.legs) clock.legs = ctl.legs;
       } catch (e) { /* a malformed frame must never cost us the reply */ }
     }
     brain.history.push({ role:"assistant", content: full });
@@ -720,8 +739,11 @@ function toggleSTT() {
     feedWords(heard, interim.trim());
     // showing the interim text proves recognition is alive even when nothing
     // ever reaches isFinal, which is the failure that looks like doing nothing
-    if (!heard && interim.trim()) caption("", "… " + interim.trim());
+    if (!heard && interim.trim()) { caption("", "… " + interim.trim()); sawSpeechAt = performance.now(); }
     if (heard) {
+      // how long recognition sat on it after the last word before calling it done
+      endpointMs = sawSpeechAt ? Math.round(performance.now() - sawSpeechAt) : 0;
+      sawSpeechAt = 0;
       echoSeen = 0; lastLive = "";        // next utterance starts counting again
       /* Say "menu" and the menu comes up locally -- and then the sentence went
          on to the brain anyway, which answered that it does not have one and

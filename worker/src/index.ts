@@ -62,6 +62,23 @@ const WORDLESS = ["Here.", "There you go.", "Like this.", "That one."];
 const BLANK = ["Say that again?", "I missed that.", "Not sure I caught that."];
 const pick = (a: string[]) => a[Math.floor(Math.random() * a.length)];
 
+/* Haiku, not Opus. The wait is the whole experience -- somebody is stood in a
+   room listening to silence -- and a two-sentence spoken reply is not the kind
+   of question a bigger model answers better. Measured on the page: Opus 5 was
+   taking 5.0 to 5.7 seconds to its first token, which was three quarters of the
+   wait and dwarfed everything else in the pipeline put together.
+
+   Set ORB_MODEL in the Cloudflare dashboard to put a bigger one back; that is
+   what the dial is for, and it needs no deploy. */
+const DEFAULT_MODEL = "claude-haiku-4-5";
+
+/* What actually worked, remembered for the life of the isolate. An attempt that
+   the account cannot make costs a whole failed round trip, and paying that on
+   every single turn is invisible from the page -- it just reads as the model
+   being slow. Pay it once and then stop. A 429 is different from a 400: the
+   first is a limit that lifts, the second is a door that is not there. */
+let fastOff = false, fastUntil = 0;
+
 const ELEVEN_BASE = "https://api.elevenlabs.io/v1";
 const DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM";   // stock voice; GET /voices to pick another
 const DEFAULT_TTS_MODEL = "eleven_flash_v2_5";  // lowest latency tier
@@ -191,7 +208,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      either to a model that does not take it is a 400 and a wasted round trip
      before the fallback, which on a voice assistant is exactly the thing being
      optimised away. */
-  const model = (env.ORB_MODEL ?? "claude-opus-5").trim() || "claude-opus-5";
+  const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
   const base = { model, max_tokens: 1024, system: persona(env), messages, tools } as const;
@@ -212,27 +229,36 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      its visible TEXT rather than a tool_use block, which here would mean the
      orb saying the word "show" out loud and drawing nothing. Low effort buys
      most of the speed without that. */
+  const fastOk = canFast && !fastOff && Date.now() > fastUntil;
   const attempts = [
-    canFast && { label: "fast", run: () => client.beta.messages.stream({
+    fastOk && { label: "fast", run: () => client.beta.messages.stream({
         ...base, speed: "fast", betas: ["fast-mode-2026-02-01"],
         output_config: { effort: "low" } }) },
     canEffort && { label: "effort:low", run: () =>
         client.messages.stream({ ...base, output_config: { effort: "low" } }) },
     { label: "plain", run: () => client.messages.stream({ ...base }) },
   ].filter(Boolean) as { label: string; run: () => ReturnType<typeof client.messages.stream> }[];
-  console.log("orb-brain model", model, "fast", canFast, "effort", canEffort);
+  console.log("orb-brain model", model, "fast", canFast, fastOk ? "on" : "skipped", "effort", canEffort);
 
   /* The page can only see its own round trip, which lumps network in with
      Claude. Time the leg that happens here so the two can be told apart --
      they have completely different fixes. */
   const tIn = Date.now();
   let tFirst = 0;
+  /* Per attempt, not just in total. A failed attempt is billed into the same
+     number as the one that worked, so "claude 5022ms" could be five seconds of
+     thinking or it could be two dead round trips and a slow answer -- and those
+     have completely different fixes. Worker logs are no use to somebody holding
+     a phone, so these ride back with the reply. */
+  const legs: Record<string, number> = {};
+  let via = "";
 
   const encoder = new TextEncoder();
   const out = new ReadableStream<Uint8Array>({
     async start(controller) {
       let lastError: unknown = null;
       for (const attempt of attempts) {
+        const tTry = Date.now();
         try {
           const stream = attempt.run();
           let wrote = false;
@@ -250,7 +276,8 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           }
           // Control frame after a NUL, which cannot occur in the spoken text --
           // so the page can split them without a parser and never speak this.
-          const frame: { show?: unknown; ms?: Record<string, number> } = {};
+          const frame: { show?: unknown; ms?: Record<string, number>; via?: string;
+                         legs?: Record<string, number> } = {};
           for (const block of final.content) {
             if (block.type === "tool_use" && block.name === "show") {
               frame.show = block.input;
@@ -262,8 +289,12 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           if (!wrote) controller.enqueue(encoder.encode(pick(frame.show ? WORDLESS : BLANK)));
           // claude: request leaving this worker to its first text token.
           // Whatever the page measures beyond this is network and the browser.
+          legs[attempt.label] = (tFirst || Date.now()) - tTry;
+          via = attempt.label;
           frame.ms = { claude: (tFirst || Date.now()) - tIn };
-          console.log("orb-brain claude ms", frame.ms.claude);
+          frame.via = via;
+          frame.legs = legs;
+          console.log("orb-brain claude ms", frame.ms.claude, "legs", JSON.stringify(legs));
           controller.enqueue(encoder.encode("\u0000" + JSON.stringify(frame)));
           console.log("orb-brain ok via", attempt.label);
           lastError = null;
@@ -271,9 +302,17 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
         } catch (error) {
           lastError = error;
           const st = (error as { status?: number })?.status;
+          legs[attempt.label + " [" + (st ?? "failed") + "]"] = Date.now() - tTry;
           console.error("orb-brain attempt failed", attempt.label, st,
             (error as { message?: string })?.message,
             JSON.stringify((error as { error?: unknown })?.error ?? null));
+          /* Do not pay for this one again. A 400 means the account cannot make
+             this call at all, so retire it; a 429 is its own separate limit and
+             lifts, so stand off for a minute rather than for good. */
+          if (attempt.label === "fast") {
+            if (st === 400) fastOff = true;
+            else if (st === 429) fastUntil = Date.now() + 60000;
+          }
           if (st !== 400 && st !== 429) break;   // a 429 on fast mode is its own limit
         }
       }
@@ -308,7 +347,7 @@ export default {
        dashboard is the one change that needs no deploy, so this is the only way
        to confirm from a phone that the edit took. */
     if (path === "/persona" && request.method === "GET") {
-      return new Response("model: " + ((env.ORB_MODEL ?? "claude-opus-5").trim() || "claude-opus-5") +
+      return new Response("model: " + ((env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL) +
                           "\n\n" + persona(env), {
         headers: { ...headers, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       });
