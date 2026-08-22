@@ -1019,6 +1019,65 @@ the thin core is where it shows.
 
 ---
 
+### The sequence
+
+What a character arriving is supposed to be, and it is all one command —
+`hologram`, or `/show seq <model>`:
+
+1. the particles gather into a **scan** on the floor
+2. the scan resolves into an **outline** — a different point set, so they
+   genuinely fly between the two, which *is* the transition
+3. the **surface** fills in behind the outline and turns once
+4. it drains back out to the outline, and the outline back to the orb
+
+Stages 3 and 4 are the same point set with the fill easing over it, which is why
+those read as one object changing rather than two objects swapping. Every stage
+already existed; the sequence is only the order, the timing, and one cancellable
+timer.
+
+### The surface
+
+Triangles, filled, shaded, from the same palette as everything else — a face
+turned toward the light lands on the green end and one turned away on the
+violet, which is the same split that separates the orb's core from its rim.
+
+Batched by shade **inside** depth buckets and drawn far to near. Six thousand
+separate fills is not a frame; sixty paths of a hundred subpaths each is.
+Winding does the culling: the cross product of two screen-space edges is the
+signed area, and a face that has turned away reverses it — no normals needed,
+and no dependence on the mesh having any. The vertices are the particles, so the
+surface breathes with the audio exactly as the outline does.
+
+Four bugs, and the first one is the interesting one:
+
+**The faces were never remapped through the angular sort.** The exact bug the
+edge list already had, documented in Gotchas, in a new place — the triangles
+indexed the order the points arrived in while the particles held the sorted
+order, so every face was wired to three unrelated vertices. It drew as a fan of
+shards radiating out of a few points, which reads as a depth-sorting failure and
+is nothing of the kind. Fixing it also took the frame rate from 23 to 42: the
+mis-wired triangles were enormous, and enormous triangles are fill.
+
+**Shading off the screen triangle instead of the normal.** The cross product of
+two screen edges over their lengths is the sine of the angle between them — the
+triangle's *shape*, near 1 for any well-formed triangle whichever way it points.
+Flat green everywhere.
+
+**The light was at the camera.** A nose and a cheek both point at you, so the
+only shading left is the falloff to the rim: a glowing silhouette. It sits up
+and to the left now.
+
+**The normals point the opposite way to the surviving winding**, so every visible
+face scored below zero and the whole head came back at ambient — a perfect
+silhouette of a face, entirely in shadow. Negated.
+
+And one that was not a bug in the surface at all: gating triangles on `visA`
+punched holes across the whole face. That flag is the back-surface culling for
+the *dots*; dropping a triangle because one corner is a hidden particle is not
+the same question, and a surface must not have holes.
+
+---
+
 ### Where this stops
 
 Point cloud and wireframe live comfortably here. **Textured** does not — affine

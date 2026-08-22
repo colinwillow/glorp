@@ -947,7 +947,8 @@ say.addEventListener("keydown", (e) => {
     }
     if (SOLIDS[key]) setFormation({ solid:key }, 12);
     else if (/^model /i.test(what)) showModel(what.slice(6).trim(), 14);
-    else if (/^holo(gram)? ?/i.test(what)) showHologram(what.replace(/^holo(gram)? ?/i, "").trim(), 26);
+    else if (/^holo ?/i.test(what)) showHologram(what.replace(/^holo ?/i, "").trim(), 26);
+    else if (/^(seq|hologram) ?/i.test(what)) showSequence(what.replace(/^(seq|hologram) ?/i, "").trim());
     else if (/^image /i.test(what)) showImage(what.slice(6).trim(), 8);
     else setFormation(SHELLS[key] ? { shell:key }
                : TRIGGERS[key] ? TRIGGERS[key]
@@ -1376,6 +1377,10 @@ function toRgb(cr, cg, cb, hueShift) {
    which is what a firework's own colour is. */
 const HUE_RIM = -1, HUE_CORE = 0.25;
 
+// where the light is, in view space: up, left, and a little toward the viewer
+const LIGHT = (() => { const v = [-0.52, -0.50, -0.69];
+  const L = Math.hypot(v[0], v[1], v[2]); return v.map((c) => c / L); })();
+
 function buildLut(hueShift, flat) {
   const cl = (ch) => (ch < 0 ? 0 : ch > 255 ? 255 : ch);
   for (let i = 0; i < LUT_N; i++) {
@@ -1425,6 +1430,10 @@ let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "", formRate 
    and a diagonal, so the same number puts its corners off screen and into the
    containment wall, which then fights the formation for them. */
 let form3d = false, formHasN = false, formHasB = false, formS = 0.42;
+/* The faces, and how much of a solid the mesh currently is. Separate from the
+   wireframe rather than replacing it: the whole point of the sequence is that
+   the outline draws itself first and the surface fills in behind it. */
+let formTri = null, solidT = 0, solidWant = 0;
 // a formation may bring its own camera; null means use the sliders
 let formTilt = null, formSpin = null;
 let formHY = 1;                    // the shape's half height, for clearing it
@@ -1801,7 +1810,15 @@ function meshTopology(V, F, capVerts) {
       if (diag.has(k) || seen.has(k)) continue;
       seen.add(k); E.push(a, b);
     }
-  return { pts: fitPoints(W), edges: Int32Array.from(E), quads, faces: faces.length, verts: W.length };
+  /* The triangles too, welded and fanned. They were computed here and thrown
+     away, which was fine while a mesh could only ever be an outline -- a solid
+     needs the faces themselves, and re-deriving them from an edge list is not
+     possible. */
+  const T = [];
+  for (const f of faces)
+    for (let i = 1; i + 1 < f.length; i++) T.push(f[0], f[i], f[i + 1]);
+  return { pts: fitPoints(W), edges: Int32Array.from(E), tris: Int32Array.from(T),
+           quads, faces: faces.length, verts: W.length };
 }
 
 /* Scatter points across triangles by area. Shared, because the difference
@@ -2211,10 +2228,54 @@ async function showHologram(src, seconds) {
   return ok;
 }
 
+/* ---------------- the sequence ----------------
+   What a character arriving is supposed to be: the particles gather into a
+   scan, the scan resolves into an outline, the surface fills in behind the
+   outline and turns once, then it comes apart the way it went together. Every
+   stage is a thing that already existed; the sequence is only the order and the
+   timing, and a single timer that can be cancelled.
+
+   The first two stages are different point sets -- a floor lattice and a set of
+   vertices -- so the particles genuinely fly between them, which IS the
+   transition. The last two are the same point set with the surface fading in
+   and out over it, which is why those read as one object changing rather than
+   as two objects swapping. */
+let seqAt = 0;
+function stopSequence() { clearTimeout(seqAt); seqAt = 0; }
+
+async function showSequence(src) {
+  stopSequence();
+  const shell = /\bshell\b/i.test(src || "");
+  src = String(src || "").replace(/\b(shell|bare|lines)\b/ig, "").trim() || "test_head";
+  const m = await loadModel(src);
+  if (!m) return false;
+  const label = src.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  const steps = [
+    [0,     () => showHologram(src + (shell ? " shell" : ""), 8),  "scanning " + label],
+    [7200,  () => setFormation({ points: m.pts, edges: m.edges, tris: m.tris,
+                                 yaw0: m.yaw0, label: src, spin: 0.075 }, 26), "reading " + label],
+    [4600,  () => { solidWant = 1; },                              label],
+    [9000,  () => { solidWant = 0; },                              "letting go of " + label],
+    [3000,  () => { formWant = 0; formUntil = 0; },                ""],
+  ];
+  let i = 0;
+  const run = () => {
+    const [, act, say] = steps[i];
+    act();
+    if (say) caption(null, say);
+    i++;
+    if (i < steps.length) seqAt = setTimeout(run, steps[i][0]);
+    else seqAt = 0;
+  };
+  run();
+  return true;
+}
+
 async function showModel(src, seconds) {
   const m = await loadModel(src);
   if (!m) return false;
-  const ok = setFormation({ points: m.pts, edges: m.edges, yaw0: m.yaw0, label: src }, seconds);
+  const ok = setFormation({ points: m.pts, edges: m.edges, tris: m.tris,
+                            yaw0: m.yaw0, label: src }, seconds);
   if (ok) caption(null, "showing " + src + " · " + m.pts.length + " points" +
                         (m.edges ? " · " + m.edges.length / 2 + " edges" : ""));
   return ok;
@@ -2246,7 +2307,7 @@ function faceGlyph() {
    vocabulary for free. Celebrations are the exception: nobody wants a picture
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
-  hologram:{holo:true}, holo:{holo:true}, projection:{holo:true},
+  hologram:{seq:true}, holo:{holo:true}, projection:{seq:true},
   // feelings
   happy:{text:"\u{1F600}"}, smile:{text:"\u{1F600}"}, smiley:{text:"\u{1F600}"},
   laugh:{text:"\u{1F602}"}, funny:{text:"\u{1F602}"},
@@ -2740,6 +2801,7 @@ function setFormation(spec, seconds) {
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
+  if (spec && spec.seq) { showSequence(spec.seq === true ? "" : spec.seq); return true; }
   if (spec && spec.holo) { showHologram(spec.holo === true ? "" : spec.holo, seconds || 26); return true; }
   if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
   if (spec && spec.image) { showImage(spec.image, seconds); return true; }
@@ -2759,6 +2821,8 @@ function setFormation(spec, seconds) {
   formTilt = spec && spec.tilt != null ? spec.tilt : null;
   formSpin = spec && spec.spin != null ? spec.spin : null;
   formE = asMenu ? asMenu.edges : (spec && spec.edges) || null;
+  formTri = (spec && spec.tris) || null;
+  solidWant = 0;
   /* How much of the field the shape gets. A mesh takes all of it -- an edge
      index means nothing if only some vertices have particles standing on them
      -- but a word or an emoji takes a share and leaves the rest on the rim,
@@ -2791,6 +2855,12 @@ function setFormation(spec, seconds) {
     const inv = new Int32Array(pts.length);
     for (let i = 0; i < ord2.length; i++) inv[ord2[i]] = i;
     formE = Int32Array.from(formE, (v) => inv[v]);
+    /* And the faces. Exactly the bug the edge list already had, in a new place:
+       the triangles indexed the order the points arrived in while the particles
+       held the sorted order, so every face was wired to three unrelated
+       vertices. It drew as a fan of shards radiating out of a few points --
+       which reads as bad depth sorting, and is not. */
+    if (formTri) formTri = Int32Array.from(formTri, (v) => inv[v]);
     pts = ord2.map((i) => pts[i]);
     /* And anything else indexed by point. The menu's group labels were left
        behind by this sort, so every satellite ended up wobbling about another
@@ -2888,7 +2958,7 @@ function updateFormation(dt) {
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
     formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
-    formE = null; wireT = 0; view.turn = 0;
+    formE = null; wireT = 0; view.turn = 0; formTri = null; solidWant = 0;
     // or the next formation inherits a hologram's camera and reads stale biases
     formHasB = false; formTilt = null; formSpin = null; holoE = null;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
@@ -2994,6 +3064,10 @@ function loop() {
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? (formHasB ? 1 : cfg.wire) : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
+  // the surface fills in behind the outline, and drains back out of it
+  solidT += ((formTri && formWant ? solidWant : 0) - solidT) *
+            (1 - Math.pow(1 - 0.026, dt / 16.67));
+  if (solidT < 0.002 && !solidWant) solidT = 0;
   const tiltWant = formTilt != null ? formTilt : cfg.tilt;
   view.pitch += ((view.deep ? tiltWant : 0) - view.pitch) * 0.04;
   // an easing curve never actually reaches zero, and a residual pitch leaves a
@@ -3559,7 +3633,7 @@ function loop() {
     if (deep) rad *= persp;              // near is bigger, which is most of the depth
     if (rad > radCap) rad = radCap;
     const sx = cx + rx * persp, sy = cy + ry * persp;
-    if (wireT > 0.002) {
+    if (wireT > 0.002 || solidT > 0.002) {
       sxA[i] = sx; syA[i] = sy; szA[i] = rz; visA[i] = hidden || !held ? 0 : 1;
       /* The vertices thin as the mesh comes in. They do not go: a wireframe
          with no points on it stops looking like it is made of anything. */
@@ -3580,6 +3654,96 @@ function loop() {
      Bucketed by depth rather than stroked per edge. Canvas will take six
      thousand separate strokes and will not do it in sixteen milliseconds; six
      passes over the list with one path each costs six. */
+  /* ---------------- the surface ----------------
+     Triangles, filled, shaded by how squarely they face you, and drawn from the
+     same palette as everything else -- so a face turned toward the camera lands
+     on the green end and one turned away lands on the violet, which is the same
+     split that separates the orb's core from its rim.
+
+     Batched by shade rather than drawn one at a time. Six thousand separate
+     fills is not a frame; ten paths of six hundred subpaths each is. Order
+     within a batch is lost, which would matter if the back faces were still
+     there -- they are culled by winding, and what is left of a closed mesh
+     barely overlaps itself. The vertices are the particles, so the surface
+     breathes with the audio exactly as the outline does. */
+  if (solidT > 0.002 && formTri) {
+    /* Shade buckets INSIDE depth buckets, drawn far to near. Shade alone was
+       not enough: a head is not convex, so the lit back of the skull is still
+       front-facing and drew straight over the shadowed face in front of it --
+       the surface came out as a scatter of shards. Culling only removes what
+       has turned away; it does not order what is left. */
+    const SB = 6, DB = 10, paths = [];
+    for (let b = 0; b < SB * DB; b++) paths.push(null);
+    const dzs = zSpan * 1.35;
+    ctx.globalAlpha = solidT * 0.9;
+    for (let t = 0; t < formTri.length; t += 3) {
+      const a = formTri[t], b2 = formTri[t + 1], c = formTri[t + 2];
+      /* Not gated on visA. That flag is the back-surface culling for the DOTS,
+         and dropping a whole triangle because one of its corners is a hidden
+         particle punched holes all over the surface -- which is the one thing a
+         surface must not have. Winding already removes what has turned away. */
+      if (a >= n || b2 >= n || c >= n) continue;
+      const ax = sxA[a], ay = syA[a];
+      const ux = sxA[b2] - ax, uy = syA[b2] - ay;
+      const vx2 = sxA[c] - ax, vy2 = syA[c] - ay;
+      /* Winding IS the culling. The cross product of the two screen-space edges
+         is the signed area, and a face that has turned away from the camera
+         reverses it -- no normals, no dot product, no dependence on the mesh
+         having had any. */
+      const cr = ux * vy2 - uy * vx2;
+      // and anything under a pixel of area is a cost with no picture in it
+      if (cr <= 0.7) continue;
+      /* Shade off the NORMAL, not off the screen triangle. The cross product of
+         two screen edges divided by their lengths is the sine of the angle
+         between them -- the triangle's shape, which is near 1 for any
+         well-formed triangle whichever way it is pointing. It came out flat
+         green everywhere. The mesh carries per-vertex normals; average the
+         three, turn them with the camera, and how much of that points back
+         along the view axis is the shading. */
+      let nx2 = fnx[a] + fnx[b2] + fnx[c];
+      let ny2 = fny[a] + fny[b2] + fny[c];
+      let nz2 = fnz[a] + fnz[b2] + fnz[c];
+      const nl = Math.sqrt(nx2 * nx2 + ny2 * ny2 + nz2 * nz2) || 1;
+      nx2 /= nl; ny2 /= nl; nz2 /= nl;
+      const rx2 = nx2 * cyw + nz2 * syw;
+      const rr2 = -nx2 * syw + nz2 * cyw;
+      const ry2 = ny2 * cpt - rr2 * spt;
+      const rz2 = ny2 * spt + rr2 * cpt;
+      /* Off to one side, and above. A light AT the camera makes every front
+         face equally bright -- a nose and a cheek both point at you, so the
+         only shading left is the falloff to the rim and the thing draws as a
+         glowing silhouette. Move the light up and to the left and the same
+         nose has a lit side and a shadowed one. */
+      /* Negated. The vertex normals come out of the mesh pointing the opposite
+         way to the winding that survives the cull, so every visible face scored
+         below zero and the whole head came back at ambient -- a perfect
+         silhouette of a face, entirely in shadow. */
+      let f2 = -(LIGHT[0] * rx2 + LIGHT[1] * ry2 + LIGHT[2] * rz2);
+      f2 = 0.24 + 0.76 * (f2 < 0 ? 0 : f2 > 1 ? 1 : f2);
+      const bk = Math.min(SB - 1, (f2 * SB) | 0);
+      const u2 = -(szA[a] + szA[b2] + szA[c]) / 3 / dzs * 0.5 + 0.5;   // 1 near
+      const dk = Math.min(DB - 1, Math.max(0, ((1 - u2) * DB) | 0));   // 0 near
+      const slot = dk * SB + bk;
+      let pth = paths[slot];
+      if (!pth) { pth = paths[slot] = new Path2D(); }
+      pth.moveTo(ax, ay); pth.lineTo(sxA[b2], syA[b2]); pth.lineTo(sxA[c], syA[c]);
+      pth.closePath();
+    }
+    for (let d = DB - 1; d >= 0; d--)                     // far first
+      for (let b = 0; b < SB; b++) {
+        const pth = paths[d * SB + b];
+        if (!pth) continue;
+        // across most of the palette, not the green end of it: the shading is
+        // the only thing telling you what the shape is
+        const sh = (-1.75 + 2.7 * ((b + 0.5) / SB)) * sizeHiPx;
+        let li3 = ((sh - LUT_LO) / span * (LUT_N - 1)) | 0;
+        if (li3 < 0) li3 = 0; else if (li3 >= LUT_N) li3 = LUT_N - 1;
+        ctx.fillStyle = lut[li3];
+        ctx.fill(pth);
+      }
+    ctx.globalAlpha = 1;
+  }
+
   if (wireT > 0.002 && formE) {
     /* A hologram's edges are sorted by BRIGHTNESS, a mesh's by depth. On a mesh
        every edge is equally part of the surface and the only question is which
@@ -3651,7 +3815,9 @@ function loop() {
         }
       }
     } else {
-      const BK = 6;
+      // fewer depth buckets once a surface is under the outline: the solid is
+      // doing the occluding now, so the ordering matters much less
+      const BK = solidT > 0.5 ? 2 : 6;
       ctx.lineWidth = Math.max(0.6, 1.15 * k);
       for (let b = 0; b < BK; b++) {
         const t = 1 - (b + 0.5) / BK;                      // 1 near .. 0 far
