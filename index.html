@@ -954,6 +954,7 @@ say.addEventListener("keydown", (e) => {
   // spending a round trip through the brain on every attempt
   if (text.toLowerCase().startsWith("/show")) {
     const what = text.slice(5).trim(), key = what.toLowerCase();
+    if (key === "home" || key === "back") { goHome("home"); return; }
     if (key === "images") {
       /* Nothing about a missing folder is visible: the brain is simply never
          told, and a picture nobody offers looks exactly like a picture that
@@ -2136,6 +2137,51 @@ const HOLO = {
   y0: 0.9, colH: 2.4, modelH: 2,        // floor, line height, and the model on it
 };
 
+/* The room, on its own. It is much bigger than whatever stands on it -- it is
+   the room, not a plinth -- wired both ways so it draws as a lattice rather than
+   a scatter, and wide and deep enough that no edge of it is ever on screen.
+   Shared, because the scan and the model that resolves out of it are supposed to
+   be in the same place: the head used to arrive in an empty black void, which
+   throws away the whole point of having built a room to put it in.
+
+   Normals point at the camera so the back-surface culling, which is for a
+   closed mesh, never takes a bite out of the floor. */
+function floorLattice() {
+  const pts = [], E = [];
+  const gx = [], gz = [];
+  for (let x = -HOLO.floorX; x <= HOLO.floorX + 1e-6; x += HOLO.floorStep) gx.push(x);
+  for (let z = HOLO.floorNear, st = HOLO.floorStep; z < HOLO.floorFar; z += st, st *= HOLO.floorGrow)
+    gz.push(z);
+  for (let iz = 0; iz < gz.length; iz++)
+    for (let ix = 0; ix < gx.length; ix++) {
+      pts.push([gx[ix], HOLO.y0, gz[iz], 0, 0, -1, -0.55]);
+      const j = iz * gx.length + ix;
+      if (ix) E.push(j - 1, j);
+      if (iz) E.push(j - gx.length, j);
+    }
+  return { pts, E };
+}
+
+/* The same room with the model standing in it, as itself: real vertices, real
+   edges, real faces. -99 in the seventh column is "shade this the way a solid
+   is shaded" -- the floor states its place on the palette, the model earns
+   one. */
+const HOLO_SHADE = -99;
+function roomPoints(m) {
+  const { pts, E } = floorLattice();
+  const base = pts.length;
+  const c0 = Math.cos(m.yaw0 || 0), s0 = Math.sin(m.yaw0 || 0);
+  const mapY = (ym) => HOLO.y0 - ((1 - ym) / 2) * HOLO.modelH;
+  for (const v of m.pts) {
+    const nx = v[3] || 0, ny = v[4] || 0, nz = v[5] || 0;
+    pts.push([v[0] * c0 + v[2] * s0, mapY(v[1]), -v[0] * s0 + v[2] * c0,
+              nx * c0 + nz * s0, ny, -nx * s0 + nz * c0, HOLO_SHADE]);
+  }
+  for (let i = 0; i < m.edges.length; i++) E.push(m.edges[i] + base);
+  return { pts, edges: Int32Array.from(E),
+           tris: m.tris ? Int32Array.from(m.tris, (v) => v + base) : null };
+}
+
 function hologramPoints(verts, yaw0, shell, slices) {
   const C = HOLO.cells, L = HOLO.layers, N = C * C, S1 = L + 1;
   /* Facing baked in rather than turned to. The lattice is a fixed thing in the
@@ -2153,28 +2199,13 @@ function hologramPoints(verts, yaw0, shell, slices) {
     if (v[1] > bot[j]) bot[j] = v[1];
   }
 
-  const pts = [], E = [];
+  const { pts, E } = floorLattice();
   const y0 = HOLO.y0, h = HOLO.colH / L;
   /* The model has to be stood ON the floor, not left in its own box. It arrives
      fitted to [-1,1] in every axis; its base goes at floor level and its height
      is chosen here, so the lit stretch of a line is where the model is rather
      than where the model's coordinates happen to fall. */
   const mapY = (ym) => y0 - ((1 - ym) / 2) * HOLO.modelH;
-
-  /* The floor first, and it is much bigger than the model -- it is the room,
-     not a plinth. Wired both ways so it draws as a lattice rather than as a
-     scatter, and wide and deep enough that no edge of it is ever on screen. */
-  const gx = [], gz = [];
-  for (let x = -HOLO.floorX; x <= HOLO.floorX + 1e-6; x += HOLO.floorStep) gx.push(x);
-  for (let z = HOLO.floorNear, st = HOLO.floorStep; z < HOLO.floorFar; z += st, st *= HOLO.floorGrow)
-    gz.push(z);
-  for (let iz = 0; iz < gz.length; iz++)
-    for (let ix = 0; ix < gx.length; ix++) {
-      pts.push([gx[ix], y0, gz[iz], 0, 0, 0, -0.55]);
-      const j = iz * gx.length + ix;
-      if (ix) E.push(j - 1, j);
-      if (iz) E.push(j - gx.length, j);
-    }
 
   /* Then the model, and ONLY the model. The unlit lattice it used to stand in
      was a box of faint lines around it, which is one thing too many in a
@@ -2278,10 +2309,15 @@ async function showSequence(src) {
   const m = await loadModel(src);
   if (!m) return false;
   const label = src.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
+  /* Every stage stands in the same room, at the same camera. The model used to
+     arrive in an empty black void, which throws away the thing the scan was
+     standing on and reads as two unrelated pictures rather than one arrival. */
+  const room = roomPoints(m);
+  const cam = { tilt: HOLO.tilt, spin: 0, yaw0: 0, fs: HOLO.fs };
   const steps = [
     [0,     () => showHologram(src + (shell ? " shell" : ""), 8),  "scanning " + label],
-    [7200,  () => setFormation({ points: m.pts, edges: m.edges, tris: m.tris,
-                                 yaw0: m.yaw0, label: src, spin: 0.075 }, 26), "reading " + label],
+    [7200,  () => setFormation({ points: room.pts, edges: room.edges, tris: room.tris,
+                                 label: src, ...cam }, 30),        "reading " + label],
     [4600,  () => { solidWant = 1; },                              label],
     [9000,  () => { solidWant = 0; },                              "letting go of " + label],
     [3000,  () => { formWant = 0; formUntil = 0; },                ""],
@@ -2336,6 +2372,9 @@ function faceGlyph() {
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
   hologram:{seq:true}, holo:{holo:true}, projection:{seq:true},
+  // and back out of any of it
+  home:{home:true}, back:{home:true}, stop:{home:true}, cancel:{home:true},
+  nevermind:{home:true}, exit:{home:true}, dismiss:{home:true}, reset:{home:true},
   // feelings
   happy:{text:"\u{1F600}"}, smile:{text:"\u{1F600}"}, smiley:{text:"\u{1F600}"},
   laugh:{text:"\u{1F602}"}, funny:{text:"\u{1F602}"},
@@ -2368,7 +2407,9 @@ const TRIGGERS = {
   // words that read better spelled
   face:{shape:"face"}, hi:{text:"HI"}, hey:{text:"HEY"}, hello:{text:"HELLO"},
   yes:{text:"YES"}, no:{text:"NO"}, ok:{text:"OK"}, okay:{text:"OK"},
-  stop:{text:"STOP"}, help:{text:"HELP"}, nice:{text:"NICE"},
+  // `stop` is a way out, not a word to spell -- it was declared twice, and in an
+  // object literal the second one silently wins
+  help:{text:"HELP"}, nice:{text:"NICE"},
   glorb:{text:"GLORB"}, orb:{text:"GLORB"},
   menu:{menu:true}, options:{menu:true},
   // solids, which is where depth actually shows
@@ -2462,6 +2503,21 @@ function menuPoints() {
 
 /* Pick one. The same call whether it was touched or spoken, because there is no
    reason for those to be different code paths. */
+/* Out. Whatever is up -- a menu, a sequence, a hologram, a firework, a word --
+   this puts the orb back. There was no way to leave the menu except by choosing
+   from it, which is a corner to be stuck in, and nothing at all could be
+   cancelled once it started. */
+function goHome(why) {
+  stopSequence();
+  clearTimeout(answerAt);
+  menuOn = false; menuHit = -1;
+  formWant = 0; formUntil = 0; solidWant = 0;
+  if (firing.s) { firing.until = 0; firing.s = null; }
+  if (why) caption(null, why);
+  stirred();
+  return true;
+}
+
 function menuPick(k) {
   if (k < 0 || k >= MENU.length) return false;
   const item = MENU[k];
@@ -2807,6 +2863,7 @@ function feedWords(finalText, interimText) {
     }
     /* Commands, always. Saying "menu" or "hologram" is asking for a thing. */
     const trig = TRIGGERS[w2];
+    if (trig && trig.home) { goHome(""); echoSeen = settled; return; }
     if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq)) {
       setFormation(trig, 10); continue;
     }
@@ -2831,8 +2888,9 @@ function setFormation(spec, seconds) {
      had a word in it. One or the other -- and that includes a firework, which
      would take the whole field out from under the model mid-turn. Another model
      may replace it, since that is a deliberate choice rather than a collision. */
+  if (spec && spec.home) return goHome("");
   const owned = (form3d || menuOn) && formWant;
-  if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo))) return false;
+  if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo || spec.seq))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
@@ -2963,10 +3021,10 @@ function setFormation(spec, seconds) {
   formN = take;
   formWant = 1;
   if (formHasB && formE) {
-    const g = [[], [], []];
+    const g = [[], [], [], []];
     for (let e = 0; e < formE.length; e += 2) {
       const bb = Math.min(formB[formE[e]], formB[formE[e + 1]]);
-      g[bb >= 0.5 ? 2 : bb >= -0.3 ? 1 : 0].push(formE[e], formE[e + 1]);
+      g[bb < HOLO_SHADE + 1 ? 3 : bb >= 0.5 ? 2 : bb >= -0.3 ? 1 : 0].push(formE[e], formE[e + 1]);
     }
     holoE = g.map((a) => Int32Array.from(a));
   }
@@ -3014,6 +3072,9 @@ const onPick = (e) => {
   const t = e.changedTouches ? e.changedTouches[0] : e;
   const k = menuNear(t.clientX, t.clientY);
   if (k >= 0) { e.preventDefault(); menuPick(k); }
+  // and anywhere else closes it. A menu you can only leave by choosing from it
+  // is a corner, and the empty middle of one is exactly where a thumb lands.
+  else if (formT > 0.35) { e.preventDefault(); goHome(""); }
 };
 const onLeave = () => { mx = my = -9999; };
 ["pointermove","touchstart","touchmove"].forEach(ev =>
@@ -3639,7 +3700,7 @@ function loop() {
          whole thing green. Re-centre on the visible range instead -- nearest
          point green, silhouette magenta, which lands as a rim light. */
       let want;
-      if (formHasB) {
+      if (formHasB && formB[i] > HOLO_SHADE + 1) {
         // brought its own place on the palette. Depth shading would fight it:
         // a lit dot at the back would go dark and the model would come apart.
         want = formB[i] * sizeHiPx;
@@ -3687,7 +3748,7 @@ function loop() {
                wrong when it is carrying brightness -- the unlit lattice would
                be as fat as the model standing in it and there would be nothing
                to see. */
-            : form3d && held && formHasB
+            : form3d && held && formHasB && formB[i] > HOLO_SHADE + 1
               ? sizeHiPx * cfg.dot * 0.09 * (0.25 + 1.3 * Math.abs(formB[i]))
                 * (1 - fT * 0.15) * (1 - wireT * 0.55)
             : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
@@ -3747,7 +3808,7 @@ function loop() {
     const SB = 6, DB = 10, paths = [];
     for (let b = 0; b < SB * DB; b++) paths.push(null);
     const dzs = zSpan * 1.35;
-    ctx.globalAlpha = solidT * 0.9;
+    ctx.globalAlpha = solidT;
     for (let t = 0; t < formTri.length; t += 3) {
       const a = formTri[t], b2 = formTri[t + 1], c = formTri[t + 2];
       /* Not gated on visA. That flag is the back-surface culling for the DOTS,
@@ -3843,7 +3904,12 @@ function loop() {
             overdraw a frame and took a phone-sized canvas to 20fps. The body
             barely reads its own fade; the thin core is where it shows. */
          { g: 2, b: 0.95, w: cellPx * 0.92, a: 0.16, fade: 1 },
-         { g: 2, b: 0.95, w: 1.3 * k, a: 0.75, fade: 4 }]
+         { g: 2, b: 0.95, w: 1.3 * k, a: 0.75, fade: 4 },
+         /* and the model's own outline, once it has resolved into one. It
+            steps back as the surface fills in: a wireframe at full strength
+            over a shaded solid is a net thrown over it, and the shading is the
+            only thing saying what the shape is. */
+         { g: 3, b: 0.62, w: 1.0 * k, a: 0.55 * (1 - solidT * 0.72), fade: 4 }]
       : null;
     ctx.globalAlpha = wireT;
     if (holo) {

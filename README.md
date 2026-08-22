@@ -1072,6 +1072,21 @@ the thin core is where it shows.
 
 ---
 
+### A way out
+
+Whatever is up — a menu, a sequence, a hologram, a firework, a word — **home**
+puts the orb back. Say home, back, stop, cancel, nevermind, exit, dismiss or
+reset; type `/home`; or tap anywhere on the menu that is not a satellite.
+
+There was no way to leave the menu except by choosing from it, which is a corner
+to be stuck in, and the empty middle of it is exactly where a thumb lands.
+Nothing else could be cancelled once it had started either.
+
+`stop` was declared **twice** in `TRIGGERS` — as a way out at the top and as a
+word to spell further down — and in an object literal the second one silently
+wins, so it was the only one of the eight that did nothing. Three of four routes
+home passed on the first test, and that is how the fourth was found.
+
 ### The sequence
 
 What a character arriving is supposed to be, and it is all one command —
@@ -1084,7 +1099,18 @@ What a character arriving is supposed to be, and it is all one command —
 4. it drains back out to the outline, and the outline back to the orb
 
 Stages 3 and 4 are the same point set with the fill easing over it, which is why
-those read as one object changing rather than two objects swapping. Every stage
+those read as one object changing rather than two objects swapping.
+
+**Every stage stands in the same room.** The model used to arrive in an empty
+black void — the floor belonged to the scan and to nothing else — which throws
+away the thing the scan was standing on and reads as two unrelated pictures
+rather than one arrival. `floorLattice()` is shared now, and `roomPoints()` puts
+the model's real vertices, edges and faces into it at the same camera. A seventh
+column of `-99` means "shade this the way a solid is shaded": the floor states
+its place on the palette, the model earns one. The model's own outline steps
+back as the surface fills in — a wireframe at full strength over a shaded solid
+is a net thrown over it, and the shading is the only thing saying what the shape
+is. Every stage
 already existed; the sequence is only the order, the timing, and one cancellable
 timer.
 
