@@ -947,6 +947,7 @@ say.addEventListener("keydown", (e) => {
     }
     if (SOLIDS[key]) setFormation({ solid:key }, 12);
     else if (/^model /i.test(what)) showModel(what.slice(6).trim(), 14);
+    else if (/^holo(gram)? ?/i.test(what)) showHologram(what.replace(/^holo(gram)? ?/i, "").trim(), 26);
     else if (/^image /i.test(what)) showImage(what.slice(6).trim(), 8);
     else setFormation(SHELLS[key] ? { shell:key }
                : TRIGGERS[key] ? TRIGGERS[key]
@@ -1383,6 +1384,11 @@ function buildLut(hueShift) {
    the audio reactivity all keep running underneath it. */
 const formX = new Float32Array(MAX), formY = new Float32Array(MAX);
 const formZ = new Float32Array(MAX);
+/* A seventh column: where on the palette this particle wants to sit, instead of
+   taking its size from its depth. Only a hologram uses it, and only because the
+   whole point of a hologram is that position and brightness say different
+   things -- the lattice says where, the bias says whether the model is there. */
+const formB = new Float32Array(MAX);
 /* Which particles a formation actually took. A word drawn by the whole field
    leaves nothing outside it, and the ring around a shape is most of what makes
    the shape look like it belongs to something. */
@@ -1401,7 +1407,9 @@ let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "", formRate 
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
    containment wall, which then fights the formation for them. */
-let form3d = false, formHasN = false, formS = 0.42;
+let form3d = false, formHasN = false, formHasB = false, formS = 0.42;
+// a formation may bring its own camera; null means use the sliders
+let formTilt = null, formSpin = null;
 let formHY = 1;                    // the shape's half height, for clearing it
 let formE = null;                  // vertex-index pairs, when the source was a mesh
 let wireT = 0, wireAt = 0;         // the mesh grows in a beat after the cloud lands
@@ -2003,7 +2011,9 @@ function facingYaw(pts) {
 }
 
 const modelCache = {};
-async function showModel(src, seconds) {
+/* Loading and showing are two things. A hologram wants the same mesh and does
+   something else entirely with it. */
+async function loadModel(src) {
   const key = src.toLowerCase();
   if (!modelCache[key]) {
     caption(null, "loading " + src + "…");
@@ -2032,9 +2042,85 @@ async function showModel(src, seconds) {
         break;
       } catch (e) { err = e; delete modelCache[key]; }
     }
-    if (err) { caption(null, "model " + src + ": " + err.message); return false; }
+    if (err) { caption(null, "model " + src + ": " + err.message); return null; }
   }
-  const m = modelCache[key];
+  return modelCache[key];
+}
+
+/* ---------------- hologram ----------------
+   A floor of dots, and standing out of every one of them a line. Where the
+   model passes through a line, that stretch of it lights; the rest is only just
+   there. Nothing of the model is drawn -- what you see is the floor reporting
+   what is standing on it, which is exactly why it reads as projected rather
+   than modelled, and why it looks like light rather than like a mesh.
+
+   The vertical reach of the model over each floor cell comes from binning its
+   vertices by (x, z) and keeping the extremes. A ray cast per cell would be
+   more correct at the concavities and, at this resolution, indistinguishable. */
+const HOLO = { cells: 20, layers: 11 };
+
+function hologramPoints(verts, shell) {
+  const C = HOLO.cells, L = HOLO.layers, N = C * C;
+  // screen axes: y runs DOWN, so the top of the model is its minimum
+  const top = new Float32Array(N).fill(9), bot = new Float32Array(N).fill(-9);
+  const cell = (v, d) => {
+    let i = ((v[d] + 1) / 2 * C) | 0;
+    return i < 0 ? 0 : i >= C ? C - 1 : i;
+  };
+  for (const v of verts) {
+    const j = cell(v, 2) * C + cell(v, 0);
+    if (v[1] < top[j]) top[j] = v[1];
+    if (v[1] > bot[j]) bot[j] = v[1];
+  }
+
+  /* Bias, not position, is what makes this a hologram: every particle stands on
+     the same lattice whether it is lit or not, so the lines stay lines. A lit
+     one is driven to the green end of the palette and a dark one barely off
+     zero, and the gap between them is the model. */
+  const pts = [];
+  for (let iz = 0; iz < C; iz++)
+    for (let ix = 0; ix < C; ix++) {
+      const j = iz * C + ix;
+      const x = ((ix + 0.5) / C) * 2 - 1, z = ((iz + 0.5) / C) * 2 - 1;
+      // the floor itself, a shade brighter than the lines so it reads as ground
+      pts.push([x, 1, z, 0, 0, 0, -0.5]);
+      const h = 1 / L;
+      for (let l = 0; l < L; l++) {
+        const y = 1 - ((l + 0.5) / L) * 2;
+        /* Solid by default: every layer between the model's top and bottom over
+           this cell. `shell` lights only the two ends instead, which is more
+           literally a surface and, at this many layers, mostly holes -- the head
+           stops being a head. Left in because it is one word to ask for and the
+           right answer probably depends on the model. */
+        const lit = top[j] < 8 && (shell
+          ? Math.abs(y - top[j]) < h || Math.abs(y - bot[j]) < h
+          : y >= top[j] - 0.02 && y <= bot[j] + 0.02);
+        pts.push([x, y, z, 0, 0, 0, lit ? 0.95 : -0.14]);
+      }
+    }
+  return pts;
+}
+
+async function showHologram(src, seconds) {
+  const shell = /\bshell\b/i.test(src || "");
+  src = String(src || "").replace(/\bshell\b/ig, "").trim();
+  const m = await loadModel(src || "test_head");
+  if (!m) return false;
+  const pts = hologramPoints(m.pts, shell);
+  const lit = pts.reduce((n, p) => n + (p[6] > 0.5 ? 1 : 0), 0);
+  /* Tilted, and turning. A floor seen dead on is a row of dots; it only becomes
+     a floor once the camera is above it. Both are the formation's own, not the
+     global tilt and spin -- the flat orb wants neither. */
+  const ok = setFormation({ points: pts, label: "hologram", tilt: 0.42, spin: 0.055,
+                            yaw0: m.yaw0 }, seconds || 26);
+  if (ok) caption(null, "hologram" + (shell ? " (shell)" : "") + " · " + HOLO.cells + "×" +
+                        HOLO.cells + " floor · " + lit + " lit of " + pts.length);
+  return ok;
+}
+
+async function showModel(src, seconds) {
+  const m = await loadModel(src);
+  if (!m) return false;
   const ok = setFormation({ points: m.pts, edges: m.edges, yaw0: m.yaw0, label: src }, seconds);
   if (ok) caption(null, "showing " + src + " · " + m.pts.length + " points" +
                         (m.edges ? " · " + m.edges.length / 2 + " edges" : ""));
@@ -2067,6 +2153,7 @@ function faceGlyph() {
    vocabulary for free. Celebrations are the exception: nobody wants a picture
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
+  hologram:{holo:true}, holo:{holo:true}, projection:{holo:true},
   // feelings
   happy:{text:"\u{1F600}"}, smile:{text:"\u{1F600}"}, smiley:{text:"\u{1F600}"},
   laugh:{text:"\u{1F602}"}, funny:{text:"\u{1F602}"},
@@ -2555,11 +2642,12 @@ function setFormation(spec, seconds) {
      would take the whole field out from under the model mid-turn. Another model
      may replace it, since that is a deliberate choice rather than a collision. */
   const owned = (form3d || menuOn) && formWant;
-  if (owned && !(spec && (spec.points || spec.solid || spec.model))) return false;
+  if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
+  if (spec && spec.holo) { showHologram(spec.holo === true ? "" : spec.holo, seconds || 26); return true; }
   if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
   if (spec && spec.image) { showImage(spec.image, seconds); return true; }
   /* Everything arrives here as a list of places to be. A glyph, a face, a
@@ -2574,6 +2662,9 @@ function setFormation(spec, seconds) {
   if (!pts.length) return false;
   form3d = pts[0].length > 2;
   formHasN = pts[0].length > 5;
+  formHasB = pts[0].length > 6;
+  formTilt = spec && spec.tilt != null ? spec.tilt : null;
+  formSpin = spec && spec.spin != null ? spec.spin : null;
   formE = asMenu ? asMenu.edges : (spec && spec.edges) || null;
   /* How much of the field the shape gets. A mesh takes all of it -- an edge
      index means nothing if only some vertices have particles standing on them
@@ -2618,8 +2709,10 @@ function setFormation(spec, seconds) {
      whether a word reads at all. One particle per sampled point, so a busy
      emoji costs more of them than a heart does; the ceiling is there for the
      frame rate on a phone, not for the drawing. */
-  // a wireframe cannot skip vertices: every one of them anchors edges
-  const want = formE ? Math.min(MAX, pts.length)
+  /* A wireframe cannot skip vertices: every one of them anchors edges. Neither
+     can a lattice -- resample a hologram's floor and the lines it is made of
+     come apart into a scatter. */
+  const want = formE || formHasB ? Math.min(MAX, pts.length)
                      : Math.min(MAX, Math.max(Math.round(cfg.count),
                                               Math.min(2600, Math.ceil(pts.length / share))));
   /* Borrowing more was always here; handing some back was not -- and every
@@ -2662,6 +2755,7 @@ function setFormation(spec, seconds) {
     formHY = Math.max(formHY, Math.abs(p[1]));
     formX[i] = p[0]; formY[i] = p[1]; formZ[i] = p[2] || 0;
     fnx[i] = p[3] || 0; fny[i] = p[4] || 0; fnz[i] = p[5] || 0;
+    formB[i] = p[6] || 0;
   }
   formN = take;
   formWant = 1;
@@ -2669,7 +2763,7 @@ function setFormation(spec, seconds) {
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
   const secs = asMenu ? 30                 // it waits to be chosen from
-             : form3d ? 1 / Math.max(0.05, Math.abs(cfg.spin)) + 3.4
+             : form3d ? 1 / Math.max(0.05, Math.abs(formSpin != null ? formSpin : cfg.spin)) + 3.4
                       : Math.max(0.3, Math.min(30, seconds || 5));
   formRate = secs < 2 ? 0.12 : 0.045;      // a glimpse has to arrive before it goes
   formUntil = performance.now() + Math.min(30, secs) * 1000;
@@ -2690,6 +2784,8 @@ function updateFormation(dt) {
   if (formT < 0.002 && !formWant) {
     formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
     formE = null; wireT = 0; view.turn = 0;
+    // or the next formation inherits a hologram's camera and reads stale biases
+    formHasB = false; formTilt = null; formSpin = null;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
@@ -2777,7 +2873,7 @@ function loop() {
   view.deep = form3d && formT > 0.002;
   // turning from the first moment, so it arrives already moving
   if (view.deep && formWant && view.turn < 1)
-    view.turn = Math.min(1, view.turn + Math.abs(cfg.spin) * (dt / 1000));
+    view.turn = Math.min(1, view.turn + Math.abs(formSpin != null ? formSpin : cfg.spin) * (dt / 1000));
   /* Only while it is actually listening to someone, and only in duet -- echo
      is the literal mode and should stay literal. */
   /* Whenever there is a live microphone and nothing else has the field --
@@ -2793,7 +2889,8 @@ function loop() {
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? cfg.wire : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
-  view.pitch += ((view.deep ? cfg.tilt : 0) - view.pitch) * 0.04;
+  const tiltWant = formTilt != null ? formTilt : cfg.tilt;
+  view.pitch += ((view.deep ? tiltWant : 0) - view.pitch) * 0.04;
   // an easing curve never actually reaches zero, and a residual pitch leaves a
   // residual perspective on a field that is supposed to be exactly flat
   if (!view.deep && Math.abs(view.pitch) < 0.002) view.pitch = 0;
@@ -2803,7 +2900,8 @@ function loop() {
      came back skewed and then snapped straight. The rotation now unwinds
      exactly as the shape dissolves. */
   view.yaw = view.yaw0 * formT +
-             (view.turn >= 1 ? 0 : view.turn * TAU * (cfg.spin < 0 ? -1 : 1)) * formT;
+             (view.turn >= 1 ? 0 : view.turn * TAU *
+               ((formSpin != null ? formSpin : cfg.spin) < 0 ? -1 : 1)) * formT;
 
   const tt = now / 1000;
   const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1) *
@@ -3274,9 +3372,16 @@ function loop() {
          is left all sits on the near half, so a symmetric mapping paints the
          whole thing green. Re-centre on the visible range instead -- nearest
          point green, silhouette magenta, which lands as a rim light. */
-      const t3 = culling ? Math.max(-1, Math.min(1, -rz / (zSpan * 0.36) - 1))
-                         : Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
-      const want = (t3 >= 0 ? t3 : t3 * 2.4) * sizeHiPx;
+      let want;
+      if (formHasB) {
+        // brought its own place on the palette. Depth shading would fight it:
+        // a lit dot at the back would go dark and the model would come apart.
+        want = formB[i] * sizeHiPx;
+      } else {
+        const t3 = culling ? Math.max(-1, Math.min(1, -rz / (zSpan * 0.36) - 1))
+                           : Math.max(-1, Math.min(1, -rz / (zSpan * 0.6)));
+        want = (t3 >= 0 ? t3 : t3 * 2.4) * sizeHiPx;
+      }
       size += (want - size) * fT * 0.98;
     } else if (fT > 0.002) {
       size += (-1.15 * sizeHiPx - size) * fT * 0.88;
@@ -3311,6 +3416,13 @@ function loop() {
        magenta half of the palette is stretched 2.4x to reach it, which would
        otherwise make the FAR side of a model the fattest thing on screen. */
     let rad = bs ? bs.star * k
+            /* A hologram has to be able to be faint. A solid draws every star
+               the same size, which is right when size is carrying depth and
+               wrong when it is carrying brightness -- the unlit lattice would
+               be as fat as the model standing in it and there would be nothing
+               to see. */
+            : form3d && held && formHasB
+              ? sizeHiPx * cfg.dot * 0.11 * (0.3 + 1.5 * Math.abs(formB[i])) * (1 - fT * 0.15)
             : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
               // the rim is a frame, not a second drawing competing with the first

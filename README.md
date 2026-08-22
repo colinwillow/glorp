@@ -873,6 +873,49 @@ points with no edges, because a wireframe needs one particle per vertex and
 every edge is a line drawn every frame. Measured: 3,032 verts / 6,403 edges at
 60fps, 3,960 / 7,948 at 54.
 
+### Hologram
+
+A floor of dots, and standing out of every one of them a line. Where the model
+passes through a line, that stretch of it lights; the rest is only just there.
+Nothing of the model is drawn — what you see is the floor reporting what is
+standing on it, which is exactly why it reads as projected rather than modelled.
+
+```
+/show holo test_head        # or say "hologram"
+/show holo knot shell
+```
+
+The model's vertical reach over each floor cell comes from binning its vertices
+by `(x, z)` and keeping the extremes. A ray cast per cell would be more correct
+at the concavities and, at 20×20, indistinguishable from this.
+
+Two things had to be added for it, and both are the same idea: **position and
+brightness are saying different things here**, which nothing else in the field
+had ever needed.
+
+A point may carry a **seventh column**, a bias — where on the palette it wants to
+sit, instead of taking its size from its depth. A solid shades by depth, which
+is right when size is carrying distance and wrong when it is carrying whether
+the model is there: a lit dot at the back would go dark and the head would come
+apart. The radius follows the bias too, or the unlit lattice would be as fat as
+the model standing in it and there would be nothing to see.
+
+And a formation may bring **its own camera** — `tilt` and `spin`, overriding the
+sliders. A floor seen dead on is a row of dots; it only becomes a floor once you
+are above it. The flat orb wants neither, which is why these are the
+formation's and not the field's.
+
+A lattice also cannot be resampled. The borrow logic used to thin a formation
+down to a cap, which for a hologram scatters the very lines it is made of — so a
+bias-carrying formation takes every point it has, exactly as a wireframe does.
+
+`shell` lights only the top and bottom of each column instead of everything
+between. More literally a surface, and at eleven layers mostly holes — the head
+stops being a head. Left in because the right answer probably depends on the
+model.
+
+---
+
 ### Where this stops
 
 Point cloud and wireframe live comfortably here. **Textured** does not — affine

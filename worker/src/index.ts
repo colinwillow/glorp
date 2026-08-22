@@ -188,7 +188,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, image, shape, shell or menu. " +
+      "Do something with the orb's particles. Give exactly one of text, image, holo, shape, shell or menu. " +
       "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
       "or anything worth setting off. Never use a shell for an ordinary answer.",
@@ -206,6 +206,14 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           description:
             "The name of one of the drawings you have, if you were given a list of them. " +
             "It is traced out of the particles and held for a few seconds. Name only, no file extension.",
+        },
+        holo: {
+          type: "string",
+          enum: ["test_head", "knot"],
+          description:
+            "Project one of the models as a hologram: a floor of dots with a line standing out of " +
+            "every one, lit where the model passes through it. Slow and worth looking at, so only " +
+            "when somebody asks to see something in 3D, or asks for a hologram.",
         },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
         menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
