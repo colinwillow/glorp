@@ -1174,20 +1174,27 @@ frzBtn.onclick = () => {
   frzBtn.classList.toggle("on", frozen);
 };
 
-/* Rebuild the whole tap: a fresh stream, a fresh context, a fresh analyser.
-   Everything downstream reads A, so replacing it wholesale is the only way to
-   be sure nothing is left holding the dead one. */
+/* Rebuild the tap around the stream we already hold.
+   Calling getUserMedia again asks for permission again -- which is what it did,
+   twice in a row, and a prompt is much worse than a silence. The track is
+   usually fine; it is the context that has been suspended out from under it, so
+   a fresh context and a fresh analyser on the SAME stream is the whole repair.
+   Only a track that has genuinely ended needs a new grant, and that is the one
+   case where a prompt is the honest thing to show. */
 async function regrabMic() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-    });
+    const live = A.stream.getAudioTracks()[0];
+    const stream = live && live.readyState === "live" ? A.stream
+      : await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
     const ac = new (window.AudioContext || window.webkitAudioContext)();
     await ac.resume();
     const an = ac.createAnalyser();
     an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
     ac.createMediaStreamSource(stream).connect(an);
-    try { A.stream.getTracks().forEach((t) => t.stop()); A.ac.close(); } catch (e) {}
+    // close the old context, but never stop a stream we are about to keep using
+    try { if (stream !== A.stream) A.stream.getTracks().forEach((t) => t.stop()); A.ac.close(); } catch (e) {}
     A = { ac, an, stream,
       freq: new Uint8Array(an.frequencyBinCount),
       prev: new Float32Array(an.frequencyBinCount),
@@ -1767,36 +1774,174 @@ async function showImage(src, seconds) {
 function clearPhoto() { photo.want = 0; photo.at = 0; }
 
 /* ---------------- the gallery ----------------
-   Once a picture is on screen this is a place you are looking at things, not a
-   visualiser that happened to draw one. So it behaves like one: a list, a
-   position in it, and a swipe. */
-const gallery = { on: false, i: 0 };
+   A page, not a formation. Once pictures are on screen this is somewhere you
+   are looking at things: a grid you can drag, tiles that fold in, a tap to open
+   one, and it stays until you leave it. The particles do not go away -- they
+   line the top and bottom edges, so the field is still there holding the frame
+   rather than pretending it is a website.
 
-async function showGallery(startAt) {
-  const list = await listImages();
-  if (!list.length) { caption(null, "no pictures found — images/ is empty or not committed"); return false; }
-  gallery.on = true;
-  gallery.i = ((startAt || 0) % list.length + list.length) % list.length;
-  return galleryShow();
+   Everything is drawn on the same canvas as everything else. A DOM overlay
+   would be easier and would immediately stop being the same object. */
+const gallery = {
+  on: false, mode: "grid", i: 0,
+  scroll: 0, vel: 0, at: 0, shots: [],
+  drag: null,
+};
+const GRID = { cols: 3, gap: 10, edge: 12, top: 96, bot: 74 };
+
+function tileRect(k) {
+  const cw = (W - GRID.edge * 2 - GRID.gap * (GRID.cols - 1)) / GRID.cols;
+  const col = k % GRID.cols, row = (k / GRID.cols) | 0;
+  /* Centred when it is shorter than the space it has. Six square tiles in three
+     columns cannot fill a phone however they are arranged, and top-aligning
+     them leaves a void underneath that reads as a loading failure. */
+  const view = H - GRID.top - GRID.bot;
+  const tall = gridHeight(gallery.shots.length);
+  const top = GRID.top + (tall < view ? (view - tall) / 2 : 0);
+  return { x: GRID.edge + col * (cw + GRID.gap),
+           y: top - gallery.scroll + row * (cw + GRID.gap), w: cw, h: cw };
+}
+function gridHeight(n) {
+  const cw = (W - GRID.edge * 2 - GRID.gap * (GRID.cols - 1)) / GRID.cols;
+  return Math.ceil(n / GRID.cols) * (cw + GRID.gap) - GRID.gap;
+}
+function scrollMax() {
+  return Math.max(0, gridHeight(gallery.shots.length) - (H - GRID.top - GRID.bot));
 }
 
-async function galleryShow() {
-  const list = imageList || [];
-  if (!list.length) return false;
+/* Cover, not contain. A grid of pictures with different aspects and letterboxes
+   between them is a contact sheet; filling each cell is what makes it read as
+   one surface. */
+function drawCover(img, x, y, w, h, alpha) {
+  const s2 = Math.max(w / img.width, h / img.height);
+  const sw = w / s2, sh = h / s2;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, x, y, w, h);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* Two lines of particles, top and bottom, with a slow wave along them. It is a
+   formation like any other, so it breathes with the room -- which is the whole
+   reason not to draw a rectangle in the 2D context and call it a frame. */
+const EDGE_FS = 0.5;
+function edgePoints() {
+  /* In screen proportions, not in the field's own. Formation coordinates are
+     scaled by min(W, H) on BOTH axes, so x = 1 is already off the side of a
+     tall phone and y = 1 is nowhere near the top of it -- the first version
+     asked for two straight lines and got two arcs, because the containment wall
+     bent the ends of them back in. Solve for the actual half-width and
+     half-height instead. */
+  const ex = (W * 0.5) / (EDGE_FS * scale) * 0.99;
+  const ey = (H * 0.5 - 34) / (EDGE_FS * scale);
+  const pts = [], N = 150;
+  for (let r = 0; r < 2; r++)
+    for (let i = 0; i < N; i++) {
+      const u = (i / (N - 1)) * 2 - 1;
+      pts.push([u * ex, (r ? 1 : -1) * ey * (1 - 0.018 * Math.sin(i * 0.42))]);
+    }
+  return pts;
+}
+
+async function fetchImage(src) {
+  const named = /\.(png|jpe?g|webp|gif|svg)$/i.test(src) || /^https?:/i.test(src);
+  const urls = named ? [src] : ["png", "jpg", "jpeg", "webp", "svg"].map((e) => "images/" + src + "." + e);
+  for (const url of urls) {
+    try {
+      return await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload = () => res(im); im.onerror = () => rej(new Error("no"));
+        im.src = url;
+      });
+    } catch (e) { /* next extension */ }
+  }
+  return null;
+}
+
+async function showGallery() {
+  // glorb is the app's own mark, sat in images/ so the menu slot has something
+  // to point at. It is not one of the pictures anybody came to look at.
+  const list = (await listImages()).filter((n2) => n2 !== "glorb");
+  if (!list.length) { caption(null, "no pictures found — images/ is empty or not committed"); return false; }
+  caption(null, "opening " + list.length + " pictures…");
+  const shots = [];
+  for (const nm of list) {
+    const img = await fetchImage(nm);
+    if (img) shots.push({ nm, img });
+  }
+  if (!shots.length) { caption(null, "none of the pictures would load"); return false; }
+  gallery.on = true; gallery.mode = "grid"; gallery.shots = shots;
+  gallery.scroll = 0; gallery.vel = 0; gallery.i = 0;
+  gallery.at = performance.now();
   clearPhoto();
-  const nm = list[gallery.i];
-  const ok = await showImage(nm, 40);
-  if (ok) caption(null, nm + "  ·  " + (gallery.i + 1) + " of " + list.length + "  ·  swipe");
-  return ok;
+  // the field lines the frame rather than leaving
+  setFormation({ points: edgePoints(), label: "gallery", fs: EDGE_FS, wide: 1 }, 3600);
+  caption(null, shots.length + " pictures · drag to scroll · tap one");
+  return true;
+}
+
+function galleryOpen(k) {
+  gallery.i = ((k % gallery.shots.length) + gallery.shots.length) % gallery.shots.length;
+  gallery.mode = "one";
+  gallery.at = performance.now();
+  caption(null, gallery.shots[gallery.i].nm + " · " + (gallery.i + 1) + " of " + gallery.shots.length);
 }
 
 function galleryGo(d) {
-  const list = imageList || [];
-  if (!gallery.on || !list.length) return false;
-  gallery.i = ((gallery.i + d) % list.length + list.length) % list.length;
-  galleryShow();
+  if (!gallery.on || gallery.mode !== "one") return false;
+  galleryOpen(gallery.i + d);
   return true;
 }
+
+function galleryHit(x, y) {
+  for (let k = 0; k < gallery.shots.length; k++) {
+    const r = tileRect(k);
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return k;
+  }
+  return -1;
+}
+
+function drawGallery(dt) {
+  if (!gallery.on) return;
+  const now3 = performance.now();
+  if (gallery.mode === "grid") {
+    // inertia, and a wall at each end rather than a bounce
+    if (!gallery.drag) {
+      gallery.scroll += gallery.vel * (dt / 16.67);
+      gallery.vel *= Math.pow(0.94, dt / 16.67);
+      if (Math.abs(gallery.vel) < 0.05) gallery.vel = 0;
+    }
+    const mx2 = scrollMax();
+    if (gallery.scroll < 0) { gallery.scroll = 0; gallery.vel = 0; }
+    if (gallery.scroll > mx2) { gallery.scroll = mx2; gallery.vel = 0; }
+
+    for (let k = 0; k < gallery.shots.length; k++) {
+      /* Folded in one after another, alternating sides. A grid that simply
+         appears is a screenshot; a grid that arrives is a place. */
+      const age = (now3 - gallery.at - k * 70) / 420;
+      if (age <= 0) continue;
+      const e = age >= 1 ? 1 : 1 - Math.pow(1 - age, 3);
+      const r = tileRect(k);
+      if (r.y > H || r.y + r.h < 0) continue;
+      const side = k % 2 ? 1 : -1;
+      const off = (1 - e) * W * 0.42 * side;
+      drawCover(gallery.shots[k].img, r.x + off, r.y, r.w, r.h, e);
+    }
+  } else {
+    const e = Math.min(1, (now3 - gallery.at) / 380);
+    const sh = gallery.shots[gallery.i];
+    const hw = Math.min(W * 0.94, (H - GRID.top - GRID.bot) * (sh.img.width / sh.img.height)) / 2;
+    const hh = hw * (sh.img.height / sh.img.width);
+    ctx.save();
+    ctx.globalAlpha = e;
+    ctx.drawImage(sh.img, cx - hw, cy - hh + (1 - e) * 24, hw * 2, hh * 2);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+}
+
 
 /* ---------------- solids ----------------
    Particles do not need topology, only positions. That is the whole reason this
@@ -2639,7 +2784,7 @@ function menuPoints() {
    cancelled once it started. */
 function goHome(why) {
   stopSequence();
-  gallery.on = false; clearPhoto();
+  gallery.on = false; gallery.shots = []; gallery.drag = null; clearPhoto();
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
   formWant = 0; formUntil = 0; solidWant = 0;
@@ -3218,20 +3363,56 @@ const swipe = { x: 0, y: 0, t: 0 };
 const onDown = (e) => {
   const t = e.changedTouches ? e.changedTouches[0] : e;
   swipe.x = t.clientX; swipe.y = t.clientY; swipe.t = performance.now();
+  if (gallery.on && gallery.mode === "grid") {
+    gallery.drag = { y: t.clientY, was: gallery.scroll, last: t.clientY, at: performance.now() };
+    gallery.vel = 0;
+  }
+};
+
+/* Dragging the grid. Velocity is measured over the last move rather than the
+   whole gesture, or a slow drag that ends with a flick throws away the flick. */
+const onDrag = (e) => {
+  if (!gallery.drag) return;
+  const t = e.touches ? e.touches[0] : e;
+  gallery.scroll = gallery.drag.was - (t.clientY - gallery.drag.y);
+  const now4 = performance.now(), gap = now4 - gallery.drag.at;
+  if (gap > 8) {
+    gallery.vel = -(t.clientY - gallery.drag.last) / (gap / 16.67);
+    gallery.drag.last = t.clientY; gallery.drag.at = now4;
+  }
 };
 const onUp = (e) => {
+  const wasDrag = gallery.drag;
+  gallery.drag = null;
   if (!gallery.on || !swipe.t) return;
   const t = e.changedTouches ? e.changedTouches[0] : e;
   const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
   const took = performance.now() - swipe.t;
   swipe.t = 0;
-  if (took > 900) return;                       // a rest, not a flick
   const far = Math.min(W, H) * 0.12;
+  if (gallery.mode === "grid") {
+    // a tap, not a drag: everything under a finger's width in a third of a
+    // second, which is the difference between choosing and scrolling
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12 && took < 400) {
+      const k = galleryHit(t.clientX, t.clientY);
+      if (k >= 0) { e.preventDefault(); galleryOpen(k); }
+    }
+    void wasDrag;
+    return;
+  }
+  if (took > 900) return;                       // a rest, not a flick
   if (Math.abs(dx) > far && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); galleryGo(dx < 0 ? 1 : -1); }
-  else if (dy > far && dy > Math.abs(dx)) { e.preventDefault(); goHome(""); }
+  // down is back to the grid, not out of the gallery: out is home
+  else if (dy > far && dy > Math.abs(dx)) {
+    e.preventDefault();
+    gallery.mode = "grid"; gallery.at = performance.now() - 900;
+    caption(null, gallery.shots.length + " pictures · drag to scroll · tap one");
+  }
 };
 ["pointerdown", "touchstart"].forEach(ev =>
   canvas.addEventListener(ev, onDown, { passive: true }));
+["pointermove", "touchmove"].forEach(ev =>
+  canvas.addEventListener(ev, onDrag, { passive: true }));
 ["pointerup", "touchend"].forEach(ev => canvas.addEventListener(ev, onUp));
 
 const onLeave = () => { mx = my = -9999; };
@@ -3323,6 +3504,8 @@ function loop() {
      are eased, and they overlap: for about a second you can see the dots
      through the photograph, which is the only frame in which it is obvious that
      one became the other. */
+  // the frame stays as long as the pictures do
+  if (gallery.on && formLabel === "gallery") formUntil = now + 4000;
   if (photo.at && now > photo.at) { photo.want = 1; photo.at = 0; }
   photo.t += (photo.want - photo.t) * (1 - Math.pow(1 - 0.022, dt / 16.67));
   // ...but not while one is still waiting its beat. This cleanup ran on the very
@@ -3393,7 +3576,12 @@ function loop() {
      it is standing on a target, not drifting. */
   const containNow = menuOn ? Math.max(cfg.contain, 0.93)
                    : formWide ? Math.max(cfg.contain, 0.99) : cfg.contain;
-  const walled = !(formHasB && formT > 0.02);
+  /* A wide formation has no wall either. The wall is an ELLIPSE fitted to the
+     viewport, so a straight line across the top of the screen has both its ends
+     outside it -- and the hard stop projects them back onto the curve. Two
+     straight lines came out as two arcs, which is the wall drawing its own
+     shape rather than the formation's. */
+  const walled = !((formHasB || formWide) && formT > 0.02);
   const softSpan = Math.max(0.02, 1 - containNow);
   const wall = 3.5 * k;
 
@@ -4168,6 +4356,8 @@ function loop() {
       ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
     }
   }
+
+  drawGallery(dt);
 
   /* The photograph, in the rectangle its own drawing occupied. Drawn after the
      particles so the field reads as being behind it, and never scaled past the

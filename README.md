@@ -428,6 +428,34 @@ One particle per sampled point, so the count follows the drawing: ❤️ samples
 about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
 duration and hands them back after.
 
+### The gallery is a page
+
+Say **images** and you get a grid: three across, tiles folding in one after
+another from alternating sides, drag to scroll with inertia, tap one to open it,
+swipe sideways between them, swipe down back to the grid, **home** to leave. It
+stays until you leave it.
+
+The particles do not go away — they line the **top and bottom** of the screen as
+a slow wave, so the field is still there holding the frame rather than
+pretending it is a website. It is an ordinary formation, so it breathes with the
+room like everything else; that is the whole reason not to draw a rectangle in
+the 2D context and call it a frame.
+
+Two things bit, and both are the same mistake: **formation coordinates are not
+screen coordinates.** They are scaled by `min(W, H)` on *both* axes, so on a
+tall phone `x = 1` is already off the side and `y = 1` is nowhere near the top.
+Two straight lines have to be solved for the actual half-width and half-height.
+And the containment wall is an **ellipse** fitted to the viewport, so a straight
+line across the top has both its ends outside it — the hard stop projected them
+back onto the curve and drew two arcs. A wide formation now has no wall, the
+same exemption the hologram's floor needed.
+
+Tiles are **covered, not contained**: a grid of mixed aspect ratios with
+letterboxes between them is a contact sheet, and filling each cell is what makes
+it read as one surface. A grid shorter than the space it has is centred, because
+six square tiles in three columns cannot fill a phone however they are arranged
+and top-aligning them leaves a void that reads as a loading failure.
+
 ### The drawing hands over to the picture
 
 Say **images** — or pick it from the menu, or `/show gallery` — and the particles
@@ -1151,9 +1179,12 @@ why it looked like the visualiser had stopped reacting — twice.
 Three things now:
 
 - A suspended context is resumed on every frame that needs it.
-- If the stream is still delivering nothing three seconds later, the whole tap
-  is rebuilt — new stream, new context, new analyser — at most once every ten
-  seconds, because a re-grab that fails is worse than a wait.
+- If the stream is still delivering nothing three seconds later, the tap is
+  rebuilt **around the stream already held** — a fresh context and a fresh
+  analyser on the same tracks. The first version called `getUserMedia` again,
+  which asks for permission again, and it did: twice in a row. A prompt is much
+  worse than a silence. Only a track that has genuinely **ended** gets a new
+  grant, and that is the one case where a prompt is the honest thing to show.
 - The HUD says **SILENT** rather than **live**, so it can never look like a
   quiet room again.
 
