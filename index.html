@@ -818,9 +818,7 @@ function toggleSTT() {
          on to the brain anyway, which answered that it does not have one and
          drew the word NO over the menu it was standing on. If a local command
          has already taken the field, the utterance was for us. */
-      if (formWant && (menuOn || form3d)) caption(heard, "");
-      else if (echoMode === 1) caption(heard, "");   // echo is local: no brain, no wait
-      else ask(heard);
+      heardSentence(heard);
     }
   };
   // every error, including no-speech: silence here is what made this invisible
@@ -1760,6 +1758,13 @@ async function showImage(src, seconds) {
   /* Bigger than a word, and past the wall. A picture is the thing being looked
      at, not a caption on the orb -- at the glyph scale a whole character came
      out a third of the height of the screen. */
+  /* If a gallery is open, a picture belongs IN it. Two owners of the same job
+     is how a single photograph ended up laid over the grid: the old standalone
+     path and the new page both drawing, neither knowing about the other. */
+  if (gallery.on && gallery.shots.length) {
+    const k = gallery.shots.findIndex((sh) => sh.nm.toLowerCase() === key);
+    if (k >= 0) { galleryOpen(k); return true; }
+  }
   const hit = imageCache[key];
   const ok = setFormation({ points: hit, label: src, fs: 0.66, wide: 1 }, seconds || 22);
   if (!ok) return false;
@@ -1785,7 +1790,7 @@ function clearPhoto() { photo.want = 0; photo.at = 0; }
 const gallery = {
   on: false, mode: "grid", i: 0,
   scroll: 0, vel: 0, at: 0, shots: [],
-  drag: null,
+  drag: null, from: null, shrink: null,
 };
 const GRID = { cols: 3, gap: 10, edge: 12, top: 96, bot: 74 };
 
@@ -1882,11 +1887,35 @@ async function showGallery() {
   return true;
 }
 
+/* Where a picture is when it is open, and where it came from. Opening one is a
+   move, not a cut: it grows out of the tile that was tapped and shrinks back
+   into it, so the grid and the picture are obviously the same object seen at two
+   sizes. A cross-fade would say they are two different pictures. */
+function fullRect(k) {
+  const sh = gallery.shots[k].img;
+  const availW = W * 0.94, availH = H - GRID.top - GRID.bot;
+  const sc = Math.min(availW / sh.width, availH / sh.height);
+  const w = sh.width * sc, h = sh.height * sc;
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
+
 function galleryOpen(k) {
   gallery.i = ((k % gallery.shots.length) + gallery.shots.length) % gallery.shots.length;
+  gallery.from = tileRect(gallery.i);
   gallery.mode = "one";
   gallery.at = performance.now();
   caption(null, gallery.shots[gallery.i].nm + " · " + (gallery.i + 1) + " of " + gallery.shots.length);
+}
+
+function galleryClose() {
+  if (gallery.mode !== "one") return false;
+  gallery.from = tileRect(gallery.i);
+  gallery.mode = "grid";
+  // the grid is already there; only the picture that is leaving needs a beat
+  gallery.shrink = { k: gallery.i, at: performance.now() };
+  gallery.at = performance.now() - 900;
+  caption(null, gallery.shots.length + " pictures · drag to scroll · tap one");
+  return true;
 }
 
 function galleryGo(d) {
@@ -1925,20 +1954,30 @@ function drawGallery(dt) {
       const e = age >= 1 ? 1 : 1 - Math.pow(1 - age, 3);
       const r = tileRect(k);
       if (r.y > H || r.y + r.h < 0) continue;
+      if (gallery.shrink && gallery.shrink.k === k) continue;   // it is on its way in
       const side = k % 2 ? 1 : -1;
       const off = (1 - e) * W * 0.42 * side;
       drawCover(gallery.shots[k].img, r.x + off, r.y, r.w, r.h, e);
     }
   } else {
-    const e = Math.min(1, (now3 - gallery.at) / 380);
-    const sh = gallery.shots[gallery.i];
-    const hw = Math.min(W * 0.94, (H - GRID.top - GRID.bot) * (sh.img.width / sh.img.height)) / 2;
-    const hh = hw * (sh.img.height / sh.img.width);
-    ctx.save();
-    ctx.globalAlpha = e;
-    ctx.drawImage(sh.img, cx - hw, cy - hh + (1 - e) * 24, hw * 2, hh * 2);
-    ctx.restore();
-    ctx.globalAlpha = 1;
+    const raw = Math.min(1, (now3 - gallery.at) / 420);
+    const e = 1 - Math.pow(1 - raw, 3);
+    const a = gallery.from || fullRect(gallery.i), b2 = fullRect(gallery.i);
+    const L = (p1, p2) => p1 + (p2 - p1) * e;
+    drawCover(gallery.shots[gallery.i].img,
+              L(a.x, b2.x), L(a.y, b2.y), L(a.w, b2.w), L(a.h, b2.h), 1);
+  }
+  // and one shrinking back into its tile, over the grid it is rejoining
+  if (gallery.shrink) {
+    const raw = (now3 - gallery.shrink.at) / 420;
+    if (raw >= 1) gallery.shrink = null;
+    else {
+      const e = 1 - Math.pow(1 - raw, 3);
+      const a = fullRect(gallery.shrink.k), b2 = tileRect(gallery.shrink.k);
+      const L = (p1, p2) => p1 + (p2 - p1) * e;
+      drawCover(gallery.shots[gallery.shrink.k].img,
+                L(a.x, b2.x), L(a.y, b2.y), L(a.w, b2.w), L(a.h, b2.h), 1);
+    }
   }
 }
 
@@ -3116,6 +3155,39 @@ let echoSeen = 0, lastLive = "";
 /* Interim results grow and revise, and the final word of one is usually still
    being decided -- flashing it means flashing half-heard guesses. Take only
    the words behind the cursor, and only ones not shown yet. */
+/* What to do with a finished sentence. Its own function because the decision is
+   the interesting part and because a handler wired to a browser API cannot be
+   tested; this can. */
+const HOME_SAID = /\b(go|take me|bring me|head|get)? ?(home|back)\b|\b(exit|quit|stop|halt|cancel|dismiss|reset|never ?mind|forget it|close (this|it)|all done|get out of (this|here))\b/;
+
+function heardSentence(heard) {
+  const flat = heard.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+  /* A phrase, not a word. Nobody says a command as one word -- "can you go
+     home" was caught by nothing, went to the brain, and came back as "I do not
+     know where you are" from an orb that had in fact just gone home. */
+  /* Short, as well as matching. "back" and "home" are ordinary words in the
+     middle of ordinary sentences -- "I went back to the shop yesterday" is not
+     a request to close the gallery. A command is a short thing said on its own;
+     five words is generous for one and far below anything conversational. */
+  const brief = flat.split(" ").length <= 5;
+  if (brief && HOME_SAID.test(flat)) {
+    goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";
+    return "home";
+  }
+  // a command already carried out here is already answered
+  if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
+  if (formWant && (menuOn || form3d)) { caption(heard, ""); return "owned"; }
+  if (echoMode === 1) { caption(heard, ""); return "echo"; }   // no brain, no wait
+  ask(heard);
+  return "brain";
+}
+
+/* Set when a spoken word was a command and was carried out here. The brain must
+   not then be asked about it: saying "can you go home" put the orb back AND sent
+   the sentence on, so it came home and then told you it did not know where you
+   were. A command is answered by doing it. */
+let localTook = 0;
+
 function feedWords(finalText, interimText) {
   const live = (finalText + " " + interimText).trim();
   if (!live) return;
@@ -3139,9 +3211,13 @@ function feedWords(finalText, interimText) {
     }
     /* Commands, always. Saying "menu" or "hologram" is asking for a thing. */
     const trig = TRIGGERS[w2];
-    if (trig && trig.home) { goHome(""); echoSeen = settled; return; }
+    /* Home is NOT handled word by word. "home" and "back" are ordinary words,
+       and firing on them as they go past closed the gallery on "I went back to
+       the shop yesterday". The sentence matcher owns leaving, because it can
+       see how long the sentence is; a word cannot. */
+    if (trig && trig.home) continue;
     if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq || trig.gallery)) {
-      setFormation(trig, 10); continue;
+      setFormation(trig, 10); localTook = 1; continue;
     }
     /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
        cool, love, wow, hmm -- and every one of them took the whole field for a
@@ -3403,11 +3479,7 @@ const onUp = (e) => {
   if (took > 900) return;                       // a rest, not a flick
   if (Math.abs(dx) > far && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); galleryGo(dx < 0 ? 1 : -1); }
   // down is back to the grid, not out of the gallery: out is home
-  else if (dy > far && dy > Math.abs(dx)) {
-    e.preventDefault();
-    gallery.mode = "grid"; gallery.at = performance.now() - 900;
-    caption(null, gallery.shots.length + " pictures · drag to scroll · tap one");
-  }
+  else if (dy > far && dy > Math.abs(dx)) { e.preventDefault(); galleryClose(); }
 };
 ["pointerdown", "touchstart"].forEach(ev =>
   canvas.addEventListener(ev, onDown, { passive: true }));
@@ -4362,7 +4434,7 @@ function loop() {
   /* The photograph, in the rectangle its own drawing occupied. Drawn after the
      particles so the field reads as being behind it, and never scaled past the
      screen: a picture is for looking at. */
-  if (photo.t > 0.004 && photo.img) {
+  if (photo.t > 0.004 && photo.img && !gallery.on) {
     const s5 = scale * 0.66;
     let hw = photo.half[0] * s5, hh = photo.half[1] * s5;
     const room = Math.min((W * 0.92) / (hw * 2), (H * 0.78) / (hh * 2), 1.6);

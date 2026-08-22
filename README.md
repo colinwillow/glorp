@@ -428,6 +428,13 @@ One particle per sampled point, so the count follows the drawing: ❤️ samples
 about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
 duration and hands them back after.
 
+### Opening a picture is a move
+
+A tapped tile **grows** into place and **shrinks** back into the tile it came
+from — interpolated corner to corner over 420ms, easing out. A cross-fade would
+say they are two different pictures; growing says they are one picture at two
+sizes, which is what they are.
+
 ### The gallery is a page
 
 Say **images** and you get a grid: three across, tiles folding in one after
@@ -1149,6 +1156,40 @@ fill-rate budget rather than a look — the wide body barely reads its own fade,
 the thin core is where it shows.
 
 ---
+
+### Leaving is a sentence, not a word
+
+Saying *"can you go home"* used to go home **and** ask the brain about it — so
+the orb came back to rest and then told you it did not know where you were. Two
+handlers, one utterance, and the second one had no idea the first had already
+answered it.
+
+A command is answered by doing it. A local command now marks the utterance as
+taken and the brain never sees it.
+
+And leaving is matched on the **whole sentence**, not word by word. Nobody says
+a command as one word — a word-by-word pass sees "can you go home" and finds
+only *can*. But the reverse is worse: *back* and *home* are ordinary words, and
+firing on them as they went past closed the gallery on **"I went back to the
+shop yesterday"**. So the sentence matcher owns leaving, and it has the one
+piece of context a word can never have — **how long the sentence is**. Five
+words is generous for a command and far below anything conversational.
+
+Eleven phrases, all routed correctly:
+
+| said | goes |
+|---|---|
+| can you go home · go back · exit · never mind · take me home · back to the menu | **home** |
+| show me images | handled here, brain not asked |
+| what colour is the ocean | the brain |
+| i went back to the shop yesterday · tell me about the way home from the station · do you ever want to go back | the brain |
+
+### One owner for pictures
+
+Asking for an image while the gallery was open drew a single photograph **over**
+the grid — the old standalone path and the new page both drawing, neither
+knowing about the other. A picture now belongs *in* the gallery whenever one is
+open, and the standalone layer does not draw at all while it is.
 
 ### A way out
 
