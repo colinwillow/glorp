@@ -114,9 +114,17 @@ build step.
 
 ## Choices worth knowing
 
+- **Fast mode first.** The same model at up to 2.5x the output tokens per
+  second — a research preview, Opus 5 only, with its own rate limit separate
+  from standard and billed at $10/$50 per MTok rather than $5/$25. A 429 falls
+  through to standard rather than failing.
 - `effort: "low"` — voice wants an answer back fast far more than it wants a
   deeper one. Raise it to `"high"` if you would rather have considered replies
-  than quick ones.
+  than quick ones. Thinking stays **on**: it is on by default on Opus 5 and it
+  costs latency, but disabling it is worse than it looks — with thinking off the
+  model sometimes writes a tool call into its visible *text* rather than a
+  `tool_use` block, which here means the orb saying the word "show" out loud and
+  drawing nothing.
 - `max_tokens: 1024` — deliberately small. This gets spoken aloud, and a long
   reply means a long speaking animation.
 - A refusal is caught and turned into one short sayable line, rather than

@@ -1247,7 +1247,7 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
    a look at the thing from every side; past that it is a screensaver. And
    ending on exactly TAU means the view is back where it started -- no residual
    rotation to unwind, and the projection is the identity again. */
-const view = { turn: 0, yaw: 0, pitch: 0, deep: false };
+const view = { turn: 0, yaw: 0, yaw0: 0, pitch: 0, deep: false };
 let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "";
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
@@ -1692,6 +1692,26 @@ function toScreenAxes(geo) {
   for (const f of geo.F) f.reverse();
   return geo;
 }
+/* Which way a model faces, since a file cannot say. The most protruding point
+   at mid height is the nose, the prow, the front -- true of nearly anything
+   modelled with a front, and harmless on anything without one. Averaged over
+   the outermost few percent rather than taken from one vertex, or a stray spike
+   decides which way a head looks. Returns the yaw that turns it to the camera. */
+function facingYaw(pts) {
+  let lo = 1e9, hi = -1e9;
+  for (const p of pts) { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; }
+  const span = hi - lo || 1;
+  const mid = pts.filter((p) => { const t = (p[1] - lo) / span; return t > 0.32 && t < 0.68; });
+  if (mid.length < 12) return 0;
+  mid.sort((a, b) => (b[0] * b[0] + b[2] * b[2]) - (a[0] * a[0] + a[2] * a[2]));
+  const take = Math.max(4, Math.round(mid.length * 0.04));
+  let sx = 0, sz = 0;
+  for (let i = 0; i < take; i++) { sx += mid[i][0]; sz += mid[i][2]; }
+  // the camera looks down +z, and near is -z after the rotation, so the facing
+  // direction has to be turned onto -z
+  return Math.atan2(sx, -sz);
+}
+
 const modelCache = {};
 async function showModel(src, seconds) {
   const key = src.toLowerCase();
@@ -1714,6 +1734,7 @@ async function showModel(src, seconds) {
            scattering points over the surface, and that one gets no edges. */
         const topo = geo.F.length ? meshTopology(geo.V, geo.F, WIRE_MAX) : null;
         modelCache[key] = topo || { pts: sampleMesh(geo.V, geo.F, 2400), edges: null };
+        modelCache[key].yaw0 = facingYaw(modelCache[key].pts);
         if (!modelCache[key].pts.length) throw new Error("nothing to sample in it");
         if (topo) console.log("orb mesh", src, topo.verts, "verts,", topo.faces, "faces,",
                               topo.quads, "quads,", topo.edges.length / 2, "edges");
@@ -1724,7 +1745,7 @@ async function showModel(src, seconds) {
     if (err) { caption(null, "model " + src + ": " + err.message); return false; }
   }
   const m = modelCache[key];
-  const ok = setFormation({ points: m.pts, edges: m.edges, label: src }, seconds);
+  const ok = setFormation({ points: m.pts, edges: m.edges, yaw0: m.yaw0, label: src }, seconds);
   if (ok) caption(null, "showing " + src + " · " + m.pts.length + " points" +
                         (m.edges ? " · " + m.edges.length / 2 + " edges" : ""));
   return ok;
@@ -1830,13 +1851,15 @@ let menuCols = [];
 
 function menuPoints() {
   const pts = [], E = [], grp = [], N = MENU.length;
-  const HUB = 96, SAT = 74, ARM = 9, R = 0.72, sr = 0.19;
+  // hub -1, satellite k as k, the arm to satellite k as -(2 + k) -- so an arm
+  // can be told from a hub and can find its own spoke
+  const HUB = 110, SAT = 96, ARM = 16, R = 0.80, sr = 0.265;
   menuAt.length = 0;
 
   // the hub: what is left of the orb, still a ring
   for (let i = 0; i < HUB; i++) {
     const a = (i / HUB) * TAU;
-    pts.push([Math.cos(a) * 0.19, Math.sin(a) * 0.19]); grp.push(-1);
+    pts.push([Math.cos(a) * 0.235, Math.sin(a) * 0.235]); grp.push(-1);
   }
   for (let k = 0; k < N; k++) {
     // -PI/2 puts the first one straight up, which is where a menu starts
@@ -1846,8 +1869,8 @@ function menuPoints() {
 
     const armFrom = pts.length;
     for (let j = 0; j < ARM; j++) {
-      const t = 0.24 + (j / (ARM - 1)) * 0.52;      // stops short of both ends
-      pts.push([Math.cos(a) * R * t, Math.sin(a) * R * t]); grp.push(-1);
+      const t = 0.30 + (j / (ARM - 1)) * 0.44;      // stops short of both ends
+      pts.push([Math.cos(a) * R * t, Math.sin(a) * R * t]); grp.push(-(2 + k));
       if (j) E.push(armFrom + j - 1, armFrom + j);
     }
     const satFrom = pts.length;
@@ -2229,6 +2252,7 @@ function setFormation(spec, seconds) {
   formS = form3d ? 0.29 : share < 0.95 ? 0.23 : 0.42;
   wireAt = performance.now() + 2000;
   view.turn = 0;
+  view.yaw0 = (spec && spec.yaw0) || 0;
 
   /* Particles are indexed by angle around the ring, so ordering the targets by
      angle too means the ring unfolds into the shape instead of scrambling
@@ -2301,7 +2325,7 @@ function setFormation(spec, seconds) {
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
   const secs = asMenu ? 30                 // it waits to be chosen from
-             : form3d ? 2.0 + 1 / Math.max(0.05, Math.abs(cfg.spin)) + 2.4
+             : form3d ? 1 / Math.max(0.05, Math.abs(cfg.spin)) + 3.4
                       : Math.max(1, Math.min(30, seconds || 5));
   formUntil = performance.now() + Math.min(30, secs) * 1000;
   formLabel = asMenu ? "menu" : spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
@@ -2402,8 +2426,8 @@ function loop() {
   /* Only ever turning while there is something with depth to look at. A
      spinning flat ring is just a ring that wobbles. */
   view.deep = form3d && formT > 0.002;
-  // the turn starts once the cloud has landed, not while it is still arriving
-  if (view.deep && formWant && now > wireAt && view.turn < 1)
+  // turning from the first moment, so it arrives already moving
+  if (view.deep && formWant && view.turn < 1)
     view.turn = Math.min(1, view.turn + Math.abs(cfg.spin) * (dt / 1000));
   /* Only while it is actually listening to someone, and only in duet -- echo
      is the literal mode and should stay literal. */
@@ -2429,7 +2453,8 @@ function loop() {
      camera is still turned -- so the ring, and whatever was asked for next,
      came back skewed and then snapped straight. The rotation now unwinds
      exactly as the shape dissolves. */
-  view.yaw = (view.turn >= 1 ? 0 : view.turn * TAU * (cfg.spin < 0 ? -1 : 1)) * formT;
+  view.yaw = view.yaw0 * formT +
+             (view.turn >= 1 ? 0 : view.turn * TAU * (cfg.spin < 0 ? -1 : 1)) * formT;
 
   const tt = now / 1000;
   const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1) *
@@ -2616,7 +2641,21 @@ function loop() {
            rather than six instances of the same one -- and they breathe with
            the room, because everything else here does. */
         const g2 = menuGroup[i];
-        if (g2 >= 0) {
+        if (g2 <= -2) {
+          /* Straight lines are the least alive thing on the screen. Each arm
+             gets a travelling wave across it, pinned at both ends by a sine
+             envelope so it undulates rather than detaching. */
+          const k2 = -g2 - 2;
+          const a2 = -Math.PI / 2 + (k2 / MENU.length) * TAU;
+          const ax2 = Math.cos(a2), ay2 = Math.sin(a2);
+          const s3 = scale * formS;
+          const along = ((tx - cx) * ax2 + (ty - cy) * ay2) / s3;
+          const u3 = Math.max(0, Math.min(1, (along - 0.30) / 0.44));
+          const env = Math.sin(u3 * Math.PI);
+          const w2 = env * s3 * (0.045 + drive.scale * 0.09) *
+                     Math.sin(u3 * 6.5 - tt * (1.6 + k2 * 0.23));
+          tx += -ay2 * w2 * fT; ty += ax2 * w2 * fT;
+        } else if (g2 >= 0) {
           const sxg = cx + menuAt[g2][0] * scale * formS;
           const syg = cy + menuAt[g2][1] * scale * formS;
           const dxg = tx - sxg, dyg = ty - syg;
@@ -2879,8 +2918,11 @@ function loop() {
     }
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
-    ctx.fillStyle = menuOn && menuGroup[i] >= 0 && menuCols.length
-                  ? menuCols[menuGroup[i]] : lut[li];
+    /* Arms wear the colour of the satellite they run to, so the whole spoke
+       reads as one thing rather than a coloured ball on a grey stick. */
+    ctx.fillStyle = menuOn && menuCols.length && menuGroup[i] !== -1
+                  ? menuCols[menuGroup[i] >= 0 ? menuGroup[i] : -menuGroup[i] - 2]
+                  : lut[li];
     // `dot` scales the drawn radius only. `size` (and therefore the LUT
     // index) is deliberately left alone, so this never moves the colour split.
     // A formation throws particles far from centre, where size is very negative
@@ -2901,6 +2943,8 @@ function loop() {
     // the one under your thumb swells, which is the only feedback a field of
     // dots can give that reads as "this one"
     if (menuOn && menuHit >= 0 && menuGroup[i] === menuHit) rad *= 1 + 0.9 * formT;
+    // the dots on a menu are the menu; the ring-sized ones are too timid for it
+    if (menuOn && menuGroup[i] !== -1) rad *= 1 + 0.75 * formT;
     if (deep) rad *= persp;              // near is bigger, which is most of the depth
     if (rad > radCap) rad = radCap;
     const sx = cx + rx * persp, sy = cy + ry * persp;

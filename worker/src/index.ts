@@ -180,9 +180,26 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
 
   const base = { model: "claude-opus-5", max_tokens: 1024, system: persona(env), messages, tools } as const;
 
-  // Tried in order, falling through on a 400 only. Voice wants a fast answer
-  // far more than a deeper one, but effort is not worth a dead assistant.
+  /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
+     answer far more than a deep one, and the wait here is the whole experience:
+     somebody is standing in a room listening to silence.
+
+     Fast mode is the real lever -- the same model at up to 2.5x the output
+     tokens per second. Research preview, Opus 5 only, its own rate limit
+     separate from standard, and billed at $10/$50 per MTok rather than $5/$25.
+     So a 429 falls through to standard rather than failing, and the whole thing
+     degrades to plain if the beta ever goes away.
+
+     Effort stays low. Thinking is ON by default on Opus 5, which is a lot of
+     latency for "what's the weather" -- but turning it off is worse than it
+     looks: with thinking disabled the model sometimes writes a tool call into
+     its visible TEXT rather than a tool_use block, which here would mean the
+     orb saying the word "show" out loud and drawing nothing. Low effort buys
+     most of the speed without that. */
   const attempts = [
+    { label: "fast", run: () => client.beta.messages.stream({
+        ...base, speed: "fast", betas: ["fast-mode-2026-02-01"],
+        output_config: { effort: "low" } }) },
     { label: "effort:low", run: () => client.messages.stream({ ...base, output_config: { effort: "low" } }) },
     { label: "plain", run: () => client.messages.stream({ ...base }) },
   ];
@@ -239,7 +256,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           console.error("orb-brain attempt failed", attempt.label, st,
             (error as { message?: string })?.message,
             JSON.stringify((error as { error?: unknown })?.error ?? null));
-          if (st !== 400) break;
+          if (st !== 400 && st !== 429) break;   // a 429 on fast mode is its own limit
         }
       }
       if (lastError) {

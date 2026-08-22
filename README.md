@@ -501,7 +501,16 @@ Three things make it read as depth:
   the view is back where it started, so there is no residual rotation to unwind.
   A solid's duration is derived from it — land, draw itself in, turn once, go —
   rather than picked out of the air, which either cuts it off mid-turn or leaves
-  it standing there afterwards.
+  it standing there afterwards. It turns from the first moment, so it arrives
+  already moving.
+
+  It also starts **facing you**. A file cannot say which way a model faces, so
+  it is worked out: the most protruding point at mid height is the nose, the
+  prow, the front — true of nearly anything modelled with a front, harmless on
+  anything without one. Averaged over the outermost few percent rather than
+  taken from one vertex, or a stray spike decides which way a head looks. On
+  `test_head.glb` that comes out at 80°, which is exactly the quarter turn it
+  needed; before it, the head opened in profile looking right.
 - **Colour is depth.** A glyph converges every particle on one size, and the
   eighth of the old size left behind is the point — it keeps letters from
   looking printed. For a solid that residue is fatal: a particle 400 px out
