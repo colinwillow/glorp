@@ -197,6 +197,19 @@ mouths a scripted reply in silence.
 - **Voice out** — ElevenLabs, through the same Worker. The reply is played
   *and* analysed, so `speaking` reads real audio rather than a syllable clock.
 
+The reply is **boosted and limited** on the way to the speakers — gain, then a
+limiter. It used to go straight from the decoder to the output at whatever level
+the voice was rendered at, which is a long way below full scale: a phone at
+maximum sounded like someone talking in the next room. Measured on a
+speech-shaped signal peaking at −16.6 dBFS, rendered through the real chain
+offline, it returns **+10.6 dB RMS** with peaks landing exactly on the limiter's
+−6 dBFS and nothing clipped. Gain alone would push the peaks into distortion; a
+compressor alone cannot make anything louder. `volume` on the slider.
+
+The analyser stays where it was, tapping the signal **before** the boost. The
+mouth animation is tuned against those numbers, and moving the tap would have
+quietly re-tuned the speaking state along with the volume.
+
 The API keys live in the Worker, never in the page — this is served from GitHub
 Pages, so anything in `index.html` is public and a leaked key is billable. The
 page only ever learns the Worker's URL, which it keeps in `localStorage`.

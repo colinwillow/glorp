@@ -126,7 +126,7 @@ const DEFAULTS = {
   dot:0.35, sizeHi:32, falloff:210, follow:1.0, split:0.46,
   splitEll:1.6, splitJaw:0.35, splitShape:1.0,
   trail:0.76, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500,
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4,
   snap:0.30, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
@@ -522,6 +522,7 @@ function answerVisual(text, ms) {
    what the drive seam was for. The scripted plan stays as the fallback for
    when no voice is configured or the request fails. */
 let ttsCtx = null, ttsAn = null, ttsSrc = null, ttsFreq = null, ttsTime = null, ttsPrev = null;
+let ttsGain = null;
 let ttsPlaying = false;
 const tts = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
 
@@ -532,7 +533,22 @@ function ensureTtsCtx() {
     ttsCtx = new (window.AudioContext || window.webkitAudioContext)();
     ttsAn = ttsCtx.createAnalyser();
     ttsAn.fftSize = 2048; ttsAn.smoothingTimeConstant = 0.62;
-    ttsAn.connect(ttsCtx.destination);
+
+    /* The reply used to go straight from the decoder to the speakers at
+       whatever level the voice was rendered at, which is a long way below full
+       scale -- a phone at maximum still sounded like someone talking in the
+       next room. Boost, then limit: gain alone would just clip the peaks into
+       distortion, and a compressor alone cannot make anything louder.
+
+       The analyser stays where it was, tapping the signal BEFORE the boost.
+       The mouth animation is tuned against those numbers, and moving the tap
+       would have quietly re-tuned the speaking state along with the volume. */
+    ttsGain = ttsCtx.createGain();
+    ttsGain.gain.value = cfg.volume;
+    const lim = ttsCtx.createDynamicsCompressor();
+    lim.threshold.value = -6; lim.knee.value = 0; lim.ratio.value = 20;
+    lim.attack.value = 0.003; lim.release.value = 0.25;
+    ttsAn.connect(ttsGain); ttsGain.connect(lim); lim.connect(ttsCtx.destination);
     ttsFreq = new Uint8Array(ttsAn.frequencyBinCount);
     ttsPrev = new Float32Array(ttsAn.frequencyBinCount);
     ttsTime = new Float32Array(ttsAn.fftSize);
@@ -620,6 +636,8 @@ async function playReply(text) {
     };
     plan = null;                          // real audio outranks the guess
     planMs = audio.duration * 1000;
+    // the slider has to reach a node that already exists, not only a new one
+    if (ttsGain) ttsGain.gain.value = cfg.volume;
     ttsPlaying = true;
     pauseSTT();
     ttsSrc.start();
@@ -726,6 +744,7 @@ const SPEC = [
     ["speakMs","speak ms",500,10000,100],
     ["sylRate","syllables / sec",1,8,0.1],
     ["echoTail","echo tail ms",0,2000,50],
+    ["volume","voice gain",1,8,0.1],
     ["snap","形 snap",0,1,0.02],
     ["flashMs","word flash ms",300,3000,50]]],
   ["audio drive", [
