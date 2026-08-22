@@ -788,6 +788,45 @@ back to software rasterisation, where the numbers are meaningless. The one cost
 that is real on a phone and not visible here is the per-frame `drawImage` of the
 WebGL canvas into the 2D one.
 
+#### The hood in front of the face
+
+Reported as looking like a normals problem, and it is not — it is the depth
+buffer being switched off, by the file.
+
+```
+"alphaMode": "BLEND",
+"doubleSided": true
+```
+
+glTF says a blended material does not write depth, and three implements that
+correctly: `depthWrite = false`. Nothing then occludes anything. Every triangle
+in the mesh blends over whatever is already in the buffer, in **index order** —
+and the back of the hood happens to come after the face in that order, so it
+lands on top of it. Double-sided doubles the number of triangles competing.
+
+Almost always this is an exporter artifact. A character is opaque; the material
+says BLEND because the tool it came out of had alpha blending on by default. And
+that is **checkable rather than assumable**: the base colour map is already
+decoded for the software fallback, so its minimum alpha is one scan away. It is
+**255** — there is no transparency anywhere in it, BLEND cannot be doing
+anything, and promoting the material to opaque is a correction rather than an
+override.
+
+If a map really does carry alpha, it is left blended and the reason is logged
+instead. Silently discarding somebody's cutouts to fix their hood would be much
+worse than the hood.
+
+The ghost had the same bug by construction — a translucent mesh that overlaps
+*itself* has no depth write either, so the far side of its hood blended over the
+near side of its face, in green. It is opaque now. "The surface has arrived, its
+colours have not" is said better by a solid surface anyway.
+
+One thing left alone: the file's `KHR_materials_specular` carries
+`specularColorFactor: [2, 2, 2]`. The glTF spec says that is a colour and should
+not exceed 1, so the highlights are running at double strength. That is a value
+in the asset and a judgement about how it should look — unlike `depthWrite`,
+which is not a matter of taste.
+
 #### What had to be built
 
 - **Skinning.** Sample the keyframe curves, walk the node tree for each joint's

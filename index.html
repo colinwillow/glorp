@@ -3398,7 +3398,7 @@ function glInit() {
    skin in JavaScript, because a dot has to have a position on the CPU to be
    drawn as a dot. Fetching it twice for that would be three and a half
    megabytes of nothing. */
-function glLoad(buf, src) {
+function glLoad(buf, src, R) {
   const T = window.THREE;
   return new Promise((res, rej) => {
     new window.GLTFLoader().parse(buf.slice(0), "", (g) => {
@@ -3412,16 +3412,56 @@ function glLoad(buf, src) {
       // never culled: the wipe means most of it is clipped away most of the
       // time, and a bounding sphere computed on the bind pose is wrong anyway
       mesh.frustumCulled = false;
+      /* The hood drawing in front of the face.
+
+         The material in this file is `alphaMode: BLEND`, and glTF says a
+         blended material does not write depth -- so three, correctly, sets
+         depthWrite false. Nothing then occludes anything: every triangle in the
+         mesh blends over whatever is already in the buffer, in index order. The
+         back of the hood happens to come after the face in that order, so it
+         lands on top of it. It reads like a normals problem and it is not; it is
+         the depth buffer being switched off.
+
+         Almost always this is an exporter artifact. A character is opaque, and
+         the material says BLEND because the DCC tool it came out of had alpha
+         blending on by default. That is checkable rather than assumable: if the
+         base colour map has no transparency anywhere in it, BLEND cannot be
+         doing anything, and promoting it to opaque is a correction rather than
+         an override. If the map really does carry alpha, it is left alone and
+         the reason is logged -- silently discarding somebody's cutouts to fix
+         their hood would be much worse than the hood. */
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const m of mats) glWipeMat(m, gl.uTex, null);
+      for (const m of mats) {
+        if (m.transparent) {
+          if (R && R.texMinAlpha >= 250) {
+            m.transparent = false; m.depthWrite = true; m.depthTest = true;
+            m.alphaTest = 0; m.needsUpdate = true;
+            console.log("orb rig: material was alphaMode BLEND with a fully " +
+                        "opaque map -- promoted to opaque so it writes depth");
+          } else {
+            m.depthWrite = true; m.needsUpdate = true;
+            console.log("orb rig: material is genuinely transparent (map alpha " +
+                        "down to " + (R ? R.texMinAlpha : "?") + "); depth " +
+                        "write forced on, self-overlap may still sort by index");
+          }
+        }
+        glWipeMat(m, gl.uTex, null);
+      }
       /* The ghost: the same geometry and the same skeleton, a second time, in
          the orb's own green. It is the "fill" step -- the surface arriving
          before its colours do -- and it is a real second mesh rather than a
          material swap because both have to be on screen at once, one above the
          other, while the texture wipe is between them. */
+      /* Opaque, not translucent. A translucent mesh that overlaps ITSELF has
+         exactly the problem above -- no depth write, so the far side of the
+         hood blends over the near side of the face -- and a ghost with its own
+         back showing through its front is not a stage, it is the same bug in
+         green. The fill step means "the surface has arrived, its colours have
+         not", and a solid surface says that better anyway. Double-sided to
+         match the file, because a hood has an inside. */
       const gm = new T.MeshStandardMaterial({
         color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
-        roughness: 0.55, metalness: 0, transparent: true, opacity: 0.72
+        roughness: 0.55, metalness: 0, side: T.DoubleSide
       });
       glWipeMat(gm, gl.uGhoHi, gl.uGhoLo);
       const ghost = new T.SkinnedMesh(mesh.geometry, gm);
@@ -3570,6 +3610,12 @@ async function bakeRigTexture(R) {
   const c2 = cv.getContext("2d", { willReadFrequently: true });
   c2.drawImage(bmp, 0, 0, cv.width, cv.height);
   const px = c2.getImageData(0, 0, cv.width, cv.height).data;
+  /* Is there any transparency in this map at all? Asked because the material
+     claims there is -- see glLoad -- and the claim is checkable rather than
+     something to take on trust. */
+  let minA = 255;
+  for (let i = 3; i < px.length; i += 4) if (px[i] < minA) { minA = px[i]; if (!minA) break; }
+  R.texMinAlpha = minA;
   const UV = R.dec.UV, T = R.dec.T, out = new Array(T.length / 3);
   for (let i = 0, f = 0; i + 2 < T.length; i += 3, f++) {
     const a = T[i], b = T[i + 1], c = T[i + 2];
@@ -3662,7 +3708,7 @@ async function showFigure(src) {
     await threeReady();
     if (glInit() === 1) {
       gl.uLo.value = lo; gl.uSpan.value = sp;
-      if (gl.src !== src || !gl.mesh) await glLoad(R.buf, src);
+      if (gl.src !== src || !gl.mesh) await glLoad(R.buf, src, R);
       gl.ready = 1;
     }
   } catch (e) { console.log("orb three:", e.message); gl.ready = 0; }
