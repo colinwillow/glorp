@@ -1880,7 +1880,11 @@ const gallery = {
   scroll: 0, vel: 0, at: 0, shots: [],
   drag: null, from: null, shrink: null,
 };
-const GRID = { cols: 3, gap: 10, edge: 12, top: 96, bot: 74 };
+/* Where the little one sits. Everything else at the top of the screen has to
+   clear it, which is why GRID.top moved down: a gallery whose first row runs
+   under the orb is two things fighting for one strip of screen. */
+const MINI_TOP = 84;
+const GRID = { cols: 3, gap: 10, edge: 12, top: 126, bot: 74 };
 
 function tileRect(k) {
   const cw = (W - GRID.edge * 2 - GRID.gap * (GRID.cols - 1)) / GRID.cols;
@@ -2136,6 +2140,84 @@ const SOLIDS = {
 /* Centre on the bounding box and scale the longest axis to 1. Without this a
    model exported in millimetres, or modelled off-origin, arrives somewhere off
    screen at a thousand times the size -- and it is never obvious which. */
+/* ---------------- the little one ----------------
+   When something else owns the field there is nothing left of Glorb on the
+   screen: a hologram, a knot, a gallery of photographs, and the thing you were
+   talking to has simply gone. Which is also why there was no way back except
+   saying so out loud -- there was nothing to touch.
+
+   So a small one sits at the top and keeps reacting. It is NOT part of the
+   field: the field is busy being a knot, and taking a hundred particles back
+   off a formation to staff a second orb would put a hole in the first. It is
+   drawn straight from `drive` -- the same seam the big one reads -- which is
+   the whole reason that seam exists. Same palette, same LUT, same swell on
+   loudness, same per-band deformation. It just has its own dots.
+
+   And it is the way home. Tapping it leaves whatever is up, so the answer to
+   "nothing makes it go away" is a thing you can see and put your thumb on. */
+const MINI_N = 130, MINI_SHELL = 92;
+const mini = { t: 0, x: 0, y: 0, r: 0 };
+/* Not while the menu is up: the menu's own hub IS the orb, reacting, and a
+   second smaller one above it says there are two of him. */
+function miniWant() {
+  return !menuOn && (gallery.on || (form3d && formWant) || photo.t > 0.5) ? 1 : 0;
+}
+function shadeAt(size) {
+  let j = ((size - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
+  if (j < 0) j = 0; else if (j > LUT_N - 1) j = LUT_N - 1;
+  return lut[j];
+}
+function drawMini(now, k) {
+  mini.t += (miniWant() - mini.t) * 0.055;
+  if (mini.t < 0.006) return;
+  const e = mini.t < 1 ? 1 - Math.pow(1 - mini.t, 3) : 1;
+  const R = Math.min(W, H) * 0.052 * (0.4 + 0.6 * e);
+  mini.x = W / 2; mini.y = MINI_TOP; mini.r = R;
+  const X = mini.x, Y = mini.y;
+  /* A shell and a core, with a dark gap between them -- because that is what
+     the big one actually IS. The first attempt drew a ring of dots shaded by
+     distance and got a bright green hoop with purple flecks in it, which is
+     nothing like Glorb: he is a fat violet halo with a small hard green centre
+     and black in between. Reproducing the two masses separately is much closer
+     than reproducing the formula that happens to produce them.
+
+     Everything below is read straight off `drive` -- the same seam the field
+     reads -- so if the big one is moving this one is moving, and if this one is
+     still then the microphone is dead. Which makes it a status light too. */
+  const sw = 1 + drive.scale * 0.5;
+  const wob = drive.turbulence * 0.20 + drive.impulse * 0.30;
+  ctx.globalAlpha = e;
+  for (let j = 0; j < MINI_SHELL; j++) {
+    // jittered, or evenly spaced dots trace a hard circle instead of a mass
+    const a = ((j + hash(j + 61) * 0.9) / MINI_SHELL) * TAU;
+    const b = drive.spectrum[(j * BANDS / MINI_SHELL) | 0] || 0;
+    const rr = R * sw * (0.86 + 0.30 * hash(j + 31) + b * 0.42 +
+                         wob * Math.sin(a * 3 + now / 260));
+    // deep on the negative half of the palette: the rim is violet and fat
+    ctx.fillStyle = shadeAt(-LUT_HI * (1.05 + 0.95 * hash(j + 7)));
+    ctx.beginPath();
+    ctx.arc(X + Math.cos(a) * rr, Y + Math.sin(a) * rr,
+            (1.5 + 1.1 * hash(j + 13)) * k, 0, TAU);
+    ctx.fill();
+  }
+  const NC = MINI_N - MINI_SHELL;
+  for (let j = 0; j < NC; j++) {
+    const a = ((j + hash(j + 71) * 0.9) / NC) * TAU;
+    // the core swells harder than the shell, which is what reads as a voice
+    const rr = R * 0.30 * (0.25 + 0.80 * hash(j + 91)) * (1 + drive.scale * 0.8);
+    ctx.fillStyle = shadeAt(LUT_HI * (0.70 + 0.35 * hash(j + 17)));
+    ctx.beginPath();
+    ctx.arc(X + Math.cos(a) * rr, Y + Math.sin(a) * rr,
+            (0.7 + 0.6 * hash(j + 23)) * k, 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+// hit target is generous: it is a way out, and a way out should be easy to find
+function miniHit(x, y) {
+  return mini.t > 0.35 && Math.hypot(x - mini.x, y - mini.y) < mini.r * 2.1;
+}
+
 function fitPoints(p) {
   if (!p.length) return p;
   const lo = [1e30, 1e30, 1e30], hi = [-1e30, -1e30, -1e30];
@@ -3130,41 +3212,72 @@ const FORMS = (() => {
            rays8: rays(8), rays16: rays(16) };
 })();
 
+/* `hue` is a shift through the SPLIT, the same one the orb's own colour rides
+   on -- not a flat rotation of the whole wheel. That is the entire fix for the
+   reds and yellows. A flat rotation moves the rim and the core together, and
+   they sit 180 degrees apart, so there is no rotation that puts the rim in the
+   blues without dropping the core into the yellows -- which is exactly what
+   `hue:110` was doing to the peony: rim to orange, core to blue. Through the
+   split the rim swings a long way and the core barely moves, so every value in
+   the range below lands somewhere between magenta and cyan with a green core,
+   and red and yellow are unreachable at any setting.
+
+     hue     rim              core
+     -40     330 pink         98  green
+       0     290 violet       108 green      <- the orb's own colour
+      40     250 blue-violet  118 green
+      80     210 cyan-blue    128 mint
+
+   No `trail`. Every shell used to carry its own, all of them well under
+   cfg.trail, so a firework smeared where nothing else in the program does --
+   which reads as a different renderer rather than as a different event. The
+   shell now clears at the same rate as everything else, and one thing that
+   fixes on its own: individual stars stay individual instead of dissolving
+   into the big cluster they were being complained about as.
+
+   `grain` is the other half of that. Every star was drawn at exactly one size,
+   and a cloud of identical dots is a texture, not a firework. */
 const SHELLS = {
-  peony:  { speed:[3.6, 8.6], shell:0.3,  spokes:0, up:2.2, gravity:0.045, drag:0.030,
-            hue:110, star:2.4, trail:0.26, flash:0.55, sparkle:0.9, dur:2400 },
+  /* Hollow now, not 0.3. A filled ball IS the big soft poof -- with the stars
+     spread evenly by area there is no front, so it reads as a cloud that grows
+     rather than as a casing that bursts. A real peony is a shell. */
+  peony:  { speed:[5.4, 8.6], shell:0.7,  spokes:0, up:2.2, gravity:0.045, drag:0.030,
+            hue:0,   star:2.4, flash:0.55, sparkle:0.9, grain:0.9, dur:2400 },
   ring:   { speed:[7.6, 8.3], shell:1,    spokes:0, up:1.2, gravity:0.030, drag:0.034,
-            hue:245, star:2.1, trail:0.20, flash:0.50, sparkle:0.5, dur:2600 },
+            hue:62,  star:2.1, flash:0.50, sparkle:0.5, grain:0.4, dur:2600 },
+  // slow, heavy, and glittering: the one that hangs
   willow: { speed:[2.8, 5.8], shell:0.6,  spokes:0, up:3.6, gravity:0.090, drag:0.010,
-            hue:88,  star:2.7, trail:0.13, flash:0.45, sparkle:0.7, dur:3200 },
+            hue:-24, star:2.9, flash:0.45, sparkle:0.5, grain:1.1, glitter:0.011, dur:3200 },
   palm:   { speed:[6.4, 9.8], shell:0.85, spokes:7, up:2.8, gravity:0.055, drag:0.026,
-            hue:170, star:2.9, trail:0.18, flash:0.50, sparkle:0.4, dur:2600 },
+            hue:78,  star:3.1, flash:0.50, sparkle:0.4, grain:0.7, dur:2600 },
   shock:  { speed:[12.5, 14], shell:1,    spokes:0, up:0,   gravity:0.020, drag:0.075,
-            hue:55,  star:3.4, trail:0.38, flash:0.85, sparkle:0,   dur:1600 },
+            hue:44,  star:3.6, flash:0.85, sparkle:0,   grain:0.3, dur:1600 },
 
   // shaped: one speed, or the outline blurs into a cloud before it reads
   /* Shaped shells hang rather than fall: gravity is what rounds an outline off,
      because the top of the figure sags toward the middle within half a second.
-     A shorter trail too -- the smear that flatters a peony fills a heart in. */
+     Low grain as well -- a size spread is texture, and texture is the enemy of
+     an outline. */
   valentine: { speed:[8.0, 8.6], shell:1, spokes:0, up:0.8, gravity:0.008, drag:0.020,
-               form:"heart", hue:30, star:2.5, trail:0.34, flash:0.5, sparkle:0.5, dur:3000 },
+               form:"heart", hue:-38, star:2.5, flash:0.5, sparkle:0.5, grain:0.3, dur:3000 },
   nova:      { speed:[8.2, 8.8], shell:1, spokes:0, up:0.8, gravity:0.008, drag:0.020,
-               form:"star", hue:325, star:2.4, trail:0.32, flash:0.55, sparkle:0.8, dur:2800 },
+               form:"star", hue:18, star:2.4, flash:0.55, sparkle:0.8, grain:0.3, dur:2800 },
   pinwheel:  { speed:[7.4, 8.0], shell:1, spokes:0, up:0.5, gravity:0.010, drag:0.024,
-               swirl:0.75, hue:135, star:2.3, trail:0.30, flash:0.45, sparkle:0.3, dur:2900 },
+               swirl:0.75, hue:52, star:2.3, flash:0.45, sparkle:0.3, grain:0.3, dur:2900 },
 
   /* Straight-edged. These read as figures rather than as explosions, which is
      the whole reason they are here: a display of six round bursts is one burst
      six times. Low drag and almost no gravity, because an outline only survives
      as long as nothing is pulling parts of it around. */
   prism:  { speed:[8.2, 8.6], shell:1, spokes:0, up:0.5, gravity:0.005, drag:0.014,
-            form:"tri", formPow:3.0, hue:265, star:2.5, trail:0.36, flash:0.5, sparkle:0.2, dur:3000 },
+            form:"tri", formPow:3.0, hue:30, star:2.5, flash:0.5, sparkle:0.2, grain:0.25, dur:3000 },
   frame:  { speed:[8.0, 8.4], shell:1, spokes:0, up:0.4, gravity:0.005, drag:0.014,
-            form:"square", formPow:4.2, hue:200, star:2.4, trail:0.36, flash:0.5, sparkle:0.2, dur:3000 },
+            form:"square", formPow:4.2, hue:72, star:2.4, flash:0.5, sparkle:0.2, grain:0.25, dur:3000 },
   spokes: { speed:[7.6, 8.2], shell:1, spokes:0, up:0.4, gravity:0.004, drag:0.012,
-            form:"rays16", hue:15, star:2.6, trail:0.40, flash:0.55, sparkle:0.15, dur:3200 },
+            form:"rays16", hue:36, star:2.6, flash:0.55, sparkle:0.15, grain:0.25,
+            glitter:0.016, dur:3200 },
   crown:  { speed:[7.8, 8.4], shell:1, spokes:0, up:1.0, gravity:0.006, drag:0.016,
-            form:"rays8", swirl:0.28, hue:95, star:2.6, trail:0.38, flash:0.5, sparkle:0.2, dur:3200 }
+            form:"rays8", swirl:0.28, hue:88, star:2.6, flash:0.5, sparkle:0.2, grain:0.25, dur:3200 }
 };
 
 /* A ring reads at 400 particles; a sky full of sparks does not. Borrowed for
@@ -3216,7 +3329,9 @@ function fireShell(name) {
   firing.flashAt = now;
   // the palette's far colour rotated the way the shell rotates it, but pale:
   // a saturated wash reads as a filter over the scene, a pale one as light
-  firing.flashRgb = toRgb(255, 168, 255, s.hue).slice(4, -1);
+  // negated, because hue is now a shift through the split and the rim moves
+  // opposite to it -- the wash has to be the colour of the light in the shell
+  firing.flashRgb = toRgb(255, 168, 255, -s.hue).slice(4, -1);
   return true;
 }
 
@@ -3527,13 +3642,24 @@ const onMove = (e) => {
 /* Down highlights, up picks -- so a thumb can slide between them and land
    somewhere deliberate, rather than firing whatever it touched first. */
 const onPick = (e) => {
-  if (!menuOn) return;
   const t = e.changedTouches ? e.changedTouches[0] : e;
-  const k = menuNear(t.clientX, t.clientY);
-  if (k >= 0) { e.preventDefault(); menuPick(k); }
-  // and anywhere else closes it. A menu you can only leave by choosing from it
-  // is a corner, and the empty middle of one is exactly where a thumb lands.
-  else if (formT > 0.35) { e.preventDefault(); goHome(""); }
+  /* The little one is the way back, from anything. It is the only thing on
+     screen during a hologram or a gallery that is still obviously Glorb, so it
+     is the thing a thumb goes to -- and until it existed the only way out of a
+     knot was to say so out loud. */
+  if (miniHit(t.clientX, t.clientY)) { e.preventDefault(); goHome(""); return; }
+  if (menuOn) {
+    const k = menuNear(t.clientX, t.clientY);
+    if (k >= 0) { e.preventDefault(); menuPick(k); }
+    // and anywhere else closes it. A menu you can only leave by choosing from it
+    // is a corner, and the empty middle of one is exactly where a thumb lands.
+    else if (formT > 0.35) { e.preventDefault(); goHome(""); }
+    return;
+  }
+  /* A model or a hologram has nothing else to touch, so a tap anywhere leaves
+     it. Not the gallery -- there a tap is how you open a picture -- and not a
+     word, which is gone in half a second anyway. */
+  if (!gallery.on && form3d && formWant && formT > 0.35) { e.preventDefault(); goHome(""); }
 };
 /* Swipe, while a gallery is up. Horizontal for the next picture, vertical for
    out -- the two gestures a phone has already taught everybody. Measured from
@@ -3566,6 +3692,10 @@ const onUp = (e) => {
   gallery.drag = null;
   if (!gallery.on || !swipe.t) return;
   const t = e.changedTouches ? e.changedTouches[0] : e;
+  /* The little one is handled by onPick, which runs after this. Without this
+     line a tap on it while a picture is open shrinks the picture here AND goes
+     home there -- one tap doing two different things. */
+  if (miniHit(t.clientX, t.clientY)) { swipe.t = 0; return; }
   const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
   const took = performance.now() - swipe.t;
   swipe.t = 0;
@@ -3781,8 +3911,14 @@ function loop() {
      reaches its full swing when something is genuinely loud. Which is the one
      time the wild colours are wanted. */
   const hu = Math.max(0, Math.min(1, (drive.scale - 0.22) / 0.58));
-  const shift = Math.round(drive.hue * cfg.hueGain * 28 * (hu * hu * (3 - 2 * hu)) + museHue);
-  const flat = bs ? bs.hue : 0;
+  /* A shell's own colour, through the SAME split the voice rides on rather than
+     as a flat rotation of the whole wheel -- see the note on SHELLS. Flat is
+     how the peony ended up orange and the shock ended up red. It replaces the
+     audio shift rather than adding to it: a firework is loud by definition, and
+     the two together walked straight back out of the palette. */
+  const shift = bs ? bs.hue
+              : Math.round(drive.hue * cfg.hueGain * 28 * (hu * hu * (3 - 2 * hu)) + museHue);
+  const flat = 0;
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || flat !== lastFlat || lo !== LUT_LO) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift, flat);
@@ -4143,7 +4279,10 @@ function loop() {
     }
   }
 
-  ctx.fillStyle = "rgba(11,11,11," + (bs ? bs.trail : cfg.trail) + ")";
+  /* One trail, always. A shell used to bring its own -- 0.13 to 0.40 against
+     the orb's 0.46 -- so a firework smeared where nothing else does, and the
+     smear is most of what turned discrete stars into one big cluster. */
+  ctx.fillStyle = "rgba(11,11,11," + cfg.trail + ")";
   ctx.fillRect(0, 0, W, H);
 
   const span = LUT_HI - LUT_LO;
@@ -4283,7 +4422,7 @@ function loop() {
        comes from |size|, and size is now carrying depth as a colour -- and the
        magenta half of the palette is stretched 2.4x to reach it, which would
        otherwise make the FAR side of a model the fattest thing on screen. */
-    let rad = bs ? bs.star * k
+    let rad = bs ? bs.star * k * (bs.grain ? 1 - bs.grain * 0.5 + bs.grain * hash(i + 5) : 1)
             /* A hologram has to be able to be faint. A solid draws every star
                the same size, which is right when size is carrying depth and
                wrong when it is carrying brightness -- the unlit lattice would
@@ -4299,6 +4438,12 @@ function loop() {
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
     // thing a firework never looks like
     if (bs && bs.sparkle) rad *= 1 + bs.sparkle * (Math.random() - 0.42) * 1.2;
+    /* Glitter is not sparkle. Sparkle is per-frame noise on the radius, which
+       reads as a shimmering surface; glitter is each star on its own slow
+       cycle, which reads as a sky full of separate points going in and out.
+       It is what makes a willow a willow rather than a slow green cloud. */
+    if (bs && bs.glitter)
+      rad *= 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(now * bs.glitter + hash(i + 11) * TAU));
     // the one under your thumb swells, which is the only feedback a field of
     // dots can give that reads as "this one"
     if (menuOn && menuHit >= 0 && menuGroup[i] === menuHit) rad *= 1 + 0.9 * formT;
@@ -4541,6 +4686,7 @@ function loop() {
   }
 
   drawGallery(dt);
+  drawMini(now, k);
 
   /* The photograph, in the rectangle its own drawing occupied. Drawn after the
      particles so the field reads as being behind it, and never scaled past the

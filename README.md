@@ -440,7 +440,7 @@ sizes, which is what they are.
 Say **images** and you get a grid: three across, a row at a time sliding in from
 alternating sides, drag to scroll with inertia, tap one to open it, swipe
 sideways between them, tap again — or swipe down — to shrink it back to the grid,
-**home** to leave. It stays until you leave it.
+**home** to leave, or tap the little orb at the top. It stays until you leave it.
 
 The entrance alternated per **tile** first, which with three columns means both
 directions inside every row and a separate start time for each, so the grid
@@ -664,6 +664,51 @@ its own colour is passed as `flat`, outside the split.
 
 ---
 
+### The little one
+
+Something else owns the field -- a hologram, a knot, a gallery of photographs --
+and there is nothing left of Glorb on the screen. The thing you were talking to
+has simply gone, which is also why there was no way back except saying so out
+loud: there was nothing to touch.
+
+So a small one sits at the top and keeps reacting.
+
+It is **not part of the field.** The field is busy being a knot, and taking a
+hundred particles back off a formation to staff a second orb puts a hole in the
+first. It is drawn straight from `drive` -- the same one-way seam the big one
+reads -- which is the whole reason that seam exists. Same LUT, same palette,
+same swell on level, same per-band deformation around the ring. It just has its
+own dots, and there are 130 of them.
+
+The first version drew a ring of dots shaded by distance from the ring surface,
+which is what the field does, and got a bright green hoop with a few purple
+flecks in it. Nothing like Glorb. He is a **fat violet halo with a small hard
+green centre and black in between** -- so the second version draws those two
+masses separately, 92 shell dots deep on the negative half of the palette and 38
+core dots at the top of the positive half. Reproducing the two masses is much
+closer than reproducing the formula that happens to produce them.
+
+Measured with the gallery up and the mic tape running, one second per bucket:
+
+```
+peak 0.44  0.44  0.44  0.44  0.44  0.43  0.00  0.00  0.00
+mean 0.15  0.18  0.19  0.18  0.17  0.11  0.00  0.00  0.00
+```
+
+Which is the point of it: if the big one is reacting this one is reacting, and
+if this one is still then the microphone is dead. It is a status light as well
+as a presence.
+
+**And it is the way home.** Tapping it leaves whatever is up. It is not shown
+during the menu, because the menu's own hub *is* the orb and a second smaller
+one above it says there are two of him.
+
+A model or a hologram has nothing else on screen to touch, so a tap anywhere
+leaves those too. Not the gallery -- there a tap is how you open a picture --
+and not a word, which is gone in half a second anyway.
+
+---
+
 ## Shells
 
 A celebration is not a picture of a firework, it is one. Nothing is drawn: the
@@ -672,11 +717,11 @@ decay make of it, which is why `congratulations` and `boom` do not look alike.
 
 | word | shell | what it does |
 | --- | --- | --- |
-| `congratulations` `congrats` `yay` `woohoo` `bravo` | peony | gold, a filled ball with radial streaks |
-| `celebrate` | ring | cyan, every star at one speed so it opens as a clean expanding circle |
-| `birthday` | willow | orange, slow and heavy, long drooping arcs that hang and fall |
-| `party` | palm | green, seven thick fingers instead of a cloud |
-| `boom` `blast` | shock | hot pink, one enormous fast shockwave, brief |
+| `congratulations` `congrats` `yay` `woohoo` `bravo` | peony | violet, a hollow casing with radial streaks |
+| `celebrate` | ring | blue, every star at one speed so it opens as a clean expanding circle |
+| `birthday` | willow | magenta, slow and heavy, glittering, long drooping arcs |
+| `party` | palm | cyan-blue, seven thick fingers instead of a cloud |
+| `boom` `blast` | shock | blue-violet, one enormous fast shockwave, brief |
 | `fireworks` | five in sequence | peony, spokes, valentine, frame, willow |
 | `finale` | seven in sequence | opens on the shock |
 
@@ -692,13 +737,13 @@ angle, and the expanding front carries the outline out with it.
 
 | shell | shape |
 | --- | --- |
-| `valentine` | a heart, hot pink |
+| `valentine` | a heart, pink |
 | `nova` | a five-pointed star, violet |
-| `pinwheel` | a ring given tangential speed, so it opens turning |
+| `pinwheel` | a ring given tangential speed, so it opens turning — blue |
 | `prism` | a triangle, indigo |
-| `frame` | a square, cyan — opens hollow, with an X of slow stars in the middle |
-| `spokes` | sixteen needle-thin rays, orange |
-| `crown` | eight rays given a slight turn, lime |
+| `frame` | a square, blue — opens hollow, with an X of slow stars in the middle |
+| `spokes` | sixteen needle-thin rays, violet-blue, glittering |
+| `crown` | eight rays given a slight turn, cyan |
 
 How hard to exaggerate a figure is per-shell (`formPow`), because it depends on
 the figure. A heart spans 0.66 to 1.39 and needs a little. A square spans corner
@@ -708,6 +753,51 @@ exaggerated into points before a field of dots reads it as having corners.
 
 The straight-edged ones run almost no gravity and very little drag, because an
 outline only survives as long as nothing is pulling parts of it around.
+
+### One trail, one palette
+
+Three complaints about the fireworks, and two of them turned out to be the same
+mistake made twice.
+
+**The trail did not match.** Every shell carried its own -- 0.13 to 0.40 against
+the orb's 0.46 -- so a firework smeared where nothing else in the program does,
+which reads as a different renderer rather than as a different event. There is
+one trail now. It also fixed the third complaint on its own: a long smear is
+what turned discrete stars into the *big soft clusters* they were being reported
+as, and at 0.46 individual stars stay individual.
+
+**The colour was leaving the palette.** `hue` was a flat rotation of the whole
+wheel, and the whole point of the palette work was that a flat rotation cannot
+be kept in the blues -- the rim and the core sit 180 degrees apart, so pushing
+one somewhere good pushes the other somewhere bad. `hue:110` on the peony meant
+rim to **orange** and core to blue; the shock at 55 came out red. A shell's
+colour now goes through the **same split** the voice rides on, where the rim
+swings a long way and the core barely moves:
+
+| hue | rim | core |
+|---|---|---|
+| −40 | 330 pink | 98 green |
+| 0 | 290 violet | 108 green |
+| 40 | 250 blue-violet | 118 green |
+| 80 | 210 cyan-blue | 128 mint |
+
+Red and yellow are unreachable at any value. It **replaces** the audio shift
+rather than adding to it -- a firework is loud by definition, and the two
+together walked straight back out of the palette.
+
+Three more things for the "they are all just big poofs" half:
+
+- **The peony is hollow.** `shell: 0.3` spreads the stars evenly by area, which
+  means there is no front -- so it reads as a cloud that grows rather than as a
+  casing that bursts. A real peony is a shell. It is 0.7 now.
+- **`grain`** varies star size per particle. Every star used to be drawn at
+  exactly one size, and a cloud of identical dots is a texture, not a firework.
+  High on the round ones, near zero on the shaped ones, because a size spread is
+  texture and texture is the enemy of an outline.
+- **`glitter`** is not `sparkle`. Sparkle is per-frame noise on the radius,
+  which reads as a shimmering surface; glitter is each star on its own slow
+  cycle, which reads as a sky full of separate points going in and out. It is
+  what makes a willow a willow rather than a slow cloud.
 
 Two things the heart needed that the star did not. It is **centred on its own
 bounding box** first: the parametric heart's origin sits up near the cleft, not
