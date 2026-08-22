@@ -428,6 +428,30 @@ One particle per sampled point, so the count follows the drawing: ❤️ samples
 about 470 points, 😀 to 1800, 🎉 to 1700. The orb borrows particles for the
 duration and hands them back after.
 
+### The drawing hands over to the picture
+
+Say **images** — or pick it from the menu, or `/show gallery` — and the particles
+trace one, then the photograph itself fades up in exactly the rectangle the
+drawing occupied, and the particles let go and fall back to the orb behind it.
+Swipe sideways for the next one, down to leave.
+
+This is the point the formation system had been walking toward without saying
+so: **the field is a way of announcing a thing, not a substitute for it.** A
+drawing made of dots is a beautiful way to say *a photograph is coming*; it is a
+poor photograph. Nothing is thrown away — the drawing is the transition, the
+photograph is the destination, and for about a second you can see the dots
+through the picture, which is the only frame in which it is obvious that one
+became the other.
+
+The sampler already fits every picture into 94% of a square, so reproducing that
+fit puts the bitmap exactly where its own drawing stood. That is the whole trick;
+there is no second coordinate system.
+
+One bug worth keeping. `photo.img` is cleared once the fade has run out, and
+that cleanup ran on the very frame after the picture was handed over — throwing
+it away before its own fade-in had started. Alpha climbing, correctly, on
+nothing at all. A pending fade now blocks the clear.
+
 ### Pictures
 
 A drawing is a glyph the font does not have. Drop a PNG into `images/` and

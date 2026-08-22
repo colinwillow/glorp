@@ -964,7 +964,8 @@ say.addEventListener("keydown", (e) => {
   if (text.toLowerCase().startsWith("/show")) {
     const what = text.slice(5).trim(), key = what.toLowerCase();
     if (key === "home" || key === "back") { goHome("home"); return; }
-    if (key === "images") {
+    if (key === "gallery" || key === "images") { showGallery(0); return; }
+    if (key === "list") {
       /* Nothing about a missing folder is visible: the brain is simply never
          told, and a picture nobody offers looks exactly like a picture that
          will not draw. So it can be asked. */
@@ -1697,6 +1698,20 @@ async function listImages() {
 }
 listImages();
 
+/* ---------------- the picture itself ----------------
+   The particles trace a picture, and then the picture arrives. Which is the
+   point the whole formation system has been walking toward without saying so:
+   the field is a way of ANNOUNCING a thing, not a substitute for it. A drawing
+   made of dots is a beautiful way to say "a photograph is coming"; it is a poor
+   photograph.
+
+   So the bitmap fades up over the drawing it was sampled from, in exactly the
+   rectangle the drawing occupies -- the sampler already fitted it to 94% of a
+   square, so the same fit reproduces the same box -- and once it is up the
+   particles let go and fall back to the orb behind it. Nothing is thrown away:
+   the drawing is the transition, the photograph is the destination. */
+const photo = { img: null, t: 0, want: 0, half: [1, 1], at: 0 };
+
 const imageCache = {};
 async function showImage(src, seconds) {
   const key = src.toLowerCase();
@@ -1716,6 +1731,11 @@ async function showImage(src, seconds) {
         });
         const pts = imageToPoints(img);
         if (!pts.length) throw new Error("nothing in it once the background came off");
+        /* The bitmap, and the box it was fitted into. Both, because the drawing
+           has to hand over to something that lands in the same place. */
+        pts.img = img;
+        pts.half = [img.width >= img.height ? 0.94 : (img.width / img.height) * 0.94,
+                    img.height >= img.width ? 0.94 : (img.height / img.width) * 0.94];
         imageCache[key] = pts;
         last = null;
         break;
@@ -1733,10 +1753,49 @@ async function showImage(src, seconds) {
   /* Bigger than a word, and past the wall. A picture is the thing being looked
      at, not a caption on the orb -- at the glyph scale a whole character came
      out a third of the height of the screen. */
-  const ok = setFormation({ points: imageCache[key], label: src, fs: 0.66, wide: 1 },
-                          seconds || 8);
-  if (ok) caption(null, "showing " + src + " · " + imageCache[key].length + " points");
+  const hit = imageCache[key];
+  const ok = setFormation({ points: hit, label: src, fs: 0.66, wide: 1 }, seconds || 22);
+  if (!ok) return false;
+  caption(null, src + " · " + hit.length + " points");
+  /* A beat for the drawing to land and be read as a drawing, then the picture.
+     Any less and the two are one event and the dots were pointless; any more
+     and it feels like waiting. */
+  photo.img = hit.img; photo.half = hit.half; photo.want = 0; photo.at = performance.now() + 1500;
+  return true;
+}
+
+function clearPhoto() { photo.want = 0; photo.at = 0; }
+
+/* ---------------- the gallery ----------------
+   Once a picture is on screen this is a place you are looking at things, not a
+   visualiser that happened to draw one. So it behaves like one: a list, a
+   position in it, and a swipe. */
+const gallery = { on: false, i: 0 };
+
+async function showGallery(startAt) {
+  const list = await listImages();
+  if (!list.length) { caption(null, "no pictures found — images/ is empty or not committed"); return false; }
+  gallery.on = true;
+  gallery.i = ((startAt || 0) % list.length + list.length) % list.length;
+  return galleryShow();
+}
+
+async function galleryShow() {
+  const list = imageList || [];
+  if (!list.length) return false;
+  clearPhoto();
+  const nm = list[gallery.i];
+  const ok = await showImage(nm, 40);
+  if (ok) caption(null, nm + "  ·  " + (gallery.i + 1) + " of " + list.length + "  ·  swipe");
   return ok;
+}
+
+function galleryGo(d) {
+  const list = imageList || [];
+  if (!gallery.on || !list.length) return false;
+  gallery.i = ((gallery.i + d) % list.length + list.length) % list.length;
+  galleryShow();
+  return true;
 }
 
 /* ---------------- solids ----------------
@@ -2442,6 +2501,7 @@ function faceGlyph() {
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
   hologram:{seq:true}, holo:{holo:true}, projection:{seq:true},
+  images:{gallery:true}, gallery:{gallery:true}, pictures:{gallery:true},
   // and back out of any of it
   home:{home:true}, back:{home:true}, stop:{home:true}, cancel:{home:true},
   nevermind:{home:true}, exit:{home:true}, dismiss:{home:true}, reset:{home:true},
@@ -2506,7 +2566,7 @@ const MENU = [
   { label: "fireworks", act: { show: [["peony", 0], ["nova", 760], ["valentine", 1520],
                                       ["pinwheel", 2280], ["willow", 3060]] } },
   { label: "about",     act: { text: "GLORB" } },
-  { label: "images",    act: { image: "glorb" } }
+  { label: "images",    act: { gallery: true } }
 ];
 
 const menuGroup = new Int8Array(MAX);      // -1 hub or arm, 0..n satellite
@@ -2579,6 +2639,7 @@ function menuPoints() {
    cancelled once it started. */
 function goHome(why) {
   stopSequence();
+  gallery.on = false; clearPhoto();
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
   formWant = 0; formUntil = 0; solidWant = 0;
@@ -2934,7 +2995,7 @@ function feedWords(finalText, interimText) {
     /* Commands, always. Saying "menu" or "hologram" is asking for a thing. */
     const trig = TRIGGERS[w2];
     if (trig && trig.home) { goHome(""); echoSeen = settled; return; }
-    if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq)) {
+    if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq || trig.gallery)) {
       setFormation(trig, 10); continue;
     }
     /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
@@ -2960,11 +3021,13 @@ function setFormation(spec, seconds) {
      may replace it, since that is a deliberate choice rather than a collision. */
   if (spec && spec.home) return goHome("");
   const owned = (form3d || menuOn) && formWant;
-  if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo || spec.seq))) return false;
+  if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo ||
+                          spec.seq || spec.gallery))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
+  if (spec && spec.gallery) { showGallery(0); return true; }
   if (spec && spec.seq) { showSequence(spec.seq === true ? "" : spec.seq); return true; }
   if (spec && spec.holo) { showHologram(spec.holo === true ? "" : spec.holo, seconds || 26); return true; }
   if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
@@ -3147,6 +3210,30 @@ const onPick = (e) => {
   // is a corner, and the empty middle of one is exactly where a thumb lands.
   else if (formT > 0.35) { e.preventDefault(); goHome(""); }
 };
+/* Swipe, while a gallery is up. Horizontal for the next picture, vertical for
+   out -- the two gestures a phone has already taught everybody. Measured from
+   where the finger went down rather than tracked continuously, because the
+   pictures are whole images and there is nothing to drag. */
+const swipe = { x: 0, y: 0, t: 0 };
+const onDown = (e) => {
+  const t = e.changedTouches ? e.changedTouches[0] : e;
+  swipe.x = t.clientX; swipe.y = t.clientY; swipe.t = performance.now();
+};
+const onUp = (e) => {
+  if (!gallery.on || !swipe.t) return;
+  const t = e.changedTouches ? e.changedTouches[0] : e;
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+  const took = performance.now() - swipe.t;
+  swipe.t = 0;
+  if (took > 900) return;                       // a rest, not a flick
+  const far = Math.min(W, H) * 0.12;
+  if (Math.abs(dx) > far && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); galleryGo(dx < 0 ? 1 : -1); }
+  else if (dy > far && dy > Math.abs(dx)) { e.preventDefault(); goHome(""); }
+};
+["pointerdown", "touchstart"].forEach(ev =>
+  canvas.addEventListener(ev, onDown, { passive: true }));
+["pointerup", "touchend"].forEach(ev => canvas.addEventListener(ev, onUp));
+
 const onLeave = () => { mx = my = -9999; };
 ["pointermove","touchstart","touchmove"].forEach(ev =>
   canvas.addEventListener(ev, onMove, { passive:true }));
@@ -3232,6 +3319,17 @@ function loop() {
   // the cloud lands first and holds for a beat, then the mesh draws itself in
   const wireWant = formE && formWant && now > wireAt ? (formHasB ? 1 : cfg.wire) : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
+  /* The picture comes up, and the drawing that announced it stands down. Both
+     are eased, and they overlap: for about a second you can see the dots
+     through the photograph, which is the only frame in which it is obvious that
+     one became the other. */
+  if (photo.at && now > photo.at) { photo.want = 1; photo.at = 0; }
+  photo.t += (photo.want - photo.t) * (1 - Math.pow(1 - 0.022, dt / 16.67));
+  // ...but not while one is still waiting its beat. This cleanup ran on the very
+  // next frame after the picture was handed over and threw it away before its
+  // own fade-in had started: alpha climbing on nothing at all.
+  if (photo.t < 0.002 && !photo.want && !photo.at) { photo.t = 0; photo.img = null; }
+  if (photo.t > 0.55 && formWant && formLabel && photo.img) formWant = 0;
   // the surface fills in behind the outline, and drains back out of it
   solidT += ((formTri && formWant ? solidWant : 0) - solidT) *
             (1 - Math.pow(1 - 0.026, dt / 16.67));
@@ -4069,6 +4167,23 @@ function loop() {
       ctx.fillStyle = g2;
       ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
     }
+  }
+
+  /* The photograph, in the rectangle its own drawing occupied. Drawn after the
+     particles so the field reads as being behind it, and never scaled past the
+     screen: a picture is for looking at. */
+  if (photo.t > 0.004 && photo.img) {
+    const s5 = scale * 0.66;
+    let hw = photo.half[0] * s5, hh = photo.half[1] * s5;
+    const room = Math.min((W * 0.92) / (hw * 2), (H * 0.78) / (hh * 2), 1.6);
+    hw *= room; hh *= room;
+    ctx.save();
+    ctx.globalAlpha = photo.t;
+    // up from where the drawing stood, a little, so it arrives rather than cuts
+    const rise = (1 - photo.t) * scale * 0.03;
+    ctx.drawImage(photo.img, cx - hw, cy - hh + rise, hw * 2, hh * 2);
+    ctx.restore();
+    ctx.globalAlpha = 1;
   }
 
   /* Labels in text, not particles. Six words spelled in dots at this size are
