@@ -115,19 +115,14 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:399, radius:0.19, rateX:14000, rateY:23500, bloom:0.43, fit:0.75, contain:0.56,
-  shape:2.35, shapeGain:1.35, core:0.18, coreR:0.18, drift:0.45,
-  depth:1.0, spin:0.34, tilt:0.16, solid:1.0, wire:1.0, muse:1.0, share:0.62, idleS:35,
-  speedLo:1, speedHi:3, forceRatio:0.195, fleeRadius:180, fleeMult:4.6,
-  rmsGain:1.2, specGain:0.7, membrane:0.8, ellipse:0.4, jaw:0.8, gate:1.0, gateFloor:0.06,
-  kickShape:1.0,
-  falloffGain:1.7, turbGain:1.1, impulseGain:2.7, hueGain:2.55,
-  attack:0.35, release:0.11, dbMargin:12, dbRange:34,
-  dot:0.35, sizeHi:32, falloff:210, follow:1.0, split:0.46,
-  splitEll:1.6, splitJaw:0.35, splitShape:1.0,
-  trail:0.76, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4,
-  snap:0.30, flashMs:1100
+  count:4777, radius:0.16, rateX:14000, rateY:23500, bloom:0.6, fit:0.75, contain:0.56,
+  shape:7, shapeGain:0, core:0.1, coreR:0.19, drift:0.44, depth:0, spin:0, tilt:0, solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
+  speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
+  rmsGain:0.9, specGain:0.5, membrane:0.1, ellipse:1, jaw:1.05, gate:1, gateFloor:0.09, kickShape:0,
+  falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55, attack:0.34, release:0.16, dbMargin:9, dbRange:31,
+  dot:0.65, sizeHi:26, falloff:70, follow:1, split:0.46, splitEll:0, splitJaw:0, splitShape:0,
+  trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4, snap:0.3, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -1021,6 +1016,33 @@ micBtn.onclick = async () => {
     errBox.textContent = (e.name || "Error") + ": " + (e.message || String(e));
   }
 };
+/* Coming back to it. iOS suspends an AudioContext the moment the app goes to
+   the background and does not resume it on return -- the analyser then reads a
+   dead stream and the orb sits there deaf with the mic button still saying
+   live. Speech recognition is stopped outright, and its onend restart is not
+   reached because the page was hidden when it fired.
+
+   Everything here is a resume rather than a request: the permission is still
+   granted, so none of it needs another gesture. Only a track that has actually
+   ENDED does, and that is worth saying rather than silently doing nothing. */
+function wake() {
+  if (document.visibilityState !== "visible") return;
+  if (A && A.ac && A.ac.state === "suspended") A.ac.resume();
+  if (ttsCtx && ttsCtx.state === "suspended") ttsCtx.resume();
+  if (A && A.stream && A.stream.getAudioTracks().some((t) => t.readyState === "ended")) {
+    micState = "denied"; A = null;
+    micBig.classList.remove("off"); micBig.style.animation = "";
+    micBtn.style.display = ""; micBtn.textContent = "retry mic";
+    caption("", "the mic was released while this was in the background — tap to start it again");
+    return;
+  }
+  // recognition stops on its own and its onend restart never fires while hidden
+  if (recOn && rec && !sttPaused) { try { rec.start(); } catch (e) { /* already running */ } }
+}
+document.addEventListener("visibilitychange", wake);
+window.addEventListener("pageshow", wake);
+window.addEventListener("focus", wake);
+
 frzBtn.onclick = () => {
   frozen = !frozen;
   frzBtn.textContent = frozen ? "frozen" : "freeze";
@@ -2658,8 +2680,15 @@ function loop() {
       // bloom scatters a target across radii, which is depth on a ring and just
       // noise on an arc
       const bl = cfg.bloom * (1 - mu * 0.8) * (held ? 1 : 1 - formT * 0.85);
-      const sqx = 1 - bl + bl * Math.sin(frame / cfg.rateX * i);
-      const sqy = 1 - bl + bl * Math.cos(frame / cfg.rateY * i);
+      /* Phase runs off the index, so raising the count used to raise the
+         frequency of the bloom wave with it -- 900 particles gave a slow fold
+         across the ring and 4777 gave a fine scatter, and the same numbers no
+         longer meant the same look. Normalised against a reference count, so
+         count is density again and rateX/rateY keep what they were tuned to.
+         900 because that is what the mouth preset was built at. */
+      const ph = i * (900 / n);
+      const sqx = 1 - bl + bl * Math.sin(frame / cfg.rateX * ph);
+      const sqy = 1 - bl + bl * Math.cos(frame / cfg.rateY * ph);
       let tx = cx + ux * ringR * sqx * ex;
       let ty = cy + uy * ringR * sqy * ey;
       /* The free particles part rather than surround. A ring big enough to

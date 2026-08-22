@@ -215,6 +215,15 @@ Pages, so anything in `index.html` is public and a leaked key is billable. The
 page only ever learns the Worker's URL, which it keeps in `localStorage`.
 Setup is in [`worker/README.md`](worker/README.md).
 
+**Coming back to it.** iOS suspends the AudioContext the moment the app goes to
+the background and does not resume it on return — the analyser then reads a dead
+stream and the orb sits there deaf with the mic still saying live. Speech
+recognition is stopped outright, and its `onend` restart never runs because the
+page was hidden when it fired. `visibilitychange`, `pageshow` and `focus` all
+resume it. None of that needs another gesture: the permission is still granted,
+so it is a resume, not a request. Only a track that has actually **ended** needs
+a tap, and that says so rather than silently doing nothing.
+
 Recognition is deafened while the orb talks, or it hears itself through the
 speaker and answers its own reply forever. `abort()` rather than `stop()`,
 because `stop()` finalises whatever is pending — which at that moment is the
@@ -713,7 +722,8 @@ value that was current at the time.
 | `gate` | 1 fades deformation in with level; 0 leaves it always on. Centroid is centred on 0.5 but reads 0 at silence, so ungated the resting orb sits at one extreme. |
 | `hueGain` | At 2.55 the centroid rotates the palette ~230°, enough that green and purple swap. Lower it if the negative-space ring should read consistently. |
 | `attack` / `release` | Fast attack, slow release. Equal values look like a VU meter. |
-| `count` | Not just density — it sets the top of the index range, so it changes the wave's character. |
+| `count` | Density, and only density now. Bloom's phase runs off the particle index, so raising the count used to raise the frequency of the wave with it — 900 particles gave a slow fold across the ring and 4,777 gave a fine scatter, and the same numbers stopped meaning the same look. Normalised against a reference of 900, which is what the mouth preset was built at. |
+| `bloom` ↔ resting size | **The knob for a small, lopsided resting orb.** Bloom smears each target across `1-bloom … 1`, so its *mean* is `1-bloom`: at 0.6 the average target sits at 40% of the ring radius and the field collapses inward. Measured on the mouth silhouette at radius 0.16 — bloom 0.6 gives a mean particle radius of 18 px and reads as a lopsided smear; 0.28 gives 31 px and reads as a green core inside a magenta mouth. |
 | `drift` | How far the resting silhouette wanders on its own. Two slow sines whose periods do not divide into each other, so it drifts rather than ticks; it fades out the moment level rises, because drift is what the orb does when nothing else is asking. 0 holds one shape, which is what the older presets pin. |
 
 ---
