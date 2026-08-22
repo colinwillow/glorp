@@ -120,6 +120,7 @@ const DEFAULTS = {
   speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
   rmsGain:0.9, specGain:0.5, membrane:0.1, membGain:1.7, ellipse:1, jaw:1.05, gate:1, gateFloor:0.05, kickShape:0,
   falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55, attack:0.34, release:0.16, dbMargin:2, dbRange:18,
+  autoWord:0,
   dot:0.52, sizeHi:26, falloff:70, follow:1, split:0.44, splitEll:0, splitJaw:0, splitShape:0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
   vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4, snap:0.3, flashMs:1100
@@ -542,7 +543,14 @@ async function ask(text) {
   if (!spoke) { planSpeech(full); reportTiming(); }
   setState("speaking");
   if (pendingShow) flashAtWord(pendingShow, full, planMs);
-  if (echoMode === 2 && !shown) answerVisual(full, planMs);
+  /* Muted. Duet used to pick the longest word out of every reply and spell it,
+     which means a picture on every answer whether or not there was anything
+     worth picturing -- and the field cannot be a word and a mouth at once, so
+     the cost of a picture nobody asked for is the reaction to the voice saying
+     it. Drawing a word is worth keeping for when the reply turns on one: a
+     name, a colour, a number. That is a judgement, and the longest word in the
+     sentence is not it. The machinery stays; nothing calls it. */
+  if (cfg.autoWord > 0.5 && echoMode === 2 && !shown) answerVisual(full, planMs);
 }
 
 /* A glimpse, timed to the word it is a picture of.
@@ -892,6 +900,7 @@ const SPEC = [
     ["splitEll","centroid → split wide",0,2.5,0.05],
     ["splitJaw","level → split tall",0,2,0.05],
     ["splitShape","split follows shape",0,1,0.02],
+    ["autoWord","spell a word per reply",0,1,1],
     ["trail","trail",0.02,1,0.01],
     ["rK","red k",-20,20,0.5],
     ["gK","green k",-20,20,0.5],
@@ -1513,7 +1522,7 @@ let form3d = false, formHasN = false, formHasB = false, formS = 0.42;
    the outline draws itself first and the surface fills in behind it. */
 let formTri = null, solidT = 0, solidWant = 0;
 // a formation may bring its own camera; null means use the sliders
-let formTilt = null, formSpin = null;
+let formTilt = null, formSpin = null, formWide = 0;
 let formHY = 1;                    // the shape's half height, for clearing it
 let formE = null;                  // vertex-index pairs, when the source was a mesh
 let wireT = 0, wireAt = 0;         // the mesh grows in a beat after the cloud lands
@@ -1597,7 +1606,11 @@ function sampleGlyphs(str) {
    colour is the background and gets knocked out. If they disagree the image has
    a real background, and it is left alone rather than guessed at. */
 function imageToPoints(img) {
-  const S = GLYPH_S;
+  /* Finer than a glyph. A letter is a shape with five or six strokes in it and
+     220 is generous; a rendered character has a hat, a beard, a belt buckle and
+     a tear in one knee, and at 220 all of those land in the same handful of
+     pixels. The sampler does not care what size it is given. */
+  const S = 300;
   const c = document.createElement("canvas");
   c.width = S; c.height = S;
   const g = c.getContext("2d", { willReadFrequently: true });
@@ -1717,7 +1730,11 @@ async function showImage(src, seconds) {
       return setFormation({ text: src.slice(0, 14).toUpperCase() }, seconds || 5);
     }
   }
-  const ok = setFormation({ points: imageCache[key], label: src }, seconds || 6);
+  /* Bigger than a word, and past the wall. A picture is the thing being looked
+     at, not a caption on the orb -- at the glyph scale a whole character came
+     out a third of the height of the screen. */
+  const ok = setFormation({ points: imageCache[key], label: src, fs: 0.66, wide: 1 },
+                          seconds || 8);
   if (ok) caption(null, "showing " + src + " · " + imageCache[key].length + " points");
   return ok;
 }
@@ -2965,6 +2982,7 @@ function setFormation(spec, seconds) {
   form3d = pts[0].length > 2;
   formHasN = pts[0].length > 5;
   formHasB = pts[0].length > 6;
+  formWide = spec && spec.wide ? 1 : 0;
   formTilt = spec && spec.tilt != null ? spec.tilt : null;
   formSpin = spec && spec.spin != null ? spec.spin : null;
   formE = asMenu ? asMenu.edges : (spec && spec.edges) || null;
@@ -3107,7 +3125,7 @@ function updateFormation(dt) {
     formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
     formE = null; wireT = 0; view.turn = 0; formTri = null; solidWant = 0;
     // or the next formation inherits a hologram's camera and reads stale biases
-    formHasB = false; formTilt = null; formSpin = null; holoE = null;
+    formHasB = false; formTilt = null; formSpin = null; holoE = null; formWide = 0;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
@@ -3275,7 +3293,8 @@ function loop() {
      it, which drew as a tangle down both sides rather than as a grid going
      away. So a hologram has no wall at all once it has landed -- everything in
      it is standing on a target, not drifting. */
-  const containNow = menuOn ? Math.max(cfg.contain, 0.93) : cfg.contain;
+  const containNow = menuOn ? Math.max(cfg.contain, 0.93)
+                   : formWide ? Math.max(cfg.contain, 0.99) : cfg.contain;
   const walled = !(formHasB && formT > 0.02);
   const softSpan = Math.max(0.02, 1 - containNow);
   const wall = 3.5 * k;

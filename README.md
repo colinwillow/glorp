@@ -443,6 +443,14 @@ at `images/glorb.*` — put a file there and it fills. If a picture is missing t
 caption says so and the orb draws the name instead of nothing, because a picture
 that is not there is nearly always a picture that is not there *yet*.
 
+Pictures are sampled **finer and drawn bigger** than glyphs. A letter has five
+or six strokes in it and 220 pixels is generous; a rendered character has a hat,
+a beard, a belt buckle and a tear in one knee, and at 220 those all land in the
+same handful of pixels — 300 gives about 2,500 points instead of 1,400. And a
+picture is the thing being looked at rather than a caption on the orb, so it
+gets its own scale and steps past the containment wall; at the glyph scale a
+whole character came out a third of the height of the screen.
+
 **Glorb has to be told they exist**, or it answers that it has no pictures —
 true from where it is standing, and it reads as the feature being broken rather
 than unwired. A static host cannot list a directory, so the page works out the
@@ -455,6 +463,24 @@ that is not there, and `/images` in the box says what was actually found. Both
 sources are merged rather than tried in turn: the manifest is the one that can
 be relied on, the listing is what means a file dropped in the folder needs no
 other edit. Asked once at startup, so nothing waits on it mid-sentence.
+
+### Showing costs something
+
+The field cannot be a word and be moving with the voice at the same time — a
+formation holding is a formation the audio is damped under. So **a picture
+nobody asked for is paid for with the reaction to the sentence carrying it**,
+and duet used to draw one on every single reply: it took the longest non-filler
+word out of the answer and spelled it.
+
+That is off (`autoWord`, 0 by default). Drawing a word is worth keeping for when
+a reply genuinely turns on one — a name, a colour, a number, a single answer to
+a direct question — and the longest word in the sentence is not that judgement.
+The machinery is all still there; nothing calls it.
+
+The brain's own `show` tool used to be told to fire "whenever a word would land
+better shown than said", which is most sentences if you squint. It is now told
+that most replies should show nothing, what the cost is, and the test: *if you
+could not say which word the reply turns on, it does not turn on one.*
 
 ### A glimpse, not a placard
 
