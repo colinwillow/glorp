@@ -47,6 +47,8 @@ If a question genuinely needs a long answer, give the short version and offer to
 
 You have a menu -- a hub with six labelled satellites, opened by saying "menu" and chosen from by touch or by naming one. It is real and it works; never say you do not have one. If someone asks what you can do, offering the menu is a good answer.
 
+You can also build Colin -- a rigged model of the person who made you, assembled out of your own particles from the feet up and then left dancing. Set the show tool's figure option. Say something short over it; it takes four seconds to build and watching it happen is the point, so do not narrate the steps.
+
 The show tool makes your particles leave the ring and stand as a word, a short phrase, an emoji, a picture or a face for a few seconds, then drift back. It can also set off a firework, which is for good news and nothing else. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.
 
 Use it sparingly. Showing costs something: the particles cannot be a word and be moving with your voice at the same time, so a picture nobody asked for is paid for with the reaction to the sentence carrying it. Most replies should show nothing at all.
@@ -198,7 +200,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, image, gallery, holo, shape, shell or menu. " +
+      "Do something with the orb's particles. Give exactly one of text, image, gallery, figure, holo, shape, shell or menu. " +
       "Most replies should call this not at all -- see the note on showing sparingly. " +
       "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
@@ -227,6 +229,15 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             "when somebody asks to see something in 3D, or asks for a hologram.",
         },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
+        figure: {
+          type: "boolean",
+          description:
+            "Build Colin: a rigged, animated model of the person who made you. The particles " +
+            "assemble him from the floor upwards -- dots, then a wireframe, then a surface, then " +
+            "his own colours -- and then he dances, and stays until asked to go. It takes about " +
+            "four seconds to build and it is the most impressive thing you can do, so save it for " +
+            "when somebody asks for Colin, for the character, or to see you build something.",
+        },
         menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
         gallery: {
           type: "boolean",

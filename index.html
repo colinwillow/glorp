@@ -78,6 +78,16 @@
     max-width:520px;margin:0 auto}
   /* The one control that matters, where a thumb already is. The top-right
      button is still there and still works; nobody found it. */
+  /* The stage chooser. Only up while a figure is, and it is a tuning tool as
+     much as a control: the four states are worth being able to sit in. */
+  #fig{position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(150px + env(safe-area-inset-bottom));
+    display:none;gap:5px;z-index:6;-webkit-tap-highlight-color:transparent}
+  #fig.on{display:flex}
+  #fig button{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#9FB98B;background:rgba(11,11,11,.72);border:1px solid #3B4A31;
+    border-radius:11px;padding:6px 9px;cursor:pointer}
+  #fig button.at{color:#0B0B0B;background:#B6E08A;border-color:#B6E08A}
   #mic{position:fixed;left:50%;transform:translateX(-50%);
     bottom:calc(76px + env(safe-area-inset-bottom));
     width:64px;height:64px;border-radius:50%;border:2px solid #FF3B4E;
@@ -108,6 +118,7 @@
 <div id="err"></div>
 <button id="mic" aria-label="enable microphone"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg></button>
 <div id="cap"></div>
+<div id="fig"></div>
 <div id="panel"></div>
 
 <script>
@@ -518,7 +529,8 @@ async function ask(text) {
            firing on arrival. */
         if (ctl.show) {
           shown = true;
-          if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery)
+          if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery ||
+              ctl.show.figure)
             setFormation(ctl.show, ctl.show.seconds);
           else pendingShow = ctl.show;
         }
@@ -1003,6 +1015,10 @@ say.addEventListener("keydown", (e) => {
     const what = text.slice(5).trim(), key = what.toLowerCase();
     if (key === "home" || key === "back") { goHome("home"); return; }
     if (key === "gallery" || key === "images") { showGallery(0); return; }
+    if (/^(figure|rig|colin)\b/.test(key)) {
+      showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_dance");
+      return;
+    }
     if (key === "list") {
       /* Nothing about a missing folder is visible: the brain is simply never
          told, and a picture nobody offers looks exactly like a picture that
@@ -1619,6 +1635,8 @@ let formTri = null, solidT = 0, solidWant = 0;
 let formTilt = null, formSpin = null, formWide = 0;
 let formHY = 1;                    // the shape's half height, for clearing it
 let formE = null;                  // vertex-index pairs, when the source was a mesh
+let formOrd = null;                // the angular sort, for anything that has to follow it
+const wirePath = new Array(8);     // reused, so a frame does not allocate eight paths
 let wireT = 0, wireAt = 0;         // the mesh grows in a beat after the cloud lands
 let formCountWas = 0;
 
@@ -2431,7 +2449,13 @@ function readObj(text) {
    to go next. Draco and meshopt compression need a decoder that cannot be
    inlined; they announce themselves in extensionsUsed and are reported rather
    than guessed at. */
-const GLB_N = { SCALAR:1, VEC2:2, VEC3:3, VEC4:4 };
+/* MAT4 matters as much as the vectors do, and it was missing. `GLB_N[type] || 1`
+   read an inverse bind matrix as ONE float per joint at a stride of four bytes,
+   so every joint got a garbage transform and the whole figure collapsed into a
+   sliver about a fifth of its own size. The fallback made a missing entry look
+   like a scalar rather than an error, which is why it read out cleanly and
+   drew wrong. */
+const GLB_N = { SCALAR:1, VEC2:2, VEC3:3, VEC4:4, MAT2:4, MAT3:9, MAT4:16 };
 const GLB_SZ = { 5120:1, 5121:1, 5122:2, 5123:2, 5125:4, 5126:4 };
 
 // DataView, not a typed array over the buffer: glTF aligns accessors to their
@@ -2532,6 +2556,346 @@ function readGlb(buf) {
   for (const r of (scene && scene.nodes) || g.nodes.map((_, i) => i)) walk(r, I);
   if (!V.length) throw new Error("no triangle geometry in it");
   return { V, F };
+}
+
+/* ---------------- rigs ----------------
+   A skinned, animated GLB is a different animal from a static mesh, and the
+   difference is not the file format -- it is that the vertices MOVE. Everything
+   upstream of here treats a formation as a list of places to be, computed once.
+   A rig is a list of places to be computed every frame, out of a skeleton that
+   is itself computed every frame out of a set of keyframe curves.
+
+   Kept as a separate reader rather than folded into readGlb. The static path
+   feeds the hologram and the head and works; a skinned mesh needs the node
+   transform of its own mesh node IGNORED (glTF says so explicitly, because the
+   joints already carry it), which is exactly the line the static reader has to
+   apply. One reader doing both would be a branch in the middle of the walk.
+
+   The whole thing is ~24k vertices and 46k triangles, which is an order of
+   magnitude past what a canvas full of dots can draw. It is clustered down to
+   about 3.4k -- see rigDecimate -- and the clustering carries the skin weights
+   and the texture coordinates with it, because a vertex without those cannot
+   be animated or coloured. */
+function glbChunks(buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x46546C67) throw new Error("not a GLB (bad magic)");
+  if (dv.getUint32(4, true) !== 2) throw new Error("glTF version " + dv.getUint32(4, true) + ", need 2");
+  let o = 12, g = null, bin = -1;
+  while (o + 8 <= buf.byteLength) {
+    const len = dv.getUint32(o, true), type = dv.getUint32(o + 4, true);
+    if (type === 0x4E4F534A) g = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, o + 8, len)));
+    else if (type === 0x004E4942) bin = o + 8;
+    o += 8 + len;
+  }
+  if (!g) throw new Error("no JSON chunk");
+  if (bin < 0) throw new Error("no BIN chunk");
+  const hard = (g.extensionsUsed || []).filter((e) => /draco|meshopt/i.test(e));
+  if (hard.length) throw new Error("compressed with " + hard.join(", ") + " -- export without it");
+  return { dv, g, bin };
+}
+
+/* Vertex clustering. Not the prettiest decimation there is -- an edge-collapse
+   with a quadric error metric keeps silhouettes far better -- but it is forty
+   lines, it never fails, and at the size this draws at (a figure a few hundred
+   pixels tall, made of dots) the difference is not visible. What matters is
+   that it is ATTRIBUTE-PRESERVING: each cluster keeps one representative's skin
+   weights and texture coordinates, so the decimated mesh can still be animated
+   and still be coloured. A decimation that averages weights across a cluster
+   spanning two limbs tears the mesh apart when they separate. */
+function rigDecimate(P, N, UV, JI, JW, IDX, want) {
+  let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (let i = 0; i < P.length; i += 3)
+    for (let a = 0; a < 3; a++) {
+      if (P[i + a] < lo[a]) lo[a] = P[i + a];
+      if (P[i + a] > hi[a]) hi[a] = P[i + a];
+    }
+  const ext = [hi[0] - lo[0] || 1, hi[1] - lo[1] || 1, hi[2] - lo[2] || 1];
+  const vol = ext[0] * ext[1] * ext[2];
+  /* The grid is solved for, not guessed. A figure is nearly all surface, so the
+     number of occupied cells goes as the square of the resolution rather than
+     the cube -- but the search below is two lines and does not care which. */
+  let cell = Math.cbrt(vol / want), map = null, best = null, bestCell = 0;
+  for (let pass = 0; pass < 24; pass++) {
+    map = new Map();
+    const gx = Math.max(1, Math.ceil(ext[0] / cell));
+    const gy = Math.max(1, Math.ceil(ext[1] / cell));
+    for (let i = 0, v = 0; i < P.length; i += 3, v++) {
+      const a = Math.min(gx - 1, ((P[i] - lo[0]) / cell) | 0);
+      const b = Math.min(gy - 1, ((P[i + 1] - lo[1]) / cell) | 0);
+      const c = ((P[i + 2] - lo[2]) / cell) | 0;
+      const k = (c * gy + b) * gx + a;
+      if (!map.has(k)) map.set(k, v);
+    }
+    // the cell that produced `best`, kept WITH it: the second pass has to build
+    // its keys at the same resolution the table was built at
+    if (!best || Math.abs(map.size - want) < Math.abs(best.size - want)) { best = map; bestCell = cell; }
+    if (map.size > want * 1.06) cell *= 1.10;
+    else if (map.size < want * 0.86) cell *= 0.93;
+    else break;
+  }
+  map = best; cell = bestCell;
+  // second pass: every vertex to its cluster's representative
+  const rep = new Int32Array(P.length / 3);
+  {
+    const gx = Math.max(1, Math.ceil(ext[0] / cell));
+    const gy = Math.max(1, Math.ceil(ext[1] / cell));
+    const slot = new Map();
+    let next = 0;
+    for (const [k, v] of map) slot.set(k, [next++, v]);
+    for (let i = 0, v = 0; i < P.length; i += 3, v++) {
+      const a = Math.min(gx - 1, ((P[i] - lo[0]) / cell) | 0);
+      const b = Math.min(gy - 1, ((P[i + 1] - lo[1]) / cell) | 0);
+      const c = ((P[i + 2] - lo[2]) / cell) | 0;
+      const e = slot.get((c * gy + b) * gx + a);
+      rep[v] = e ? e[0] : 0;
+    }
+    const n = next;
+    const oP = new Float32Array(n * 3), oN = new Float32Array(n * 3);
+    const oU = new Float32Array(n * 2), oJ = new Uint8Array(n * 4), oW = new Float32Array(n * 4);
+    for (const [, [j, v]] of slot) {
+      for (let a = 0; a < 3; a++) { oP[j * 3 + a] = P[v * 3 + a]; oN[j * 3 + a] = N ? N[v * 3 + a] : 0; }
+      oU[j * 2] = UV ? UV[v * 2] : 0; oU[j * 2 + 1] = UV ? UV[v * 2 + 1] : 0;
+      for (let a = 0; a < 4; a++) { oJ[j * 4 + a] = JI[v * 4 + a]; oW[j * 4 + a] = JW[v * 4 + a]; }
+    }
+    // and the faces, with the collapsed ones dropped
+    const T = [];
+    for (let i = 0; i + 2 < IDX.length; i += 3) {
+      const a = rep[IDX[i]], b = rep[IDX[i + 1]], c = rep[IDX[i + 2]];
+      if (a === b || b === c || a === c) continue;
+      T.push(a, b, c);
+    }
+    return { n, P: oP, N: oN, UV: oU, JI: oJ, JW: oW, T: Int32Array.from(T) };
+  }
+}
+
+function readGlbRig(buf) {
+  const { dv, g, bin } = glbChunks(buf);
+  const skin = (g.skins || [])[0];
+  if (!skin) throw new Error("no skin in it -- not a rigged model");
+  let prim = null, meshNode = -1;
+  for (let i = 0; i < g.nodes.length && !prim; i++) {
+    const nd = g.nodes[i];
+    if (nd.mesh === undefined || nd.skin === undefined) continue;
+    for (const p of (g.meshes[nd.mesh] || {}).primitives || [])
+      if ((p.mode === undefined ? 4 : p.mode) === 4 && p.attributes.JOINTS_0 !== undefined) {
+        prim = p; meshNode = i; break;
+      }
+  }
+  if (!prim) throw new Error("no skinned triangle mesh in it");
+  void meshNode;
+
+  const P = glbRead(dv, g, bin, prim.attributes.POSITION);
+  const N = prim.attributes.NORMAL !== undefined ? glbRead(dv, g, bin, prim.attributes.NORMAL) : null;
+  const UV = prim.attributes.TEXCOORD_0 !== undefined ? glbRead(dv, g, bin, prim.attributes.TEXCOORD_0) : null;
+  const JIf = glbRead(dv, g, bin, prim.attributes.JOINTS_0);
+  const JW = glbRead(dv, g, bin, prim.attributes.WEIGHTS_0);
+  const JI = Uint8Array.from(JIf);
+  const IDX = prim.indices !== undefined ? glbRead(dv, g, bin, prim.indices)
+            : Float32Array.from({ length: P.length / 3 }, (_, i) => i);
+
+  const dec = rigDecimate(P, N, UV, JI, JW, IDX, RIG_VERTS);
+
+  // the skeleton, as it sits in the file
+  const nodes = g.nodes.map((nd) => ({
+    t: (nd.translation || [0, 0, 0]).slice(),
+    r: (nd.rotation || [0, 0, 0, 1]).slice(),
+    s: (nd.scale || [1, 1, 1]).slice(),
+    m: nd.matrix ? nd.matrix.slice() : null,
+    kids: nd.children || []
+  }));
+  const roots = ((g.scenes && g.scenes[g.scene || 0]) || {}).nodes || g.nodes.map((_, i) => i);
+  const ibm = skin.inverseBindMatrices !== undefined
+    ? glbRead(dv, g, bin, skin.inverseBindMatrices) : null;
+
+  /* One animation, and only the channels that drive a joint. A file can carry
+     hundreds of curves for things that are not in the mesh -- cameras, empties,
+     an IK target -- and evaluating those is time spent on nothing. */
+  const an = (g.animations || [])[0];
+  const chans = [];
+  let dur = 0;
+  if (an) for (const c of an.channels) {
+    const sm = an.samplers[c.sampler];
+    if (!sm || c.target.node === undefined) continue;
+    const times = glbRead(dv, g, bin, sm.input);
+    const vals = glbRead(dv, g, bin, sm.output);
+    if (times.length) dur = Math.max(dur, times[times.length - 1]);
+    chans.push({ node: c.target.node, path: c.target.path, times, vals,
+                 step: sm.interpolation === "STEP", cub: sm.interpolation === "CUBICSPLINE" });
+  }
+
+  // the texture, still compressed. Decoded later and off the main thread.
+  let img = null;
+  for (const im of g.images || []) {
+    if (im.bufferView === undefined) continue;
+    // PNG or JPEG in preference to WebP only because a file that carries both
+    // carries the WebP as an extension and the other as the thing that works
+    const bv = g.bufferViews[im.bufferView];
+    const bytes = new Uint8Array(buf, bin + (bv.byteOffset || 0), bv.byteLength);
+    const cand = { mime: im.mimeType || "image/png", bytes };
+    if (!img || /png|jpeg/i.test(cand.mime)) img = cand;
+  }
+
+  return { dec, nodes, roots, joints: skin.joints, ibm, chans, dur: dur || 1, img,
+           verts: P.length / 3, faces: IDX.length / 3 };
+}
+
+/* How many vertices a figure is clustered down to. Every one of them is a
+   particle, every edge between them is a line drawn each frame, and every face
+   is a filled path -- so this number sets three costs at once. 3400 comes out
+   at about 9k edges and 6.6k triangles, which holds 60fps on a laptop and low
+   fifties on a phone. */
+const RIG_VERTS = 3400;
+
+/* ---------------- posing ----------------
+   Every frame: sample the keyframe curves at the current time, walk the node
+   tree to get each joint's world matrix, multiply in the inverse bind, then
+   blend up to four of those per vertex. This is the standard skinning pipeline;
+   the only thing worth saying about doing it in JavaScript is that it costs
+   what it costs, which is why the vertex count is 3400 and not 24000. */
+function qslerp(a, ai, b, bi, t, out) {
+  let x0 = a[ai], y0 = a[ai + 1], z0 = a[ai + 2], w0 = a[ai + 3];
+  let x1 = b[bi], y1 = b[bi + 1], z1 = b[bi + 2], w1 = b[bi + 3];
+  let d = x0 * x1 + y0 * y1 + z0 * z1 + w0 * w1;
+  // the short way round. Without this a 181-degree turn goes 179 the other way
+  // and a joint snaps through the body on one frame in a hundred.
+  if (d < 0) { x1 = -x1; y1 = -y1; z1 = -z1; w1 = -w1; d = -d; }
+  let s0 = 1 - t, s1 = t;
+  if (d < 0.9995) {
+    const th = Math.acos(d), st = Math.sin(th);
+    s0 = Math.sin((1 - t) * th) / st; s1 = Math.sin(t * th) / st;
+  }
+  out[0] = x0 * s0 + x1 * s1; out[1] = y0 * s0 + y1 * s1;
+  out[2] = z0 * s0 + z1 * s1; out[3] = w0 * s0 + w1 * s1;
+  const L = Math.hypot(out[0], out[1], out[2], out[3]) || 1;
+  out[0] /= L; out[1] /= L; out[2] /= L; out[3] /= L;
+}
+const QTMP = [0, 0, 0, 1];
+function rigPose(R, time) {
+  const t = R.dur > 0 ? time % R.dur : 0;
+  for (const c of R.chans) {
+    const T = c.times, n = T.length;
+    if (!n) continue;
+    let i = 0, hi = n - 1;
+    // binary search, because a 13-second take at 30fps is 400 keys and a linear
+    // scan of those times 198 channels times 60 frames is real money
+    while (i < hi) { const m = (i + hi) >> 1; if (T[m] <= t) i = m + 1; else hi = m; }
+    const i1 = i === 0 ? 0 : i, i0 = i1 > 0 ? i1 - 1 : 0;
+    const span = T[i1] - T[i0];
+    let u = span > 1e-9 ? (t - T[i0]) / span : 0;
+    if (u < 0) u = 0; else if (u > 1) u = 1;
+    if (c.step) u = 0;
+    const nd = R.nodes[c.node];
+    if (!nd) continue;
+    // CUBICSPLINE stores in/value/out triples; the value is the middle one, and
+    // taking it alone is a linear approximation rather than a wrong answer
+    const w = c.cub ? 3 : 1, o = c.cub ? 1 : 0;
+    if (c.path === "rotation") {
+      qslerp(c.vals, (i0 * w + o) * 4, c.vals, (i1 * w + o) * 4, u, QTMP);
+      nd.r[0] = QTMP[0]; nd.r[1] = QTMP[1]; nd.r[2] = QTMP[2]; nd.r[3] = QTMP[3];
+    } else {
+      const dst = c.path === "scale" ? nd.s : nd.t;
+      for (let a = 0; a < 3; a++) {
+        const p = c.vals[(i0 * w + o) * 3 + a], q = c.vals[(i1 * w + o) * 3 + a];
+        dst[a] = p + (q - p) * u;
+      }
+    }
+  }
+  // world matrices, top down
+  const W2 = R.world;
+  const walk = (idx, parent) => {
+    const nd = R.nodes[idx];
+    if (!nd) return;
+    const m = glbMul(parent, nd.m || glbMat({ translation: nd.t, rotation: nd.r, scale: nd.s }));
+    W2[idx] = m;
+    for (const c of nd.kids) walk(c, m);
+  };
+  const I = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+  for (const r of R.roots) walk(r, I);
+  // and the joint matrices the vertices actually use
+  for (let j = 0; j < R.joints.length; j++) {
+    const w = W2[R.joints[j]] || I;
+    const M = R.jm, o = j * 16;
+    if (!R.ibm) { for (let a = 0; a < 16; a++) M[o + a] = w[a]; continue; }
+    const b = j * 16;
+    for (let c2 = 0; c2 < 4; c2++)
+      for (let r2 = 0; r2 < 4; r2++)
+        M[o + c2 * 4 + r2] = w[r2] * R.ibm[b + c2 * 4] + w[4 + r2] * R.ibm[b + c2 * 4 + 1] +
+                             w[8 + r2] * R.ibm[b + c2 * 4 + 2] + w[12 + r2] * R.ibm[b + c2 * 4 + 3];
+  }
+}
+
+/* The blend. Four joints per vertex, weights already normalised by the
+   exporter. Positions and normals both, because a figure lit by its normals
+   with the bind-pose normals still attached lights an arm that is no longer
+   there. */
+function rigSkin(R, outP, outN) {
+  const d = R.dec, M = R.jm, n = d.n;
+  const P = d.P, N = d.N, JI = d.JI, JW = d.JW;
+  for (let v = 0; v < n; v++) {
+    const px2 = P[v * 3], py2 = P[v * 3 + 1], pz2 = P[v * 3 + 2];
+    const nx2 = N[v * 3], ny2 = N[v * 3 + 1], nz2 = N[v * 3 + 2];
+    let ox = 0, oy = 0, oz = 0, mx2 = 0, my2 = 0, mz2 = 0;
+    for (let a = 0; a < 4; a++) {
+      const w = JW[v * 4 + a];
+      if (w <= 0) continue;
+      const o = JI[v * 4 + a] * 16;
+      ox += w * (M[o] * px2 + M[o + 4] * py2 + M[o + 8] * pz2 + M[o + 12]);
+      oy += w * (M[o + 1] * px2 + M[o + 5] * py2 + M[o + 9] * pz2 + M[o + 13]);
+      oz += w * (M[o + 2] * px2 + M[o + 6] * py2 + M[o + 10] * pz2 + M[o + 14]);
+      mx2 += w * (M[o] * nx2 + M[o + 4] * ny2 + M[o + 8] * nz2);
+      my2 += w * (M[o + 1] * nx2 + M[o + 5] * ny2 + M[o + 9] * nz2);
+      mz2 += w * (M[o + 2] * nx2 + M[o + 6] * ny2 + M[o + 10] * nz2);
+    }
+    outP[v * 3] = ox; outP[v * 3 + 1] = oy; outP[v * 3 + 2] = oz;
+    const L = Math.hypot(mx2, my2, mz2) || 1;
+    outN[v * 3] = mx2 / L; outN[v * 3 + 1] = my2 / L; outN[v * 3 + 2] = mz2 / L;
+  }
+}
+
+/* One fit for the whole take, not one per frame. Fitting each frame to its own
+   bounding box makes the figure breathe in and out as it dances -- an arm going
+   up shrinks the whole body to keep it in the box -- which reads as the camera
+   being wrong rather than as the model moving. Sample the animation across its
+   length, take the union, and use that transform for ever.
+
+   The Y flip lives here too. Model space is Y-up; the screen's y grows
+   downward, so a model read straight arrives upside down. Everything else in
+   this file flips the vertex list once at load; a rig has no vertex list to
+   flip, so the flip is in the fixed transform. */
+function rigFit(R) {
+  const n = R.dec.n;
+  const P = new Float32Array(n * 3), N = new Float32Array(n * 3);
+  const lo = [1e30, 1e30, 1e30], hi = [-1e30, -1e30, -1e30];
+  for (let k = 0; k < 14; k++) {
+    rigPose(R, (k / 14) * R.dur);
+    rigSkin(R, P, N);
+    for (let i = 0; i < n * 3; i += 3)
+      for (let a = 0; a < 3; a++) {
+        if (P[i + a] < lo[a]) lo[a] = P[i + a];
+        if (P[i + a] > hi[a]) hi[a] = P[i + a];
+      }
+  }
+  let m = 0;
+  for (let a = 0; a < 3; a++) m = Math.max(m, hi[a] - lo[a]);
+  R.fit = { k: m > 1e-9 ? 2 / m : 1,
+            c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2],
+            lo: lo.slice(), hi: hi.slice() };
+}
+
+/* Unique edges, for the wireframe stage. The static path recovers quads first,
+   because an exporter's diagonals are noise laid over the edge flow somebody
+   actually drew -- but a clustered mesh has no edge flow left to recover, the
+   clustering destroyed it, so this is triangles and nothing else. */
+function rigEdges(T) {
+  const seen = new Set(), E = [];
+  for (let i = 0; i + 2 < T.length; i += 3)
+    for (let e = 0; e < 3; e++) {
+      const a = T[i + e], b = T[i + (e + 1) % 3];
+      const k = a < b ? a * 1e7 + b : b * 1e7 + a;
+      if (seen.has(k)) continue;
+      seen.add(k); E.push(a, b);
+    }
+  return Int32Array.from(E);
 }
 
 /* A wireframe needs one particle per vertex, and MAX is the ceiling on
@@ -2834,6 +3198,298 @@ async function showSequence(src) {
   return true;
 }
 
+/* ---------------- the figure ----------------
+   A rigged model does not arrive, it is BUILT -- and then it keeps moving. Four
+   wipes climb it from the floor: dots, then lines between the dots, then the
+   surface between the lines, then the colour on the surface. Each starts before
+   the one before it has finished, so at any moment somewhere around the middle
+   of it you can see all four states at once, stacked up the body. Then it
+   dances, and leaving runs the same four wipes back down in the opposite order:
+   the colour drains off first, then the surface, then the lines, and the dots
+   fall back into the orb.
+
+   The animation runs the WHOLE time, from the first foot. A figure that stands
+   still while it assembles and then starts moving reads as two things -- a
+   diagram, and then a character. One thing that is alive while it is being made
+   is much stranger and much better.
+
+   Everything here gates on ONE number per particle: `figH`, its height up the
+   body in the bind pose, 0 at the feet and 1 at the top of the head. Bind pose
+   and not the live pose deliberately -- a wipe that follows a waving hand is a
+   wipe that goes backwards. */
+const figH = new Float32Array(MAX);
+const rig = {
+  on: 0, R: null, src: "", ord: null, t: 0, at: 0, out: 0,
+  wipe: [0, 0, 0, 0], stage: -1, hold: 0, holdName: "", speed: 1
+};
+/* Seconds each wipe takes to climb the body, and when each one starts. The
+   overlap is the whole effect: at 1.5s in, the feet are a surface, the knees
+   are a wireframe and the shoulders are still a cloud of dots. */
+/* `top` is 1 + soft, not 1. A wipe that stops at exactly 1 leaves the last
+   soft-edge band -- the top eighth of the head -- permanently half gated, so
+   the finished figure was missing its crown: no surface on it and no texture,
+   just dots. Every wipe runs past the top of the body by the width of its own
+   soft edge. */
+const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13 };
+const FIG_STAGE = ["dots", "lines", "fill", "texture"];
+
+const rigCache = {};
+async function loadRig(src) {
+  const key = src.toLowerCase();
+  if (rigCache[key]) return rigCache[key];
+  caption(null, "loading " + src + "…");
+  const named = /\.(glb|gltf)$/i.test(src) || /^https?:/i.test(src);
+  const url = named ? src : "models/" + src + ".glb";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const R = readGlbRig(await res.arrayBuffer());
+  R.world = new Array(R.nodes.length);
+  R.jm = new Float32Array(R.joints.length * 16);
+  R.wp = new Float32Array(R.dec.n * 3);
+  R.wn = new Float32Array(R.dec.n * 3);
+  rigFit(R);
+  R.E = rigEdges(R.dec.T);
+  /* Winding reversed once, here. The screen's y grows downward so the fit
+     negates y, negating one axis mirrors the mesh, and a mirrored triangle has
+     its winding backwards -- which is where the surface culling gets its
+     facing from. The static path does this with f.reverse() at load; a rig has
+     no face list to reverse afterwards, so it happens on the way in. */
+  const T = R.dec.T;
+  for (let i = 0; i + 2 < T.length; i += 3) { const t = T[i + 1]; T[i + 1] = T[i + 2]; T[i + 2] = t; }
+  await bakeRigTexture(R);
+  rigCache[key] = R;
+  console.log("orb rig", src, R.verts + "→" + R.dec.n, "verts,", R.faces + "→" + T.length / 3,
+              "faces,", R.E.length / 2, "edges,", R.joints.length, "joints,",
+              R.dur.toFixed(1) + "s,", R.triCol ? "textured" : "no texture");
+  return R;
+}
+
+/* One colour per triangle, baked once. The texture coordinates do not change
+   when the model moves -- that is the entire point of them -- so a per-frame
+   texture lookup would be the same answer every frame at sixty times the price.
+   Sampled at the centroid rather than averaged over the triangle's footprint:
+   at 3.4k faces a triangle covers a few pixels of a 1024 map and the centroid
+   IS the average, near enough.
+
+   Canvas 2D cannot draw a perspective-correct textured triangle, so this is the
+   honest version of "textured" for this renderer: the mesh with its own colours
+   on it, one flat patch per face. At the size a figure draws at, that reads. */
+async function bakeRigTexture(R) {
+  R.triCol = null;
+  if (!R.img) return;
+  let bmp;
+  try {
+    bmp = await createImageBitmap(new Blob([R.img.bytes], { type: R.img.mime }));
+  } catch (e) { console.log("orb rig texture:", e.message); return; }
+  const S = Math.min(1024, Math.max(bmp.width, bmp.height));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(bmp.width * S / Math.max(bmp.width, bmp.height)));
+  cv.height = Math.max(1, Math.round(bmp.height * S / Math.max(bmp.width, bmp.height)));
+  const c2 = cv.getContext("2d", { willReadFrequently: true });
+  c2.drawImage(bmp, 0, 0, cv.width, cv.height);
+  const px = c2.getImageData(0, 0, cv.width, cv.height).data;
+  const UV = R.dec.UV, T = R.dec.T, out = new Array(T.length / 3);
+  for (let i = 0, f = 0; i + 2 < T.length; i += 3, f++) {
+    const a = T[i], b = T[i + 1], c = T[i + 2];
+    let u = (UV[a * 2] + UV[b * 2] + UV[c * 2]) / 3;
+    let v = (UV[a * 2 + 1] + UV[b * 2 + 1] + UV[c * 2 + 1]) / 3;
+    // glTF wraps by default, and a UV of exactly 1 lands one pixel off the edge
+    u -= Math.floor(u); v -= Math.floor(v);
+    const x = Math.min(cv.width - 1, (u * cv.width) | 0);
+    const y = Math.min(cv.height - 1, (v * cv.height) | 0);
+    const o = (y * cv.width + x) * 4;
+    out[f] = [px[o], px[o + 1], px[o + 2]];
+  }
+  R.triCol = out;
+  /* Quantised, because the drawing batches by colour and seven thousand
+     distinct fillStyles is seven thousand fill calls. A character's map is
+     four or five materials -- skin, shirt, trousers, hair -- so a coarse cube
+     collapses it to a couple of dozen entries with nothing visibly lost, and
+     the surface still draws in a couple of hundred fills. */
+  const idx = new Map(), pal = [];
+  R.triPal = new Uint8Array(out.length);
+  for (let f = 0; f < out.length; f++) {
+    const c = out[f];
+    const q = ((c[0] >> 5) << 10) | ((c[1] >> 5) << 5) | (c[2] >> 5);
+    let j = idx.get(q);
+    if (j === undefined) {
+      if (pal.length >= 255) j = 0;                   // never overflow the key
+      else { j = pal.length; idx.set(q, j); pal.push([c[0], c[1], c[2]]); }
+    }
+    R.triPal[f] = j;
+  }
+  R.pal = pal;
+  if (bmp.close) bmp.close();
+}
+
+// where the fit puts a skinned vertex, in formation space
+function rigPoint(R, v, o) {
+  const f = R.fit, P = R.wp, N = R.wn;
+  o[0] = (P[v * 3] - f.c[0]) * f.k;
+  o[1] = -(P[v * 3 + 1] - f.c[1]) * f.k;
+  o[2] = (P[v * 3 + 2] - f.c[2]) * f.k;
+  o[3] = N[v * 3]; o[4] = -N[v * 3 + 1]; o[5] = N[v * 3 + 2];
+}
+
+async function showFigure(src) {
+  src = String(src || "").trim() || "colin_dance";
+  let R;
+  try { R = await loadRig(src); }
+  catch (e) { caption(null, "figure " + src + ": " + e.message); return false; }
+
+  rigPose(R, 0);
+  rigSkin(R, R.wp, R.wn);
+  const pts = new Array(R.dec.n);
+  const o = [0, 0, 0, 0, 0, 0];
+  for (let v = 0; v < R.dec.n; v++) { rigPoint(R, v, o); pts[v] = o.slice(); }
+
+  const ok = setFormation({ points: pts, edges: R.E, tris: R.dec.T,
+                            label: src, fs: 0.40, tilt: 0.05 }, 10 * 60);
+  if (!ok) return false;
+
+  /* The permutation, which is the whole reason setFormation now hands one back.
+     It orders the points by angle so the ring unfolds into the shape rather
+     than scrambling through itself -- which means particle i is holding
+     ord[i]'s vertex, and every frame after this one has to write the skinned
+     position of THAT vertex into THAT particle. Get it wrong and the figure is
+     a bag of confetti that moves in time. */
+  rig.ord = formOrd ? formOrd.slice() : Int32Array.from({ length: R.dec.n }, (_, i) => i);
+  // height up the body, from the bind pose, per particle
+  const P = R.dec.P;
+  let lo = 1e30, hi = -1e30;
+  for (let v = 0; v < R.dec.n; v++) { const y = P[v * 3 + 1]; if (y < lo) lo = y; if (y > hi) hi = y; }
+  const sp = hi - lo || 1;
+  figH.fill(1);
+  for (let i = 0; i < R.dec.n; i++) figH[i] = (P[rig.ord[i] * 3 + 1] - lo) / sp;
+
+  // no beat before the lines: the wipe schedule owns their timing now
+  wireAt = 0;
+  rig.R = R; rig.src = src; rig.on = 1; rig.out = 0;
+  rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
+  rig.wipe = [0, 0, 0, 0];
+  solidWant = 1;
+  figChooser(1);
+  caption(null, src + " · building");
+  return true;
+}
+
+function figStop() {
+  if (!rig.on) return false;
+  rig.out = performance.now();
+  return true;
+}
+function figClear() {
+  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
+  figChooser(0);
+}
+
+/* Where the four wipes are, this frame. Building runs them up in order; leaving
+   runs them DOWN in the opposite order, so the colour goes first and the dots
+   go last -- undressing rather than rewinding. */
+function figWipes(now) {
+  const W2 = rig.wipe;
+  if (rig.hold) { for (let k = 0; k < 4; k++) W2[k] = rig.hold[k]; return; }
+  if (rig.out) {
+    const e = (now - rig.out) / 1000;
+    for (let k = 0; k < 4; k++) {
+      const u = (e - FIG.start[3 - k] * 0.55) / (FIG.climb * 0.8);
+      W2[k] = FIG.top * Math.max(0, 1 - Math.max(0, u));
+    }
+    return;
+  }
+  const e = (now - rig.at) / 1000;
+  for (let k = 0; k < 4; k++)
+    W2[k] = FIG.top * Math.max(0, Math.min(1, (e - FIG.start[k]) / FIG.climb));
+}
+// 0..1 for one particle against one wipe, with a soft front
+function figGate(i, k) {
+  const d = (rig.wipe[k] - figH[i]) / FIG.soft;
+  return d <= 0 ? 0 : d >= 1 ? 1 : d;
+}
+/* An edge or a face belongs to its LOWEST corner. Taking the highest makes the
+   surface trail the lines by a whole limb near the shoulders, where a triangle
+   can span a lot of body; taking the lowest makes each stage arrive as one
+   front instead of a fringe. */
+function figGate3(a, b, c, k) {
+  let h = figH[a];
+  if (figH[b] < h) h = figH[b];
+  if (c !== undefined && figH[c] < h) h = figH[c];
+  const d = (rig.wipe[k] - h) / FIG.soft;
+  return d <= 0 ? 0 : d >= 1 ? 1 : d;
+}
+
+/* Once per frame: advance the take, pose the skeleton, blend the vertices, and
+   write the result into the formation the particles are already chasing. They
+   chase it through a spring, which is why the figure has a little weight in it
+   -- the dots lag the skeleton by a frame or two and settle, and that lag is
+   free character nobody had to animate. */
+function updateFigure(dt, now) {
+  if (!rig.on) return;
+  // something else took the field -- a shell, a word, a reload. Nothing to wipe.
+  if (!formWant && !rig.out) { figClear(); return; }
+  if (rig.out && now - rig.out > (FIG.start[3] * 0.55 + FIG.climb * 0.8 + 0.4) * 1000) {
+    formWant = 0; formUntil = 0; figClear(); return;
+  }
+  figWipes(now);
+  const R = rig.R;
+  rig.t += (dt / 1000) * rig.speed;
+  rigPose(R, rig.t);
+  rigSkin(R, R.wp, R.wn);
+  const f = R.fit, P = R.wp, N = R.wn, ord = rig.ord;
+  const n = Math.min(formN, ord.length);
+  for (let i = 0; i < n; i++) {
+    const v = ord[i] * 3;
+    formX[i] = (P[v] - f.c[0]) * f.k;
+    formY[i] = -(P[v + 1] - f.c[1]) * f.k;
+    formZ[i] = (P[v + 2] - f.c[2]) * f.k;
+    fnx[i] = N[v]; fny[i] = -N[v + 1]; fnz[i] = N[v + 2];
+  }
+  // the surface only exists once its own wipe has started climbing
+  solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
+  const st = rig.wipe[3] >= FIG.top ? 3 : rig.wipe[2] > 0 ? 2 : rig.wipe[1] > 0 ? 1 : 0;
+  if (st !== rig.stage && !rig.hold) {
+    rig.stage = st;
+    if (!rig.out) caption(null, rig.src + (st === 3 ? " · dancing" : " · building"));
+    figChooser(1);
+  }
+}
+
+/* Five buttons: the four states, and auto. Holding a state freezes the wipes
+   where that state covers the whole body, which is how each one gets looked at
+   on its own -- the build is over in five seconds and the interesting middle of
+   it is about four hundred milliseconds wide. `auto` hands it back to the
+   timeline, which restarts the build from the floor. */
+const figEl = document.getElementById("fig");
+function figChooser(on) {
+  if (!on) { figEl.className = ""; figEl.innerHTML = ""; return; }
+  if (!figEl.children.length) {
+    for (const nm of FIG_STAGE.concat(["auto"])) {
+      const b = document.createElement("button");
+      b.textContent = nm;
+      b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); figPick(nm); };
+      figEl.appendChild(b);
+    }
+  }
+  figEl.className = "on";
+  const at = rig.hold ? rig.holdName : "auto";
+  for (const b of figEl.children) b.className = b.textContent === at ? "at" : "";
+}
+function figPick(nm) {
+  if (!rig.on) return;
+  if (nm === "auto") {
+    rig.hold = 0; rig.holdName = ""; rig.at = performance.now(); rig.out = 0;
+  } else {
+    const k = FIG_STAGE.indexOf(nm);
+    // everything up to and including this stage covers the whole body; nothing
+    // above it has started
+    rig.hold = [0, 1, 2, 3].map((j) => (j <= k ? FIG.top : 0));
+    rig.holdName = nm;
+    rig.out = 0;
+  }
+  figChooser(1);
+  caption(null, rig.src + " · " + nm);
+}
+
 async function showModel(src, seconds) {
   const m = await loadModel(src);
   if (!m) return false;
@@ -2871,6 +3527,8 @@ function faceGlyph() {
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
   hologram:{seq:true}, holo:{holo:true}, projection:{seq:true},
+  colin:{figure:"colin_dance"}, dance:{figure:"colin_dance"},
+  dancing:{figure:"colin_dance"}, figure:{figure:true}, character:{figure:true},
   images:{gallery:true}, gallery:{gallery:true}, pictures:{gallery:true},
   // and back out of any of it
   home:{home:true}, back:{home:true}, stop:{home:true}, cancel:{home:true},
@@ -3009,6 +3667,11 @@ function menuPoints() {
    cancelled once it started. */
 function goHome(why) {
   stopSequence();
+  /* A figure LEAVES rather than vanishing: the same four wipes, run down in the
+     opposite order, so the colour drains off before the surface does and the
+     dots are the last thing to go. Which means goHome cannot simply drop the
+     formation -- updateFigure owns the ending and clears it when it is done. */
+  if (rig.on && !rig.out) { figStop(); if (why) caption(null, why); stirred(); return true; }
   gallery.on = false; gallery.shots = []; gallery.drag = null; clearPhoto();
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
@@ -3435,7 +4098,8 @@ function feedWords(finalText, interimText) {
        the shop yesterday". The sentence matcher owns leaving, because it can
        see how long the sentence is; a word cannot. */
     if (trig && trig.home) continue;
-    if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq || trig.gallery)) {
+    if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq ||
+                 trig.gallery || trig.figure)) {
       setFormation(trig, 10); localTook = 1; continue;
     }
     /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
@@ -3462,12 +4126,13 @@ function setFormation(spec, seconds) {
   if (spec && spec.home) return goHome("");
   const owned = (form3d || menuOn) && formWant;
   if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo ||
-                          spec.seq || spec.gallery))) return false;
+                          spec.seq || spec.gallery || spec.figure))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
   if (spec && spec.gallery) { showGallery(0); return true; }
+  if (spec && spec.figure) { showFigure(spec.figure === true ? "" : spec.figure); return true; }
   if (spec && spec.seq) { showSequence(spec.seq === true ? "" : spec.seq); return true; }
   if (spec && spec.holo) { showHologram(spec.holo === true ? "" : spec.holo, seconds || 26); return true; }
   if (spec && spec.model) { showModel(spec.model, seconds || 12); return true; }
@@ -3517,6 +4182,7 @@ function setFormation(spec, seconds) {
      draws a ball of string in roughly the shape of the model. Sort a
      permutation instead and carry the edges through its inverse. */
   holoE = null;
+  formOrd = null;
   if (formE) {
     const ord2 = pts.map((_, i) => i)
       .sort((a, b) => Math.atan2(pts[a][1], pts[a][0]) - Math.atan2(pts[b][1], pts[b][0]));
@@ -3535,6 +4201,9 @@ function setFormation(spec, seconds) {
        satellite's centre and wearing another satellite's colour -- which drew
        as spiky blobs at twice the radius they were supposed to have. */
     if (asMenu) asMenu.groups = ord2.map((i) => asMenu.groups[i]);
+    /* Handed out, because a rig has to write new positions into these particles
+       every frame and needs to know which vertex each one is holding. */
+    formOrd = ord2;
   } else {
     pts.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));
   }
@@ -3748,6 +4417,7 @@ function loop() {
   // states write drive before anything reads it
   updateState(dt);
   updateFormation(dt);
+  updateFigure(dt, now);
   updateShell();
 
   const baseR = cfg.radius * scale;
@@ -3811,7 +4481,11 @@ function loop() {
       now - lastActive > cfg.idleS * 1000) setFormation({ menu: true });
 
   // the cloud lands first and holds for a beat, then the mesh draws itself in
-  const wireWant = formE && formWant && now > wireAt ? (formHasB ? 1 : cfg.wire) : 0;
+  /* A figure's wireframe is a STAGE, not a hint. cfg.wire is 0.12, which is
+     right for a mesh whose lines are a suggestion under a cloud of dots and
+     invisible when the lines are the whole thing you are being shown -- the
+     lines step of the build did not read at all until this. */
+  const wireWant = formE && formWant && now > wireAt ? (rig.on || formHasB ? 1 : cfg.wire) : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
   /* The picture comes up, and the drawing that announced it stands down. Both
      are eased, and they overlap: for about a second you can see the dots
@@ -3986,7 +4660,7 @@ function loop() {
       // lump in the middle of the explosion.
       const isCore = !bs && pr[i] < cfg.core;
       const held = formOn[i] === 1;            // is this one holding the shape
-      const fT = held ? formT : 0;
+      const fT = held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
       let ringR;
       if (isCore) {
         ringR = baseR * gScale * cfg.coreR;
@@ -4329,7 +5003,9 @@ function loop() {
        face the camera, and that test needs the position of the one that does
        not. */
     const held = formOn[i] === 1;
-    const fT = held ? formT : 0;
+    // a figure is built from the floor up: a particle whose height the wipe has
+    // not reached yet is still out in the ring, on its way
+    const fT = held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
     let hidden = false;
     if (culling && held) {
       const nzv = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
@@ -4495,8 +5171,22 @@ function loop() {
     for (let b = 0; b < SB * DB; b++) paths.push(null);
     const dzs = zSpan * 1.35;
     ctx.globalAlpha = solidT;
+    /* The textured half. Canvas 2D cannot draw a perspective-correct textured
+       triangle, so "textured" here is the mesh wearing its own colours, one
+       flat patch per face, baked once from the map. The cost is that every face
+       wants its own fillStyle and the whole reason this draws fast is that it
+       batches by colour -- so the map is quantised at load into a few dozen
+       colours, and a face is bucketed by (colour, shade, depth) exactly the way
+       an untextured one is bucketed by (shade, depth). A character's texture is
+       four or five materials, so in practice this is a couple of hundred fills
+       rather than seven thousand. */
+    const TSB = 3;
+    const tex = rig.on && rig.R && rig.R.triPal ? rig.R : null;
+    const tp = tex ? new Map() : null;
     for (let t = 0; t < formTri.length; t += 3) {
       const a = formTri[t], b2 = formTri[t + 1], c = formTri[t + 2];
+      // the surface wipe, climbing the body a beat behind the lines
+      if (rig.on && figGate3(a, b2, c, 2) <= 0) continue;
       /* Not gated on visA. That flag is the back-surface culling for the DOTS,
          and dropping a whole triangle because one of its corners is a hidden
          particle punched holes all over the surface -- which is the one thing a
@@ -4542,13 +5232,48 @@ function loop() {
       const bk = Math.min(SB - 1, (f2 * SB) | 0);
       const u2 = -(szA[a] + szA[b2] + szA[c]) / 3 / dzs * 0.5 + 0.5;   // 1 near
       const dk = Math.min(DB - 1, Math.max(0, ((1 - u2) * DB) | 0));   // 0 near
-      const slot = dk * SB + bk;
-      let pth = paths[slot];
-      if (!pth) { pth = paths[slot] = new Path2D(); }
+      let pth;
+      if (tex && figGate3(a, b2, c, 3) > 0.5) {
+        // half the depth buckets of the untextured path. Each bucket is a fill
+        // call and there are fifty colours in play, so this is the difference
+        // between six hundred fills a frame and three hundred.
+        const key = (((dk >> 1) * TSB + Math.min(TSB - 1, (f2 * TSB) | 0)) * 256) + tex.triPal[t / 3];
+        pth = tp.get(key);
+        if (!pth) tp.set(key, pth = new Path2D());
+      } else {
+        const slot = dk * SB + bk;
+        pth = paths[slot];
+        if (!pth) { pth = paths[slot] = new Path2D(); }
+      }
       pth.moveTo(ax, ay); pth.lineTo(sxA[b2], syA[b2]); pth.lineTo(sxA[c], syA[c]);
       pth.closePath();
     }
-    for (let d = DB - 1; d >= 0; d--)                     // far first
+    /* Grouped by depth, so the textured faces can be drawn INSIDE the same
+       far-to-near pass as the untextured ones. Drawn as a block afterwards they
+       land on top of everything, and during the wipe -- which is exactly when
+       both kinds are on screen at once -- a textured thigh drew straight over
+       the arm in front of it. */
+    const tByD = [];
+    if (tp) for (const e2 of tp) {
+      const d = ((e2[0] >> 8) / TSB | 0) * 2 + 1;         // back to the fine scale
+      (tByD[d] || (tByD[d] = [])).push(e2);
+    }
+    for (let d = DB - 1; d >= 0; d--) {                   // far first
+      for (const [key, pth] of tByD[d] || []) {
+        const pal = tex.pal[key & 255];
+        const sh = ((key >> 8) % TSB + 0.5) / TSB;
+        // the same light the untextured surface uses, applied to the map's own
+        // colour instead of to the palette -- so the figure is still lit, and
+        // the shading is still what says it is a shape and not a sticker
+        // brighter than the untextured shading, because a texture is already
+        // dark where the model is dark: the hoodie came out near black at the
+        // ambient the palette uses, and a figure you cannot see is not lit
+        const g3 = 0.52 + 1.05 * sh;
+        ctx.fillStyle = "rgb(" + Math.min(255, pal[0] * g3 | 0) + "," +
+                                 Math.min(255, pal[1] * g3 | 0) + "," +
+                                 Math.min(255, pal[2] * g3 | 0) + ")";
+        ctx.fill(pth);
+      }
       for (let b = 0; b < SB; b++) {
         const pth = paths[d * SB + b];
         if (!pth) continue;
@@ -4560,6 +5285,7 @@ function loop() {
         ctx.fillStyle = lut[li3];
         ctx.fill(pth);
       }
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -4642,26 +5368,44 @@ function loop() {
       // fewer depth buckets once a surface is under the outline: the solid is
       // doing the occluding now, so the ordering matters much less
       const BK = solidT > 0.5 ? 2 : 6;
-      ctx.lineWidth = Math.max(0.6, 1.15 * k);
+      /* Thinner and softer for a figure. Nine thousand edges over a body 250px
+         tall is not a wireframe, it is a grey fill: at full weight the lines
+         stage came out as a solid mass with the dots lost inside it. */
+      ctx.lineWidth = rig.on ? Math.max(0.5, 0.75 * k) : Math.max(0.6, 1.15 * k);
+      if (rig.on) ctx.globalAlpha = wireT * 0.62;
+      /* One pass over the edges, not one per bucket. The old shape walked the
+         whole list once for every depth bucket and threw away five sixths of it
+         each time -- fine at a few hundred edges, and 56,000 wasted iterations
+         at a figure's 9,310. Build the paths in a single pass and stroke them
+         afterwards. Measured on the figure: 31fps to 44. */
+      const wp2 = wirePath;
+      for (let b = 0; b < BK; b++) wp2[b] = null;
+      for (let e = 0; e < formE.length; e += 2) {
+        const a = formE[e], c = formE[e + 1];
+        if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
+        if (rig.on) {
+          if (figGate3(a, c, undefined, 1) <= 0) continue;
+          /* And nothing the surface has already closed over. A wireframe under
+             an opaque fill is 9,310 line segments producing a barely visible
+             fringe -- it is the single most expensive thing on the screen and
+             it is behind something. The lines stay visible exactly where they
+             are still the outermost thing: at and above the fill's own front. */
+          if (figGate3(a, c, undefined, 2) > 0.9) continue;
+        }
+        // an edge belongs to the bucket its midpoint falls in
+        const u = -(szA[a] + szA[c]) / 2 / (zSpan * 0.72) * 0.5 + 0.5;
+        const bk = ((1 - Math.max(0, Math.min(0.999, u))) * BK) | 0;
+        const pth = wp2[bk] || (wp2[bk] = new Path2D());
+        pth.moveTo(sxA[a], syA[a]); pth.lineTo(sxA[c], syA[c]);
+      }
       for (let b = 0; b < BK; b++) {
+        if (!wp2[b]) continue;
         const t = 1 - (b + 0.5) / BK;                      // 1 near .. 0 far
         const sz2 = (t * 2 - 1) * sizeHiPx;
         let li2 = ((sz2 - LUT_LO) / span * (LUT_N - 1)) | 0;
         if (li2 < 0) li2 = 0; else if (li2 >= LUT_N) li2 = LUT_N - 1;
         ctx.strokeStyle = lut[li2];
-        ctx.beginPath();
-        let drew = 0;
-        for (let e = 0; e < formE.length; e += 2) {
-          const a = formE[e], c = formE[e + 1];
-          if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
-          // an edge belongs to the bucket its midpoint falls in
-          const u = -(szA[a] + szA[c]) / 2 / (zSpan * 0.72) * 0.5 + 0.5;
-          const bk = ((1 - Math.max(0, Math.min(0.999, u))) * BK) | 0;
-          if (bk !== b) continue;
-          ctx.moveTo(sxA[a], syA[a]); ctx.lineTo(sxA[c], syA[c]);
-          drew++;
-        }
-        if (drew) ctx.stroke();
+        ctx.stroke(wp2[b]);
       }
     }
     ctx.globalAlpha = 1;

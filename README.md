@@ -664,6 +664,95 @@ its own colour is passed as `flat`, outside the split.
 
 ---
 
+### Colin, built from the feet up
+
+Say **colin** — or *dance*, or *figure*, or `/show figure` — and the field builds
+a rigged, skinned, animated model of a person out of itself, from the floor
+upwards, and then leaves him dancing. Four wipes climb the body, each starting
+before the one below it has finished:
+
+| | |
+|---|---|
+| **dots** | particles leave the ring and stand on the vertices |
+| **lines** | edges appear between dots that are already in place |
+| **fill** | the surface closes over the lines, in the orb's own palette |
+| **texture** | the model's own colours arrive on the surface |
+
+Measured, one frame per 500ms: at 1.4s the legs are a wireframe and everything
+above the hips is still a cloud; at 2.3s the shoes are textured, the jeans are a
+green-and-violet ghost fill, and the head is still dots. Leaving runs the same
+four wipes back **down** in the opposite order — the colour drains off first and
+the dots are the last thing to go, which reads as undressing rather than as
+rewinding.
+
+**It animates the whole time**, from the first foot. A figure that stands still
+while it assembles and then starts moving is two things — a diagram, and then a
+character. One thing that is alive while it is being made is much stranger.
+
+Everything gates on **one number per particle**: `figH`, its height up the body,
+0 at the feet and 1 at the crown. From the **bind** pose, not the live one — a
+wipe that follows a waving hand is a wipe that goes backwards. An edge or a face
+takes the height of its *lowest* corner, so each stage arrives as one front
+rather than a fringe; taking the highest made the surface trail the lines by a
+whole limb across the shoulders, where one triangle can span a lot of body.
+
+#### What had to be built
+
+- **Skinning.** Sample the keyframe curves, walk the node tree for each joint's
+  world matrix, multiply in the inverse bind, blend four per vertex. 66 joints,
+  a 13-second take, 198 channels. It costs **0.32ms a frame**, which was the
+  surprise — the drawing is the expensive half by fifty to one.
+- **Decimation.** 24,446 vertices and 45,868 triangles is an order of magnitude
+  past what a canvas full of dots can draw. Vertex clustering takes it to 3,085
+  and 6,404, and the clustering is **attribute-preserving**: each cluster keeps
+  one representative's skin weights and texture coordinates. Averaging weights
+  across a cluster that spans two limbs tears the mesh apart the moment they
+  separate.
+- **Texture.** Canvas 2D cannot draw a perspective-correct textured triangle, so
+  "textured" here is the mesh wearing its own colours, one flat patch per face,
+  sampled at each triangle's centroid. UVs do not change when the model moves —
+  that is what UVs are — so this is baked once at load rather than looked up
+  60 times a second. The map is quantised to 49 colours so the surface can still
+  batch by colour; a character's texture is four or five materials.
+- **A stage chooser.** Five buttons while a figure is up: the four states and
+  `auto`. Holding a state freezes the wipes where that state covers the whole
+  body. The build is over in four seconds and the interesting middle of it is
+  about four hundred milliseconds wide, so each state needed to be sittable-in.
+
+#### Three bugs, and what each one looked like
+
+**`GLB_N` had no `MAT4`.** `GLB_N[a.type] || 1` read an inverse bind matrix as
+*one float per joint at a stride of four bytes*. Every joint got a garbage
+transform and the figure collapsed to a fifth of its own size — a thin vertical
+sliver with two stray lines hanging off it. The `|| 1` fallback is what made it
+silent: a missing entry looked like a scalar rather than an error, so it read out
+cleanly and drew wrong. Its bounding box (0.09→0.53 wide against a 5-unit model)
+is what named it.
+
+**The wipes stopped at exactly 1.** Which leaves the last soft-edge band — the
+top eighth of the head — permanently half gated, so the finished figure had no
+crown: no surface on it, no texture, just dots. Every wipe now runs past the top
+of the body by the width of its own soft edge.
+
+**`cfg.wire` is 0.12,** which is right for a mesh whose lines are a hint under a
+cloud of dots and invisible when the lines are the entire thing being shown. The
+lines stage did not read at all until a figure was allowed its own weight — and
+then read as a solid grey mass, because nine thousand edges over a body 250px
+tall is a fill. Thinner and at 62%, they are lines again.
+
+#### What it costs
+
+60fps while the dots assemble, a dip to **29fps** at the busiest moment (a full
+dot cloud, a full wireframe, and the surface climbing through it), then **40–43
+fps** textured and dancing. Two things paid for most of that: the wireframe used
+to walk the whole edge list once per depth bucket and throw away five sixths of
+it each time — 56,000 wasted iterations at a figure's 9,310 edges — and the lines
+under a closed surface were nine thousand segments producing a barely visible
+fringe behind something opaque. They are drawn in one pass now, and only where
+they are still the outermost thing.
+
+---
+
 ### The little one
 
 Something else owns the field -- a hologram, a knot, a gallery of photographs --
