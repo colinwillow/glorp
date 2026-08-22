@@ -968,6 +968,9 @@ say.addEventListener("keydown", (e) => {
     else if (/^model /i.test(what)) showModel(what.slice(6).trim(), 14);
     else if (/^holo ?/i.test(what)) showHologram(what.replace(/^holo ?/i, "").trim(), 26);
     else if (/^(seq|hologram) ?/i.test(what)) showSequence(what.replace(/^(seq|hologram) ?/i, "").trim());
+    else if (/^solid ?/i.test(what))
+      showSequence(what.replace(/^solid ?/i, "").trim()).then(() =>
+        setTimeout(() => { solidWant = 1; }, 3600));
     else if (/^image /i.test(what)) showImage(what.slice(6).trim(), 8);
     else setFormation(SHELLS[key] ? { shell:key }
                : TRIGGERS[key] ? TRIGGERS[key]
@@ -1161,8 +1164,54 @@ frzBtn.onclick = () => {
   frzBtn.classList.toggle("on", frozen);
 };
 
+/* Rebuild the whole tap: a fresh stream, a fresh context, a fresh analyser.
+   Everything downstream reads A, so replacing it wholesale is the only way to
+   be sure nothing is left holding the dead one. */
+async function regrabMic() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    await ac.resume();
+    const an = ac.createAnalyser();
+    an.fftSize = 2048; an.smoothingTimeConstant = 0.62;
+    ac.createMediaStreamSource(stream).connect(an);
+    try { A.stream.getTracks().forEach((t) => t.stop()); A.ac.close(); } catch (e) {}
+    A = { ac, an, stream,
+      freq: new Uint8Array(an.frequencyBinCount),
+      prev: new Float32Array(an.frequencyBinCount),
+      time: new Float32Array(an.fftSize), floorDb: -55, db: -99,
+      hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0 };
+    micState = "live";
+  } catch (e) { micState = "denied"; }
+}
+
 function analyse() {
   if (A && !frozen) {
+    /* A microphone that is live and delivering digital silence.
+       -140 dB is not a quiet room -- it is 20*log10 of nothing at all, and it
+       has shown up on three separate screenshots with the speech recogniser
+       working perfectly beside it. Two consumers of one microphone: iOS hands
+       it to recognition and leaves this context suspended, or leaves the track
+       muted, and the visualiser then reads zeros for ever while the words keep
+       arriving. Nothing downstream can tell that apart from a silent room.
+
+       So: resume a suspended context every frame it needs it, and if the stream
+       is still delivering nothing three seconds later, take the whole tap down
+       and build a new one. Once every ten seconds at most, because a re-grab
+       that fails is worse than a wait. */
+    if (A.ac.state !== "running") { A.ac.resume().catch(() => {}); }
+    const dead = A.db <= -139 ||
+                 (A.stream.getAudioTracks()[0] || {}).muted === true;
+    const now2 = performance.now();
+    if (!dead) A.deadAt = 0;
+    else if (!A.deadAt) A.deadAt = now2;
+    else if (now2 - A.deadAt > 3000 && now2 - (A.grabAt || 0) > 10000) {
+      A.grabAt = now2; A.deadAt = 0;
+      micState = "silent — reopening";
+      regrabMic();
+    }
     A.an.getByteFrequencyData(A.freq);
     A.an.getFloatTimeDomainData(A.time);
 
@@ -2314,13 +2363,17 @@ async function showSequence(src) {
      standing on and reads as two unrelated pictures rather than one arrival. */
   const room = roomPoints(m);
   const cam = { tilt: HOLO.tilt, spin: 0, yaw0: 0, fs: HOLO.fs };
+  /* One stage, not three. The voxel scan and the shaded solid were both built
+     for this and both got cut on sight: the scan is a coarser, blockier reading
+     of the same head, and the solid loses the whole reason the thing is made of
+     particles. What is left is the one that reads -- the model itself, standing
+     in the room, drawn out of the field. Both are still there and still
+     reachable: /show holo <model> for the scan, /show solid <model> for the
+     surface. Neither is on the way to anywhere any more. */
   const steps = [
-    [0,     () => showHologram(src + (shell ? " shell" : ""), 8),  "scanning " + label],
-    [7200,  () => setFormation({ points: room.pts, edges: room.edges, tris: room.tris,
-                                 label: src, ...cam }, 30),        "reading " + label],
-    [4600,  () => { solidWant = 1; },                              label],
-    [9000,  () => { solidWant = 0; },                              "letting go of " + label],
-    [3000,  () => { formWant = 0; formUntil = 0; },                ""],
+    [0,     () => setFormation({ points: room.pts, edges: room.edges, tris: room.tris,
+                                 label: src, ...cam }, 34),        label],
+    [30000, () => { formWant = 0; formUntil = 0; },                ""],
   ];
   let i = 0;
   const run = () => {
@@ -4043,7 +4096,8 @@ function loop() {
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
-                        "\nmic " + micState + "  in " + f2(mic.scale) +
+                        "\nmic " + (A && A.db <= -139 && micState === "live" ? "SILENT" : micState) +
+                        "  in " + f2(mic.scale) +
                         (standalone ? "  [standalone]" : "") +
                         (brain.url ? "" : "  [no endpoint]") +
                         (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");

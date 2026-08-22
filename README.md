@@ -1087,19 +1087,40 @@ word to spell further down — and in an object literal the second one silently
 wins, so it was the only one of the eight that did nothing. Three of four routes
 home passed on the first test, and that is how the fourth was found.
 
+### A microphone that is live and delivering silence
+
+`dB -140` is not a quiet room. It is 20·log₁₀ of *nothing at all*, and it turned
+up on three separate screenshots with the speech recogniser working perfectly
+beside it — words arriving, transcript on screen, field completely still.
+
+Two consumers of one microphone. iOS hands it to recognition and leaves this
+context suspended, or leaves the track muted, and the analyser then reads zeros
+for ever. Nothing downstream can tell that apart from a silent room, which is
+why it looked like the visualiser had stopped reacting — twice.
+
+Three things now:
+
+- A suspended context is resumed on every frame that needs it.
+- If the stream is still delivering nothing three seconds later, the whole tap
+  is rebuilt — new stream, new context, new analyser — at most once every ten
+  seconds, because a re-grab that fails is worse than a wait.
+- The HUD says **SILENT** rather than **live**, so it can never look like a
+  quiet room again.
+
 ### The sequence
 
-What a character arriving is supposed to be, and it is all one command —
-`hologram`, or `/show seq <model>`:
+`hologram`, or `/show seq <model>`: the particles leave the ring and become the
+model, standing in the room, turning once.
 
-1. the particles gather into a **scan** on the floor
-2. the scan resolves into an **outline** — a different point set, so they
-   genuinely fly between the two, which *is* the transition
-3. the **surface** fills in behind the outline and turns once
-4. it drains back out to the outline, and the outline back to the orb
+It was built as four stages — scan, outline, surface, deconstruct — and two of
+them were cut on sight. The voxel scan is a coarser, blockier reading of the
+same head, and the shaded solid loses the whole reason the thing is made of
+particles. What survived is the one that reads. Both of the others still work
+and are still reachable — `/show holo <model>` for the scan, `/show solid
+<model>` for the surface — they are just not on the way to anywhere any more.
 
-Stages 3 and 4 are the same point set with the fill easing over it, which is why
-those read as one object changing rather than two objects swapping.
+The lesson is worth keeping: a sequence of three good ideas is not better than
+the best one of them, and you cannot tell which is which until you watch it.
 
 **Every stage stands in the same room.** The model used to arrive in an empty
 black void — the floor belonged to the scan and to nothing else — which throws
