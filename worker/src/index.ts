@@ -49,9 +49,19 @@ You have a menu -- a hub with six labelled satellites, opened by saying "menu" a
 
 The show tool makes your particles leave the ring and stand as a word, a short phrase, an emoji or a face for a few seconds, then drift back. Use it when someone asks you to show, spell, draw or display something, and whenever a word would land better shown than said -- your own name, a number, the one word a sentence turns on. It can also set off a firework, which is for good news and nothing else. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.`;
 
-function persona(env: Env): string {
+function persona(env: Env, pictures: string[] = []): string {
   const custom = (env.ORB_PERSONA ?? "").trim();
-  return (custom || PERSONA) + "\n\n" + PROTOCOL;
+  /* Only mentioned when there are some. A model told it can show pictures, with
+     no list, offers ones that do not exist; a model told nothing says it has no
+     pictures at all -- which was true from where it was standing, and reads as
+     the feature being broken rather than unwired. */
+  const gallery = pictures.length
+    ? "\n\nYou can also show a picture from the drawings you have: " + pictures.join(", ") +
+      ". Pass the name to the show tool as `image`. Use one when it is asked for by name, " +
+      "or when one of them plainly is what is being talked about. These are the only ones " +
+      "you have; never offer a picture that is not on this list."
+    : "";
+  return (custom || PERSONA) + "\n\n" + PROTOCOL + gallery;
 }
 
 /* Said when Claude answers with a tool call and no words at all. It used to be
@@ -137,9 +147,19 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
-  let body: { messages?: Anthropic.MessageParam[] };
+  let body: { messages?: Anthropic.MessageParam[]; images?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
+
+  /* What is in the page's images/ folder. It cannot be known from here -- the
+     Worker has never seen that host -- so the page says, every turn. Bounded
+     and scrubbed on the way in: this lands in a system prompt, and it arrives
+     from a request anyone can make. */
+  const pictures = (Array.isArray(body.images) ? body.images : [])
+    .filter((n): n is string => typeof n === "string")
+    .map((n) => n.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, "").slice(0, 40))
+    .filter((n) => n.length > 0)
+    .slice(0, 60);
 
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -168,7 +188,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, shape, shell or menu. " +
+      "Do something with the orb's particles. Give exactly one of text, image, shape, shell or menu. " +
       "text and shape make the particles leave their ring and stand as something for a few seconds, then return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
       "or anything worth setting off. Never use a shell for an ordinary answer.",
@@ -180,6 +200,12 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           description:
             "A short word or phrase to spell out, about ten characters at most -- longer will not read. " +
             "A single emoji works too and draws as itself.",
+        },
+        image: {
+          type: "string",
+          description:
+            "The name of one of the drawings you have, if you were given a list of them. " +
+            "It is traced out of the particles and held for a few seconds. Name only, no file extension.",
         },
         shape: { type: "string", enum: ["face"], description: "A built-in shape." },
         menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
@@ -211,7 +237,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:

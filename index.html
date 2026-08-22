@@ -463,7 +463,11 @@ async function ask(text) {
     const res = await fetch(brain.url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages: brain.history })
+      /* The brain cannot see the folder, so it is told what is in it. Without
+         this it answers that it has no pictures -- which was true from where it
+         was standing, and is the kind of gap that reads as the feature being
+         broken rather than unwired. */
+      body: JSON.stringify({ messages: brain.history, images: imageList || [] })
     });
     if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
 
@@ -1456,6 +1460,45 @@ function imageToPoints(img) {
   }
   return samplePixels(d, S);
 }
+
+/* What is actually in images/. Nobody should have to keep a list by hand, and a
+   static host cannot list a directory -- but the repository behind Pages can say
+   what it holds, and the page is served from a URL that names the repository.
+   So: a checked-in index.json wins if there is one, and otherwise the host name
+   is read backwards into an owner and a repo and GitHub is asked. Neither
+   working is fine; it just means the brain is never told pictures exist, which
+   is better than it offering one that is not there.
+
+   Asked once per load, at startup, so nothing waits on it mid-sentence. */
+let imageList = null;
+async function listImages() {
+  if (imageList) return imageList;
+  imageList = [];
+  const clean = (n) => String(n).replace(/\.[^.]+$/, "");
+  try {
+    const r = await fetch("images/index.json");
+    if (r.ok) {
+      const j = await r.json();
+      if (Array.isArray(j)) imageList = j.map(clean);
+    }
+  } catch (e) { /* no manifest is the normal case, not an error */ }
+  if (!imageList.length && /\.github\.io$/i.test(location.hostname)) {
+    const owner = location.hostname.split(".")[0];
+    const repo = location.pathname.split("/")[1] || location.hostname;
+    try {
+      const r = await fetch("https://api.github.com/repos/" + owner + "/" + repo + "/contents/images");
+      if (r.ok) {
+        const j = await r.json();
+        if (Array.isArray(j)) imageList = j
+          .filter((f) => f.type === "file" && /\.(png|jpe?g|webp|gif|svg)$/i.test(f.name))
+          .map((f) => clean(f.name));
+      }
+    } catch (e) { /* offline, rate limited, private repo -- all the same here */ }
+  }
+  if (imageList.length) console.log("orb images", imageList.join(", "));
+  return imageList;
+}
+listImages();
 
 const imageCache = {};
 async function showImage(src, seconds) {
