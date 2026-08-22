@@ -309,12 +309,27 @@ function updateState(dt) {
       heardVoice = true; quietT = 0;
     } else if (state === "listening") {
       quietT += dt;
-      if (heardVoice && quietT > cfg.holdMs) setState("thinking");
+      /* Idle, not thinking, when there is a microphone. Thinking is a scripted
+         state -- it animates a canned envelope, because its job is to look like
+         work is happening while a reply is fetched -- and dropping into it three
+         quarters of a second after every pause meant the field spent those
+         seconds ignoring the room. A real question sets it from ask(); nothing
+         else should. Idle with a live mic still reads the microphone. */
+      if (heardVoice && quietT > cfg.holdMs) setState(A ? "idle" : "thinking");
       else if (!heardVoice && quietT > cfg.holdMs * 3) setState("idle");
     } else if (state === "thinking" && stateT > cfg.thinkMs) {
-      // a real request in flight owns the thinking state -- it ends when the
-      // reply lands, not when a timer says so
-      if (!brain.busy) setState("speaking");
+      /* A real request in flight owns the thinking state -- it ends when the
+         reply lands, not when a timer says so. And when nothing was asked at
+         all, go back to LISTENING rather than on into a scripted reply.
+
+         The think-then-speak pair is the demo for a page with no microphone and
+         no brain. With a live mic it fired every time somebody stopped talking
+         for three quarters of a second, and its canned envelope runs nearly
+         twice as strong as an actual voice -- so the orb went quiet while you
+         were speaking and then flailed about the moment you stopped, which
+         reads exactly like a visualiser ignoring you. Measured through the real
+         path: drive 0.19 under speech, 0.35 in the silence after it. */
+      if (!brain.busy) setState(A ? "listening" : "speaking");
     } else if (state === "speaking" && stateT > (planMs || cfg.speakMs)) {
       plan = null; planMs = 0;
       setState(A ? "listening" : "idle");
@@ -2790,13 +2805,21 @@ function feedWords(finalText, interimText) {
       const k = MENU.findIndex((it) => it.label === w2);
       if (k >= 0) { menuPick(k); echoSeen = settled; return; }
     }
+    /* Commands, always. Saying "menu" or "hologram" is asking for a thing. */
     const trig = TRIGGERS[w2];
-    if (trig && (trig.solid || trig.model || trig.image)) { setFormation(trig, 10); continue; }
-    if (trig) setFormation(trig, cfg.flashMs / 1000);
+    if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq)) {
+      setFormation(trig, 10); continue;
+    }
+    /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
+       cool, love, wow, hmm -- and every one of them took the whole field for a
+       second of ordinary conversation, which is a second the field spends not
+       reacting to the voice that triggered it. Echo is where that belongs. */
+    if (trig && echoMode === 1) setFormation(trig, cfg.flashMs / 1000);
     /* Only echo spells what it hears. Duet used to as well, and a transcript
        drawn in particles turns out to be the least interesting thing this can
        do with a voice -- the muse has the listening half now. */
-    else if (echoMode === 1 && word.length > 1) setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
+    else if (echoMode === 1 && word.length > 1 && !trig)
+      setFormation({ text: word.toUpperCase() }, cfg.flashMs / 1000);
   }
   if (settled > echoSeen) echoSeen = settled;
 }

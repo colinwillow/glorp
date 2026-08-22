@@ -43,6 +43,32 @@ machine, and later the brain, cost almost nothing to add.
 separation is what lets voice detection keep running while a scripted state
 owns the visuals — otherwise the orb could not hear itself being interrupted.
 
+### The scripted states are the demo, not the default
+
+`thinking` and `speaking` animate canned envelopes. That is their job: they make
+the orb look alive on a page with no microphone and no brain. But the state
+machine dropped into them **three quarters of a second after every pause**, and
+a canned envelope runs nearly twice as strong as an actual voice — so the field
+went quiet while somebody was speaking and then flailed about the moment they
+stopped. Which reads precisely like a visualiser ignoring you, and was reported
+as exactly that.
+
+Measured through the real analysis path, with a voice playing into
+`getUserMedia`:
+
+| | state | drive | orb radius |
+|---|---|---|---|
+| before, silence | thinking → speaking | **0.35** | 221 px |
+| before, voice | listening | 0.19 | 232 px |
+| after, silence | idle | **0.00** | 133 px |
+| after, voice | listening | 0.18 | **233 px** |
+
+A pause with a live microphone goes to **idle** now, which reads the microphone,
+rather than to `thinking`, which does not. A real question still sets `thinking`
+from `ask()`, which is the only place that ever knew one was being asked.
+
+---
+
 ### States
 
 `idle | listening | thinking | speaking`, each writing the same five channels.
