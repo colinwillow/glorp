@@ -451,6 +451,42 @@ transparent and 842 on white — within three percent, which is resampling noise
 
 ---
 
+### Limiting the palette
+
+The colour was running the whole wheel — magenta to red to yellow to blue —
+on nothing more than the timbre of a quiet room, which read as a traffic light
+rather than as a thing reacting. Two causes, both fixed:
+
+**Colour rode on the spectral centroid alone, not on loudness.** At ordinary
+speaking level the centroid wanders all over its range, so the palette swung its
+full arc on ordinary noise. It rides on level as well now: below about a fifth
+of full it does not move at all, and it only reaches full swing when something
+is genuinely loud — which is the one time the wild colours are wanted.
+
+**Rotating a hue rotates both ends of the palette, and they sit 180° apart.**
+There is no rotation that puts the rim in the blues without putting the core in
+the yellows. So the two ends move by different amounts and in opposite
+directions: the rim swings a long way (violet toward blue), the core barely
+moves and toward mint rather than away from it.
+
+Measured off the built LUT — the rim sampled where it actually reads, the core
+at its brightest:
+
+| level | centroid | shift | rim | core |
+|---|---|---|---|---|
+| 0.05 | any | 0° | violet 290 | green 108 |
+| 0.25 | 1.00 | 1° | violet 289 | green 108 |
+| 0.42 | 1.00 | 20° | blue 270 | green 112 |
+| 0.65 | 1.00 | 60° | cyan-blue 230 | green 123 |
+| 0.95 | 1.00 | 71° | cyan-blue 219 | green 125 |
+
+Red, orange and yellow are now unreachable at any input. `HUE_RIM` and
+`HUE_CORE` are the two coefficients; setting them to `1` and `1` restores the
+old single-rotation behaviour. A firework still turns the whole wheel at once —
+its own colour is passed as `flat`, outside the split.
+
+---
+
 ## Shells
 
 A celebration is not a picture of a firework, it is one. Nothing is drawn: the

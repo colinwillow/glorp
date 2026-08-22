@@ -1366,11 +1366,23 @@ function toRgb(cr, cg, cb, hueShift) {
   else if (h < 300) { R = x; B = c2; } else { R = c2; B = x; }
   return "rgb(" + (((R + m) * 255) | 0) + "," + (((G + m) * 255) | 0) + "," + (((B + m) * 255) | 0) + ")";
 }
-function buildLut(hueShift) {
+/* The two ends of the palette move by different amounts, and in opposite
+   directions. Rotating a hue rotates BOTH of them, and they sit 180 degrees
+   apart, so there is no rotation that puts the rim in the blues without putting
+   the core in the yellows -- which is most of what made a loud room look like a
+   traffic light. The rim swings a long way, magenta toward violet and blue; the
+   core barely moves, and toward mint rather than away from it. `flat` is for
+   anything that wants the old behaviour of turning the whole wheel at once,
+   which is what a firework's own colour is. */
+const HUE_RIM = -1, HUE_CORE = 0.25;
+
+function buildLut(hueShift, flat) {
   const cl = (ch) => (ch < 0 ? 0 : ch > 255 ? 255 : ch);
   for (let i = 0; i < LUT_N; i++) {
     const size = LUT_LO + (i / (LUT_N - 1)) * (LUT_HI - LUT_LO);
-    lut[i] = toRgb(cl(size * cfg.rK + cfg.base), cl(size * cfg.gK + cfg.base), cl(size * cfg.bK + cfg.base), hueShift);
+    lut[i] = toRgb(cl(size * cfg.rK + cfg.base), cl(size * cfg.gK + cfg.base),
+                   cl(size * cfg.bK + cfg.base),
+                   hueShift * (size < 0 ? HUE_RIM : HUE_CORE) + (flat || 0));
   }
 }
 
@@ -2068,7 +2080,7 @@ async function loadModel(src) {
    containment wall, which at the old size was shredding it into a tangle. */
 const HOLO = {
   cells: 26, layers: 17,          // the volume standing on the pad
-  fs: 0.25,
+  fs: 0.25, tilt: 0.19,           // barely above it: looking across, not down
   /* The floor has to run off every edge, so its far rows are spaced
      geometrically rather than evenly: each one a little further than the last,
      which is what perspective does to them anyway. Twenty rows reach out to
@@ -2193,7 +2205,7 @@ async function showHologram(src, seconds) {
      one-point perspective is that the front edge stays square to you and both
      sides run away to the same place, which a rotation destroys. */
   const ok = setFormation({ points: pts, edges, label: "hologram",
-                            tilt: 0.52, spin: 0, yaw0: 0, fs: HOLO.fs }, seconds || 30);
+                            tilt: HOLO.tilt, spin: 0, yaw0: 0, fs: HOLO.fs }, seconds || 30);
   if (ok) caption(null, "hologram" + (shell ? " (shell)" : bare ? " (bare)" : "") + " · " + lit +
                         " lit of " + pts.length + " · " + edges.length / 2 + " lines");
   return ok;
@@ -2905,7 +2917,7 @@ const onLeave = () => { mx = my = -9999; };
   canvas.addEventListener(ev, onLeave));
 
 let frame = 0, lastT = performance.now(), acc = 0, frames = 0;
-let seededFor = 0, physAcc = 0, lastShift = -999;
+let seededFor = 0, physAcc = 0, lastShift = -999, lastFlat = -999;
 const STEP = 1000 / 60;
 
 function loop() {
@@ -3050,10 +3062,19 @@ function loop() {
 
   const museHue = muses.amt * cfg.muse *
     (MUSE_HUE[muses.a] + (MUSE_HUE[muses.b] - MUSE_HUE[muses.a]) * muses.mix);
-  const shift = Math.round(drive.hue * cfg.hueGain * 90 + museHue) + (bs ? bs.hue : 0);
+  /* Colour is driven by the spectral centroid, which at ordinary speaking level
+     wanders all over the place -- so the palette used to run the whole wheel on
+     nothing more than the timbre of a quiet room. It rides on LOUDNESS as well
+     now: below about a fifth of full it does not move at all, and it only
+     reaches its full swing when something is genuinely loud. Which is the one
+     time the wild colours are wanted. */
+  const hu = Math.max(0, Math.min(1, (drive.scale - 0.22) / 0.58));
+  const shift = Math.round(drive.hue * cfg.hueGain * 28 * (hu * hu * (3 - 2 * hu)) + museHue);
+  const flat = bs ? bs.hue : 0;
   const lo = -3.4 * sizeHiPx;
-  if (shift !== lastShift || lo !== LUT_LO) {
-    LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift); lastShift = shift;
+  if (shift !== lastShift || flat !== lastFlat || lo !== LUT_LO) {
+    LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift, flat);
+    lastShift = shift; lastFlat = flat;
   }
   // Vowels really do work this way: /i/ has a high second formant, so a bright
   // centroid spreads the lips wide, and a dark one rounds them tall. jaw then
