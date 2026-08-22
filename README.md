@@ -909,10 +909,64 @@ A lattice also cannot be resampled. The borrow logic used to thin a formation
 down to a cap, which for a hologram scatters the very lines it is made of — so a
 bias-carrying formation takes every point it has, exactly as a wireframe does.
 
-`shell` lights only the top and bottom of each column instead of everything
-between. More literally a surface, and at eleven layers mostly holes — the head
-stops being a head. Left in because the right answer probably depends on the
-model.
+### Making it read
+
+Four things had to change before it looked like a room with something standing
+in it, and three of them were mistakes worth naming.
+
+**One-point perspective, and no rotation.** The front edge stays square to you
+and both sides run away to the same point — a turn destroys exactly that, so the
+formation carries `spin: 0` and the model's facing is *baked into the binning*
+rather than applied as a yaw afterwards.
+
+**The floor is sized against the viewport, not the model.** At `fs` 0.25, `x = 1`
+lands a quarter of the short edge out, so a floor 2.4 wide runs off both sides
+of a phone. It was 2.4 wide at `fs` 0.42 first, which put it well outside the
+containment wall — and the wall squeezed it back in, drawing a tangle down both
+sides instead of a grid going away. **A hologram now has no wall at all**: the
+wall exists to keep the *orb* on screen, and a room is meant to reach the edges.
+
+**The model stands on the floor at its own proportions.** It arrives fitted to
+[-1,1] on its longest axis and the grid under it is 2 across, so `modelH` is 2.
+At 1.42 the head came out short and wide — squashed against its own footprint.
+
+**Lines, not dots**, with the fill coming from stroke width: a stroke about a
+cell across at very low alpha, then a thin bright core. Neighbouring columns
+overlap in the wide pass, so a solid reads as a translucent body rather than as
+a comb — no polygons, no second buffer, the same line drawn twice at two widths.
+Edges are grouped **by brightness, not by depth** — on a mesh every edge is part
+of the surface and the only question is which is in front; here half the lines
+are the room and half are the thing standing in it.
+
+### It cannot show a face, and that is structural
+
+Vertical lines alone give you the **silhouette**. Seen from the front, a line lit
+for the whole of the model's height over its cell stacks every depth on top of
+every other, so a head draws as one rounded mass. Fading the far depth slices
+helps and does not fix it.
+
+What fixes it is joining lit neighbours at the **same height** — the model's
+cross-section at that height, and a stack of cross-sections is a head. That is
+also what a volumetric display actually does. On by default; `/show holo <model>
+bare` turns it off, and `shell` lights only the top and bottom of each column
+(more literally a surface, and at twelve layers mostly holes).
+
+### What it costs
+
+47fps at 430×900@2x, from 14. Two things, both blunt:
+
+- **`lineCap: "butt"`.** A round cap is two half-discs rasterised per segment,
+  and at a cell's width across thousands of segments it was more than half the
+  frame on its own — 14fps to 31 from one word. Consecutive runs share
+  endpoints, so nothing opens up.
+- **Runs, not steps.** A standing line is one line however many particles it
+  passes through, and a lit stretch is one line too. Wiring every lattice step
+  separately drew the same picture out of 5,519 segments instead of 2,064.
+
+The pass list also walks pre-grouped edge lists rather than filtering all of
+them fifteen times a frame, and the number of depth slices per pass is a
+fill-rate budget rather than a look — the wide body barely reads its own fade,
+the thin core is where it shows.
 
 ---
 

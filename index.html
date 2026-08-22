@@ -1389,6 +1389,11 @@ const formZ = new Float32Array(MAX);
    whole point of a hologram is that position and brightness say different
    things -- the lattice says where, the bias says whether the model is there. */
 const formB = new Float32Array(MAX);
+/* The hologram's edges split into three fixed groups -- floor, standing
+   lattice, model -- and the split never changes for the life of the formation.
+   Walking all of them once per drawing pass, fifteen times a frame, was most of
+   the cost of having passes at all. */
+let holoE = null;
 /* Which particles a formation actually took. A word drawn by the whole field
    leaves nothing outside it, and the ring around a shape is most of what makes
    the shape look like it belongs to something. */
@@ -2057,18 +2062,33 @@ async function loadModel(src) {
    The vertical reach of the model over each floor cell comes from binning its
    vertices by (x, z) and keeping the extremes. A ray cast per cell would be
    more correct at the concavities and, at this resolution, indistinguishable. */
-const HOLO = { cells: 20, layers: 11 };
+/* Sized against the viewport, not against the model. fs 0.25 puts x = 1 at a
+   quarter of the short edge, so a floor 2.4 wide runs off both sides of a phone
+   and reads as a room rather than as a plinth -- and stays inside the
+   containment wall, which at the old size was shredding it into a tangle. */
+const HOLO = {
+  cells: 18, layers: 12,          // the volume standing on the pad
+  fs: 0.25,
+  floorX: 2.4, floorNear: -1.6, floorFar: 3.4, floorStep: 0.30,
+  /* modelH is 2 because the grid under it is 2 across: a model arrives fitted
+     to [-1,1] on its longest axis, so anything less squashes it against its own
+     footprint -- the head came out short and wide. */
+  y0: 0.9, colH: 2.4, modelH: 2,        // floor, line height, and the model on it
+};
 
-function hologramPoints(verts, shell) {
+function hologramPoints(verts, yaw0, shell, slices) {
   const C = HOLO.cells, L = HOLO.layers, N = C * C;
+  /* Facing baked in rather than turned to. The lattice is a fixed thing in the
+     room -- one edge across the front, both sides running away to the same
+     point -- so the model has to be rotated into it before it is measured,
+     not rotated afterwards with the floor. */
+  const cy0 = Math.cos(yaw0 || 0), sy0 = Math.sin(yaw0 || 0);
   // screen axes: y runs DOWN, so the top of the model is its minimum
   const top = new Float32Array(N).fill(9), bot = new Float32Array(N).fill(-9);
-  const cell = (v, d) => {
-    let i = ((v[d] + 1) / 2 * C) | 0;
-    return i < 0 ? 0 : i >= C ? C - 1 : i;
-  };
+  const cell = (u) => { const i = ((u + 1) / 2 * C) | 0; return i < 0 ? 0 : i >= C ? C - 1 : i; };
   for (const v of verts) {
-    const j = cell(v, 2) * C + cell(v, 0);
+    const vx = v[0] * cy0 + v[2] * sy0, vz = -v[0] * sy0 + v[2] * cy0;
+    const j = cell(vz) * C + cell(vx);
     if (v[1] < top[j]) top[j] = v[1];
     if (v[1] > bot[j]) bot[j] = v[1];
   }
@@ -2077,44 +2097,101 @@ function hologramPoints(verts, shell) {
      the same lattice whether it is lit or not, so the lines stay lines. A lit
      one is driven to the green end of the palette and a dark one barely off
      zero, and the gap between them is the model. */
-  const pts = [];
+  const pts = [], E = [];
+  const y0 = HOLO.y0, h = HOLO.colH / L;
+  /* The model has to be stood ON the floor, not left in its own box. It arrives
+     fitted to [-1,1] in every axis; its base goes at floor level and its height
+     is chosen here, so the lit stretch of a line is where the model is rather
+     than where the model's coordinates happen to fall. */
+  const mapY = (ym) => y0 - ((1 - ym) / 2) * HOLO.modelH;
+
+  /* The floor first, and it is much bigger than the model -- it is the room,
+     not a plinth. Its own grid, coarser and wider than the volume's, wired both
+     ways so it draws as a lattice rather than as a scatter. */
+  const gx = [], gz = [];
+  for (let x = -HOLO.floorX; x <= HOLO.floorX + 1e-6; x += HOLO.floorStep) gx.push(x);
+  for (let z = HOLO.floorNear; z <= HOLO.floorFar + 1e-6; z += HOLO.floorStep) gz.push(z);
+  const fBase = 0;
+  for (let iz = 0; iz < gz.length; iz++)
+    for (let ix = 0; ix < gx.length; ix++) {
+      pts.push([gx[ix], y0, gz[iz], 0, 0, 0, -0.46]);
+      const j = fBase + iz * gx.length + ix;
+      if (ix) E.push(j - 1, j);
+      if (iz) E.push(j - gx.length, j);
+    }
+
+  /* Then the volume: a line standing out of the pad under the model, one per
+     cell, in segments so the lit stretch can be told from the rest. */
+  const vBase = pts.length, S1 = L + 1;
+  const at = (ix, iz, l) => vBase + (iz * C + ix) * S1 + l;
+  const on = new Uint8Array(C * C * S1);
   for (let iz = 0; iz < C; iz++)
     for (let ix = 0; ix < C; ix++) {
       const j = iz * C + ix;
       const x = ((ix + 0.5) / C) * 2 - 1, z = ((iz + 0.5) / C) * 2 - 1;
-      // the floor itself, a shade brighter than the lines so it reads as ground
-      pts.push([x, 1, z, 0, 0, 0, -0.5]);
-      const h = 1 / L;
-      for (let l = 0; l < L; l++) {
-        const y = 1 - ((l + 0.5) / L) * 2;
-        /* Solid by default: every layer between the model's top and bottom over
-           this cell. `shell` lights only the two ends instead, which is more
-           literally a surface and, at this many layers, mostly holes -- the head
-           stops being a head. Left in because it is one word to ask for and the
-           right answer probably depends on the model. */
+      const t2 = top[j] < 8 ? mapY(top[j]) : 9, b2 = top[j] < 8 ? mapY(bot[j]) : -9;
+      for (let l = 0; l < S1; l++) {
+        const y = y0 - l * h;
+        /* Solid: every layer between the model's top and bottom over this cell.
+           `shell` lights only the two ends instead, which is more literally a
+           surface and, at this many layers, mostly holes. */
         const lit = top[j] < 8 && (shell
-          ? Math.abs(y - top[j]) < h || Math.abs(y - bot[j]) < h
-          : y >= top[j] - 0.02 && y <= bot[j] + 0.02);
-        pts.push([x, y, z, 0, 0, 0, lit ? 0.95 : -0.14]);
+          ? Math.abs(y - t2) < h || Math.abs(y - b2) < h
+          : y >= t2 - h * 0.5 && y <= b2 + h * 0.5);
+        on[j * S1 + l] = lit ? 1 : 0;
+        pts.push([x, y, z, 0, 0, 0, lit ? 0.95 : -0.10]);
+      }
+      /* Runs, not steps. A standing line is one line however many particles it
+         passes through, and a lit stretch is one line too -- wiring every step
+         separately drew the same picture out of five times as many segments,
+         and a segment costs two line caps whether or not anything is between
+         them. Straight either way: these are lattice, not a surface. */
+      E.push(at(ix, iz, 0), at(ix, iz, L));
+      for (let l = 0; l < S1; l++) {
+        if (!on[j * S1 + l]) continue;
+        let e2 = l;
+        while (e2 + 1 < S1 && on[j * S1 + e2 + 1]) e2++;
+        E.push(at(ix, iz, l), at(ix, iz, e2 === l ? Math.min(L, l + 1) : e2));
+        l = e2;
       }
     }
-  return pts;
+
+  /* And, across. Vertical lines alone cannot show a face, and that is
+     structural rather than a matter of tuning: seen from the front, a line lit
+     for the whole of the model's height over its cell stacks every depth on top
+     of every other, so what you get is the silhouette. Joining lit neighbours
+     at the SAME height draws the model's cross-section at that height instead,
+     and a stack of cross-sections is a head -- it is also what a volumetric
+     display actually does. Only between lit cells, so the plates are the model
+     and the standing lattice stays a lattice. */
+  if (slices)
+    for (let l = 0; l < S1; l++)
+      for (let iz = 0; iz < C; iz++)
+        for (let ix = 0; ix < C; ix++) {
+          if (!on[(iz * C + ix) * S1 + l]) continue;
+          if (ix + 1 < C && on[(iz * C + ix + 1) * S1 + l]) E.push(at(ix, iz, l), at(ix + 1, iz, l));
+          if (iz + 1 < C && on[((iz + 1) * C + ix) * S1 + l]) E.push(at(ix, iz, l), at(ix, iz + 1, l));
+        }
+  return { pts, edges: Int32Array.from(E) };
 }
 
 async function showHologram(src, seconds) {
   const shell = /\bshell\b/i.test(src || "");
-  src = String(src || "").replace(/\bshell\b/ig, "").trim();
+  // cross-sections are on unless asked otherwise: they are what makes it read
+  const bare = /\b(bare|lines)\b/i.test(src || "");
+  src = String(src || "").replace(/\b(shell|bare|lines)\b/ig, "").trim();
   const m = await loadModel(src || "test_head");
   if (!m) return false;
-  const pts = hologramPoints(m.pts, shell);
+  const { pts, edges } = hologramPoints(m.pts, m.yaw0, shell, !bare);
   const lit = pts.reduce((n, p) => n + (p[6] > 0.5 ? 1 : 0), 0);
-  /* Tilted, and turning. A floor seen dead on is a row of dots; it only becomes
-     a floor once the camera is above it. Both are the formation's own, not the
-     global tilt and spin -- the flat orb wants neither. */
-  const ok = setFormation({ points: pts, label: "hologram", tilt: 0.42, spin: 0.055,
-                            yaw0: m.yaw0 }, seconds || 26);
-  if (ok) caption(null, "hologram" + (shell ? " (shell)" : "") + " · " + HOLO.cells + "×" +
-                        HOLO.cells + " floor · " + lit + " lit of " + pts.length);
+  /* Tilted, and still. A floor seen dead on is a row of dots; it only becomes a
+     floor once the camera is above it. And it does not turn: the whole point of
+     one-point perspective is that the front edge stays square to you and both
+     sides run away to the same place, which a rotation destroys. */
+  const ok = setFormation({ points: pts, edges, label: "hologram",
+                            tilt: 0.52, spin: 0, yaw0: 0, fs: HOLO.fs }, seconds || 30);
+  if (ok) caption(null, "hologram" + (shell ? " (shell)" : bare ? " (bare)" : "") + " · " + lit +
+                        " lit of " + pts.length + " · " + edges.length / 2 + " lines");
   return ok;
 }
 
@@ -2675,8 +2752,11 @@ function setFormation(spec, seconds) {
   /* Much smaller when the field is shared. The perimeter cannot go outside the
      containment wall -- that is what the wall is -- so the only way to have a
      ring around a word is for the word to fit inside one. */
-  formS = form3d ? 0.29 : share < 0.95 ? 0.23 : 0.42;
-  wireAt = performance.now() + 2000;
+  formS = spec && spec.fs != null ? spec.fs
+        : form3d ? 0.29 : share < 0.95 ? 0.23 : 0.42;
+  // a mesh lands and then draws itself in; a hologram IS its lines, so it waits
+  // only long enough for the lattice to arrive
+  wireAt = performance.now() + (pts[0].length > 6 ? 700 : 2000);
   view.turn = 0;
   view.yaw0 = (spec && spec.yaw0) || 0;
 
@@ -2688,6 +2768,7 @@ function setFormation(spec, seconds) {
      out from under it wires every edge to the wrong pair of particles -- which
      draws a ball of string in roughly the shape of the model. Sort a
      permutation instead and carry the edges through its inverse. */
+  holoE = null;
   if (formE) {
     const ord2 = pts.map((_, i) => i)
       .sort((a, b) => Math.atan2(pts[a][1], pts[a][0]) - Math.atan2(pts[b][1], pts[b][0]));
@@ -2759,6 +2840,14 @@ function setFormation(spec, seconds) {
   }
   formN = take;
   formWant = 1;
+  if (formHasB && formE) {
+    const g = [[], [], []];
+    for (let e = 0; e < formE.length; e += 2) {
+      const bb = Math.min(formB[formE[e]], formB[formE[e + 1]]);
+      g[bb >= 0.5 ? 2 : bb >= -0.3 ? 1 : 0].push(formE[e], formE[e + 1]);
+    }
+    holoE = g.map((a) => Int32Array.from(a));
+  }
   /* A solid should live exactly as long as its look-around takes: land, draw
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
@@ -2785,7 +2874,7 @@ function updateFormation(dt) {
     formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
     formE = null; wireT = 0; view.turn = 0;
     // or the next formation inherits a hologram's camera and reads stale biases
-    formHasB = false; formTilt = null; formSpin = null;
+    formHasB = false; formTilt = null; formSpin = null; holoE = null;
     if (formCountWas) { handBack(formCountWas); formCountWas = 0; }
   }
 }
@@ -2887,7 +2976,7 @@ function loop() {
       now - lastActive > cfg.idleS * 1000) setFormation({ menu: true });
 
   // the cloud lands first and holds for a beat, then the mesh draws itself in
-  const wireWant = formE && formWant && now > wireAt ? cfg.wire : 0;
+  const wireWant = formE && formWant && now > wireAt ? (formHasB ? 1 : cfg.wire) : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
   const tiltWant = formTilt != null ? formTilt : cfg.tilt;
   view.pitch += ((view.deep ? tiltWant : 0) - view.pitch) * 0.04;
@@ -2941,7 +3030,13 @@ function loop() {
      that wants the whole frame, and at the tuned 0.56 its satellites sat
      outside the wall and got shoved back into the middle -- which is why they
      came out as spiky blobs at twice their radius rather than as rings. */
+  /* The wall exists to keep the ORB on screen, and a room is meant to run off
+     the edges: a floor wider than the viewport was being squeezed back inside
+     it, which drew as a tangle down both sides rather than as a grid going
+     away. So a hologram has no wall at all once it has landed -- everything in
+     it is standing on a target, not drifting. */
   const containNow = menuOn ? Math.max(cfg.contain, 0.93) : cfg.contain;
+  const walled = !(formHasB && formT > 0.02);
   const softSpan = Math.max(0.02, 1 - containNow);
   const wall = 3.5 * k;
 
@@ -3255,7 +3350,7 @@ function loop() {
       const bi = bnd[i];
       const qx = (px[i] - cx) / (hx * bi), qy = (py[i] - cy) / (hy * bi);
       const q = Math.sqrt(qx * qx + qy * qy);
-      if (q > containNow) {
+      if (walled && q > containNow) {
         const wx = px[i] - cx, wy = py[i] - cy;
         const wd = Math.sqrt(wx * wx + wy * wy) || 0.0001;
         const wnx = wx / wd, wny = wy / wd;
@@ -3422,7 +3517,8 @@ function loop() {
                be as fat as the model standing in it and there would be nothing
                to see. */
             : form3d && held && formHasB
-              ? sizeHiPx * cfg.dot * 0.11 * (0.3 + 1.5 * Math.abs(formB[i])) * (1 - fT * 0.15)
+              ? sizeHiPx * cfg.dot * 0.09 * (0.25 + 1.3 * Math.abs(formB[i]))
+                * (1 - fT * 0.15) * (1 - wireT * 0.55)
             : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
               // the rim is a frame, not a second drawing competing with the first
@@ -3460,28 +3556,99 @@ function loop() {
      thousand separate strokes and will not do it in sixteen milliseconds; six
      passes over the list with one path each costs six. */
   if (wireT > 0.002 && formE) {
-    const BK = 6;
-    ctx.lineWidth = Math.max(0.6, 1.15 * k);
+    /* A hologram's edges are sorted by BRIGHTNESS, a mesh's by depth. On a mesh
+       every edge is equally part of the surface and the only question is which
+       is in front; on a hologram half the lines are the room and half are the
+       thing standing in it, and depth has nothing to do with which is which.
+
+       Three passes over the lit ones, and that is where the fill comes from: a
+       wide, very transparent stroke, then a narrower one, then a bright core.
+       Neighbouring columns overlap in the wide pass, so a solid reads as a
+       translucent body rather than as a comb -- no polygons, no second buffer,
+       just the same line drawn three times at three widths. */
+    const holo = formHasB;
+    /* The widest pass is a cell across, so neighbouring columns just touch and
+       the body closes up. Any narrower and a solid draws as a comb; wider and
+       it bleeds past its own silhouette. */
+    const cellPx = (2 / HOLO.cells) * formS * scale;
+    /* `b` is the colour, and it has to be stated rather than inferred from the
+       band -- read off the band's lower edge, the faint standing lines came out
+       the same green as the model and the volume lost its silhouette entirely. */
+    const PASS = holo
+      ? [{ g: 0, b: -0.55, w: 1.1 * k, a: 0.55 },             // the floor, underneath
+         { g: 1, b: -0.30, w: 0.9 * k, a: 0.14 },             // the standing lines
+         /* and the model on top: a body, a middle, and an edge. The number of
+            depth slices is a fill-rate budget, not a look -- a stroke a cell
+            wide, drawn six times over every lit edge, was five screens of
+            overdraw a frame and took a phone-sized canvas to 20fps. The body
+            barely reads its own fade; the thin core is where it shows. */
+         { g: 2, b: 0.95, w: cellPx * 0.92, a: 0.16, fade: 1 },
+         { g: 2, b: 0.95, w: 1.3 * k, a: 0.75, fade: 4 }]
+      : null;
     ctx.globalAlpha = wireT;
-    for (let b = 0; b < BK; b++) {
-      const t = 1 - (b + 0.5) / BK;                      // 1 near .. 0 far
-      const sz2 = (t * 2 - 1) * sizeHiPx;
-      let li2 = ((sz2 - LUT_LO) / span * (LUT_N - 1)) | 0;
-      if (li2 < 0) li2 = 0; else if (li2 >= LUT_N) li2 = LUT_N - 1;
-      ctx.strokeStyle = lut[li2];
-      ctx.beginPath();
-      let drew = 0;
-      for (let e = 0; e < formE.length; e += 2) {
-        const a = formE[e], c = formE[e + 1];
-        if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
-        // an edge belongs to the bucket its midpoint falls in
-        const u = -(szA[a] + szA[c]) / 2 / (zSpan * 0.72) * 0.5 + 0.5;
-        const bk = ((1 - Math.max(0, Math.min(0.999, u))) * BK) | 0;
-        if (bk !== b) continue;
-        ctx.moveTo(sxA[a], syA[a]); ctx.lineTo(sxA[c], syA[c]);
-        drew++;
+    if (holo) {
+      /* Butt, not round. A round cap is two half-discs rasterised per segment,
+         and at a cell's width across thousands of segments it was more than
+         half the frame on its own: 14fps to 31 from this one word. Consecutive
+         runs share their endpoints, so nothing opens up. */
+      ctx.lineCap = "butt";
+      const dz = zSpan * 1.5;
+      for (const ps of PASS) {
+        const list = (holoE && holoE[ps.g]) || formE;
+        let li2 = ((ps.b * sizeHiPx - LUT_LO) / span * (LUT_N - 1)) | 0;
+        if (li2 < 0) li2 = 0; else if (li2 >= LUT_N) li2 = LUT_N - 1;
+        ctx.strokeStyle = lut[li2];
+        ctx.lineWidth = Math.max(0.6, ps.w);
+        /* The model gets split into depth slices and the far ones are dimmed.
+           Seen from the front, a column lit for the whole of the model's height
+           over its cell is the SILHOUETTE -- every depth stacked on top of every
+           other, which draws as one rounded mass with no face in it. Fading
+           back to front is what separates the front surface from what is behind
+           it, and it is also just what light through a volume does. The floor
+           and the standing lattice want none of it: they are the room, and the
+           room is not supposed to recede into nothing. */
+        const slices = ps.fade || 1;
+        for (let d = 0; d < slices; d++) {
+          const near = slices === 1 ? 1 : 1 - (d + 0.5) / slices;
+          ctx.globalAlpha = wireT * ps.a * (slices === 1 ? 1 : 0.13 + 0.87 * Math.pow(near, 1.7));
+          ctx.beginPath();
+          let drew = 0;
+          for (let e = 0; e < list.length; e += 2) {
+            const a = list[e], c = list[e + 1];
+            if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
+            if (slices > 1) {
+              const u = Math.max(0, Math.min(0.999, -(szA[a] + szA[c]) / 2 / dz * 0.5 + 0.5));
+              if (((1 - u) * slices | 0) !== d) continue;
+            }
+            ctx.moveTo(sxA[a], syA[a]); ctx.lineTo(sxA[c], syA[c]);
+            drew++;
+          }
+          if (drew) ctx.stroke();
+        }
       }
-      if (drew) ctx.stroke();
+    } else {
+      const BK = 6;
+      ctx.lineWidth = Math.max(0.6, 1.15 * k);
+      for (let b = 0; b < BK; b++) {
+        const t = 1 - (b + 0.5) / BK;                      // 1 near .. 0 far
+        const sz2 = (t * 2 - 1) * sizeHiPx;
+        let li2 = ((sz2 - LUT_LO) / span * (LUT_N - 1)) | 0;
+        if (li2 < 0) li2 = 0; else if (li2 >= LUT_N) li2 = LUT_N - 1;
+        ctx.strokeStyle = lut[li2];
+        ctx.beginPath();
+        let drew = 0;
+        for (let e = 0; e < formE.length; e += 2) {
+          const a = formE[e], c = formE[e + 1];
+          if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
+          // an edge belongs to the bucket its midpoint falls in
+          const u = -(szA[a] + szA[c]) / 2 / (zSpan * 0.72) * 0.5 + 0.5;
+          const bk = ((1 - Math.max(0, Math.min(0.999, u))) * BK) | 0;
+          if (bk !== b) continue;
+          ctx.moveTo(sxA[a], syA[a]); ctx.lineTo(sxA[c], syA[c]);
+          drew++;
+        }
+        if (drew) ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
   }
