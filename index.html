@@ -115,12 +115,12 @@
 const BANDS = 64, TAU = Math.PI * 2;
 
 const DEFAULTS = {
-  count:4777, radius:0.16, rateX:14000, rateY:23500, bloom:0.6, fit:0.75, contain:0.56,
-  shape:7, shapeGain:0, core:0.1, coreR:0.19, drift:0.44, depth:0, spin:0, tilt:0, solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
+  count:3200, radius:0.26, rateX:4200, rateY:6900, bloom:0.34, fit:0.75, contain:0.56,
+  shape:0, shapeGain:0, core:0.2, coreR:0.34, drift:0.1, depth:0, spin:0, tilt:0, solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
   speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
   rmsGain:0.9, specGain:0.5, membrane:0.1, ellipse:1, jaw:1.05, gate:1, gateFloor:0.09, kickShape:0,
   falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55, attack:0.34, release:0.16, dbMargin:9, dbRange:31,
-  dot:0.65, sizeHi:26, falloff:70, follow:1, split:0.46, splitEll:0, splitJaw:0, splitShape:0,
+  dot:0.52, sizeHi:26, falloff:70, follow:1, split:0.44, splitEll:0, splitJaw:0, splitShape:0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
   vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4, snap:0.3, flashMs:1100
 };
@@ -143,6 +143,19 @@ const PRESETS = {
     hueGain:2.55, attack:0.35, release:0.31, dot:1.0, sizeHi:26, falloff:45,
     follow:0, split:0.46, splitEll:0, splitJaw:0, splitShape:0,
     trail:0.41, rK:-0.5, gK:7, bK:-2, base:130
+  },
+  /* Exactly the config that was the default before the resting state was
+     opened up -- kept whole so it is one tap back, not a reconstruction. */
+  lips: {
+    count:4777, radius:0.16, rateX:14000, rateY:23500, bloom:0.6, fit:0.75, contain:0.56,
+    shape:7, shapeGain:0, core:0.1, coreR:0.19, drift:0.44, depth:0, spin:0, tilt:0,
+    solid:0.08, wire:0.12, muse:0, share:1, idleS:0,
+    speedLo:1, speedHi:3, forceRatio:0.18, fleeRadius:200, fleeMult:4.6,
+    rmsGain:0.9, specGain:0.5, membrane:0.1, ellipse:1, jaw:1.05, gate:1, gateFloor:0.09,
+    kickShape:0, falloffGain:0, turbGain:1.1, impulseGain:2.3, hueGain:2.55,
+    attack:0.34, release:0.16, dbMargin:9, dbRange:31,
+    dot:0.65, sizeHi:26, falloff:70, follow:1, split:0.46, splitEll:0, splitJaw:0, splitShape:0,
+    trail:0.46, rK:-0.5, gK:7, bK:-2, base:120
   },
   // lips: mouth silhouette with a hard centroid ellipse. falloffGain 0 keeps the
   // split at a plain fraction of the ring, which is what this was built against

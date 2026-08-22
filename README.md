@@ -697,7 +697,9 @@ part and keeps the part that reads.
 
 ## Presets
 
-`base · shaped · mouth`, in the tune panel.
+`base · shaped · lips · mouth`, in the tune panel. `lips` is the previous
+default kept whole, so going back to it is one tap rather than a
+reconstruction.
 
 Each preset **pins every parameter it was built against**, including the ones
 added after it — `follow`, `splitEll`, `splitJaw`, `splitShape`, `falloffGain`,
