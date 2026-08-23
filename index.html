@@ -4594,11 +4594,18 @@ function glFrame(K, FOC) {
   gl.root.rotation.set(0, world.yaw, 0);
   if (gl.group) gl.group.position.set(-f.c[0], -f.c[1], -f.c[2]);
   if (gl.ground) {
-    gl.ground.visible = world.on > 0.01;
+    /* A grid at a portrait angle is not a floor. Measured earlier: at 6 degrees
+       the lengthwise lines have nothing on screen and what draws is a stack of
+       horizontal rules, which reads as an artefact rather than as ground. So
+       the floor's presence is tied to how far the camera is actually looking
+       down, and at a flat angle it dissolves and leaves the pool of light doing
+       the grounding on its own. */
+    const gFade = Math.max(0, Math.min(1, (view.pitch - 0.20) / 0.14));
+    gl.ground.visible = world.on > 0.01 && gFade > 0.01;
     // his feet, not the fit centre: the fit is centred on his middle
     gl.ground.position.y = f.lo[1] - f.c[1];
     gl.ground.scale.setScalar(figH1() * WALK.floor);
-    gl.ground.material.opacity = world.on * 0.9;
+    gl.ground.material.opacity = world.on * 0.9 * gFade;
   }
   if (gl.portal) {
     const H1p = figH1();
@@ -4821,7 +4828,22 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    share is the fraction of the ring that splits off. Drop a custom model in
    at models/portal.glb and it replaces the built one, scaled to the same
    height, no code change. */
-const PORTAL = { x: 0, z: -3.3, r: 1.0, hover: 1.06, orbR: 0.24, share: 0.11 };
+/* Beside him, not behind. At a portrait angle every point on the floor plane
+   converges toward a horizon that sits at about his head height, so a disc
+   standing behind him projects as a ring around his head -- which is a halo,
+   not a machine. Off to one side it is unambiguously a separate object standing
+   next to him, and it survives the camera going flat. */
+/* hover is in units of r, not in heights: the shaft of light is part of the
+   disc and scales with it, so a hover fixed in heights leaves the ball floating
+   above the top of its own beam the moment the disc is resized. */
+const PORTAL = { x: -0.86, z: -2.7, r: 0.62, hover: 1.12, orbR: 0.19, share: 0.10 };
+/* back: how much the world shrinks, which IS the camera retreating -- it sits
+   FOC pixels away, so a smaller world is a further one measured in the world's
+   own units. down: radians of downward tilt added to the resting 0.05.
+   The floor is the thing in tension with both: a lattice seen from near eye
+   level is not a surface, it is a stack of horizontal rules, so anything that
+   flattens the camera has to take the floor with it -- see groundFade. */
+const ROOM = { back: -0.04, down: 0.09 };
 // his height in the working space, measured at load
 function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
 
@@ -5053,10 +5075,11 @@ function walkTo(x, z, run) {
   // edge of the room is worse than not being able to reach the corner of it
   const edge = WALK.floor / 2 - 0.4;
   world.tx = Math.max(-H1 * Math.min(2.6, edge), Math.min(H1 * Math.min(2.6, edge), x));
-  // 1.5 toward the lens, not 1.0: with the tap landing where the finger is
-  // (see groundAt) the bottom third of the screen is a real place, and 1.0 put
-  // a hard stop in the middle of it that read as him refusing to come closer
-  world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 1.5, z));
+  /* 0.9 toward the lens. It was 1.5 when the room pulled the camera back to
+     eleven heights and he filled under a quarter of the frame; at the portrait
+     framing he fills over 40% standing still, so the same allowance walks him
+     straight out of the top of the picture. */
+  world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 0.9, z));
   // and not through the machine: a target inside its footprint slides to its
   // rim. A tap dead on the centre has no direction to slide along -- scaling a
   // zero-length offset moves nothing, which is how the first version let him
@@ -5155,8 +5178,15 @@ function updateWorld(dt, now) {
      Built at 0.40 he stands eleven of his own units from the lens, which is a
      portrait, not a room -- walking four units toward it nearly doubled his
      size and put his head off the top of the screen. At 0.23 it is twenty. */
-  formS = rig.fs0 * (1 - 0.42 * world.on);
-  formTilt = 0.05 + 0.33 * world.on;
+  /* How far the camera backs off and how far it looks down once the room has
+     arrived. Both were much stronger: 0.42 and 0.33, which put him eleven of
+     his own heights away and 22 degrees above -- a wide, high, surveying shot.
+     A portrait is taken from further away with a longer lens, and what that
+     buys is a subject that fills the frame with the camera near eye level.
+     Pulled back this far he was small and looked down on, which reads as a
+     diorama rather than as somebody standing in front of you. */
+  formS = rig.fs0 * (1 - ROOM.back * world.on);
+  formTilt = 0.05 + ROOM.down * world.on;
   if (!want) return;
 
   if (world.walking) {
@@ -5586,7 +5616,7 @@ function updateFigure(dt, now) {
     const H1o = figH1();
     const rr = PORTAL.orbR * H1o * (1 + drive.scale * 0.45);
     const ocx = PORTAL.x * H1o, ocz = PORTAL.z * H1o;
-    const ocy = (f.lo[1] - f.c[1]) + PORTAL.hover * H1o;
+    const ocy = (f.lo[1] - f.c[1]) + PORTAL.hover * PORTAL.r * H1o;
     const t2 = performance.now() / 1000;
     for (let i = rig.orbFrom; i < n; i++) {
       const j = i - rig.orbFrom;

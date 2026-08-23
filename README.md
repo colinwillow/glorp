@@ -2565,6 +2565,47 @@ The particles are still *there* the whole time — holding the formation, chasin
 the skeleton, ready to be drawn the instant the front comes back down. They are
 just not on screen, which is the difference between a transition and a costume.
 
+### A portrait, not a diorama
+
+The room's camera move was too strong in both axes. Once it arrived, `formS`
+pulled back 42% and `formTilt` looked down 0.33 rad — he ended up eleven of his
+own heights away and 22° above, filling under a quarter of the frame. That is a
+surveying shot of a diorama. What was wanted was the framing the *build* has:
+near eye level, subject filling the frame, flat and close.
+
+| | camera down | subject height |
+|---|---|---|
+| before (`back` 0.42, `down` 0.33) | 21.8° | 23% of the screen |
+| now (`back` −0.04, `down` 0.09) | 8.0° | **41% of the screen** |
+
+`back` is negative on purpose: the world grows very slightly as the room
+arrives, so settling reads as leaning in rather than backing off.
+
+**The floor cannot come with it, and that is not a bug.** A lattice seen from
+near eye level is not a surface — measured earlier, at 6° the lengthwise lines
+have nothing left on screen and what draws is a stack of horizontal rules, which
+reads as an artefact. So the floor's opacity is now tied to how far the camera is
+actually looking down: below 0.20 rad it dissolves and the pool of light does the
+grounding on its own. At the shipped framing the grid is fully off. Raise
+`ROOM.down` past 0.20 and it fades back in.
+
+Tapping the ground still walks him — `groundAt` intersects the ground object's
+plane whether or not it is drawn — but with no grid there is nothing to aim at.
+
+Two knock-ons the new framing forced:
+
+- **The machine moved beside him.** At a portrait angle every point on the floor
+  plane converges toward a horizon at about his head height, so a disc standing
+  *behind* him projects as a ring around his head — a halo, not a machine. Off to
+  one side it is unambiguously a separate object standing next to him.
+- **`PORTAL.hover` is now in units of `r`.** The shaft of light is part of the
+  disc and scales with it, so a hover fixed in heights left the ball floating
+  above the top of its own beam the moment the disc was resized — which is
+  exactly what happened when it shrank for the tighter framing.
+- **The walk fence came in**, 1.5 heights toward the lens to 0.9. The old
+  allowance was set when he filled under a quarter of the frame; at 41% the same
+  number walks him out of the top of the picture.
+
 ### The source machine
 
 The room has a centrepiece: **the perch, at room scale**, standing in the middle
