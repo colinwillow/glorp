@@ -884,6 +884,90 @@ they are still the outermost thing.
 
 ---
 
+## Listening
+
+### When is a sentence over?
+
+Reported from a desk with music playing: say a sentence, finish, and watch the
+visualiser bounce along to the stereo while nothing happens.
+
+Recognition's own answer — the `isFinal` result — is that **the room has gone
+quiet**. In a room with music in it, the room never goes quiet. The right answer
+is that **the words have stopped**: the transcript has not changed for a while,
+whatever the level is doing.
+
+So the sentence is sent on the gap in the interim stream, and the `isFinal` that
+arrives later for the same utterance is swallowed. Measured: sent **649ms** after
+the last word, against `gapMs` of 620. It is the difference between an
+endpointer that listens to a room and one that listens to a person, and `gapMs`
+is on the tune panel because how patient it should be is a matter of taste.
+
+### Talking over him
+
+Recognition stays **up** while he speaks now, and what it hears is mostly his own
+voice out of the speaker — so the only question asked of it is whether the words
+are *his*. Enough of them are not, and somebody is talking over him, and the
+right response is to stop talking.
+
+Not to obey it. The words heard during a reply are thrown away: they are half
+his and half yours and there is no telling which is which. He goes quiet and
+listens, and you say it again — which is what the thing this is imitating
+actually does.
+
+The test is a bag of words, deliberately blunt, because the recogniser is hearing
+a mixture of two voices and a careful comparison of a mixture is a careful
+comparison of nothing:
+
+| what the recogniser hears, while he says a sentence | novel words | |
+|---|---|---|
+| his own words back | 0 | keeps talking |
+| a few of his words | 0 | keeps talking |
+| *"hang on, stop, wait a second"* | 4 | stops |
+
+When the clip ends, recognition is **aborted and restarted** rather than merely
+gated. It has been accumulating a transcript of his own voice for the whole
+reply, and left alone that arrives as a finished sentence a moment later and
+gets answered.
+
+### Going somewhere is a decision
+
+*"What is this for"* was landing on the site. *"I like your pictures"* was
+opening the gallery.
+
+Anything that changes **where you are** now waits for the whole sentence, and the
+sentence has to read like a decision: either almost nothing but the name of the
+place, or an actual instruction with a verb in it. The transient triggers — an
+emoji, a firework — still fire on the word as it goes past, because they are over
+in a second and cost nothing if they were not meant.
+
+| said | |
+|---|---|
+| *"what is this for"* | answered |
+| *"i like your pictures"* | answered |
+| *"tell me about the images you have"* | answered |
+| *"pictures"* | goes |
+| *"show me the pictures"* | goes |
+| *"can you open the gallery"* | goes |
+| *"menu"* | goes |
+
+The brain was doing the same thing from the other end — its instructions said to
+show the pages when asked what was here. They now say that this is a
+conversation and not a menu system, that a question about what this is wants an
+*answer*, and that `pages` is for an explicit request to be shown around.
+
+And `menu` was declared **twice** in the trigger table. The second one wins,
+silently, which is the second time that has happened in that object — so the
+word went on routing to the retired satellites instead of to the site.
+
+### The greeting
+
+One line now, and it does not tell you what to do. It used to say hello and then,
+a beat later, *"you can ask me things, say pages"* — which is a tooltip read
+aloud, and which he then obeyed, having heard himself say it. He introduces
+himself and stops.
+
+---
+
 ### He was hearing himself
 
 Reported as "it auto-goes to pages", with the right guess attached: *"I wonder

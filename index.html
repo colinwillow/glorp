@@ -201,7 +201,12 @@ const DEFAULTS = {
   autoWord:0,
   dot:0.52, sizeHi:26, falloff:70, follow:1, split:0.44, splitEll:0, splitJaw:0, splitShape:0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:850, volume:3.4, snap:0.3, flashMs:1100
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:850,
+  /* The gap after the last WORD that ends a sentence, and whether talking over
+     him stops him. gapMs is the whole latency story in a noisy room: recognition
+     will happily sit on a finished sentence for seconds waiting for the music to
+     stop. */
+  gapMs:620, barge:1, volume:3.4, snap:0.3, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -507,6 +512,60 @@ const clock = { t0:0, firstTok:0, lastTok:0, audio:0, claudeMs:0, endpoint:0, vi
    outside the measurement and read as the model being slow. Kept as the time of
    the last INTERIM result: the last moment there was evidence of talking. */
 let sawSpeechAt = 0, endpointMs = 0;
+
+/* ---------------- endpointing ----------------
+   When is a sentence over?
+
+   Recognition's own answer -- the isFinal result -- is that the ROOM has gone
+   quiet. Sitting at a desk with music playing, the room never goes quiet, so
+   the reply waited and waited while the visualiser bounced along to the
+   stereo. The right answer is that the WORDS have stopped: the transcript has
+   not changed for a while, whatever the level is doing.
+
+   So the sentence is sent on the gap in the interim stream, and the isFinal
+   that arrives later for the same utterance is swallowed. It is the difference
+   between an endpointer that listens to a room and one that listens to a
+   person. */
+let lastHeard = "", lastHeardAt = 0, finalSwallow = 0;
+function endpointCheck() {
+  if (!lastHeard || sttPaused || ttsPlaying || brain.busy) return;
+  if (performance.now() - lastHeardAt < cfg.gapMs) return;
+  const said = lastHeard;
+  lastHeard = "";
+  finalSwallow = performance.now() + 3000;
+  endpointMs = Math.round(performance.now() - lastHeardAt);
+  sawSpeechAt = 0; echoSeen = 0; lastLive = "";
+  heardSentence(said);
+}
+setInterval(endpointCheck, 80);
+
+/* How many words in `a` are not in `b`. Used for one thing: telling somebody
+   talking over him apart from his own voice coming back through the speaker.
+   Deliberately blunt -- a bag of words, no order -- because the recogniser is
+   hearing a mixture of both and a careful comparison of a mixture is a careful
+   comparison of nothing. */
+const bag = (t) => String(t || "").toLowerCase().replace(/[^a-z0-9' ]/g, " ").split(/\s+/).filter(Boolean);
+function novelWords(a, b) {
+  const have = new Set(bag(b));
+  let n = 0;
+  for (const w of bag(a)) if (w.length > 2 && !have.has(w)) n++;
+  return n;
+}
+let ttsText = "";
+function bargeIn() {
+  if (!ttsPlaying) return;
+  ttsGen++;                                  // the clip being stopped says nothing
+  try { if (ttsSrc) ttsSrc.stop(); } catch (e) {}
+  ttsPlaying = false; ttsText = "";
+  plan = null;
+  // the transcript so far is half his and half yours; drop it and start clean
+  lastHeard = "";
+  echoUntil = performance.now() + 200;
+  pauseSTT();
+  setTimeout(resumeSTT, 200);
+  setState("listening");
+  caption(null, "…");
+}
 function mark(k) { clock[k] = performance.now(); }
 function reportTiming() {
   const ms = (a, b) => Math.round(clock[b] - clock[a]);
@@ -822,8 +881,15 @@ async function playReply(text) {
     const gen = ++ttsGen;
     ttsSrc.onended = () => {
       if (gen !== ttsGen) return;            // a clip that was cut short
-      ttsPlaying = false;
+      ttsPlaying = false; ttsText = "";
+      /* Aborted and restarted rather than merely gated. Recognition has been
+         accumulating a transcript of his own voice for the whole reply, and
+         that transcript is still sitting in the engine -- left alone it arrives
+         as a finished sentence a moment later and gets answered. Aborting drops
+         it on the floor, which is where it belongs. */
+      lastHeard = "";
       echoUntil = performance.now() + cfg.echoTail;
+      pauseSTT();
       setTimeout(resumeSTT, cfg.echoTail);
     };
     plan = null;                          // real audio outranks the guess
@@ -831,7 +897,11 @@ async function playReply(text) {
     // the slider has to reach a node that already exists, not only a new one
     if (ttsGain) ttsGain.gain.value = cfg.volume;
     ttsPlaying = true;
-    pauseSTT();
+    /* Recognition stays UP while he talks, when barge-in is on. It hears mostly
+       his own voice and none of it is acted on -- the only question asked of it
+       is whether the words are his. Deaf, he cannot be interrupted at all. */
+    ttsText = text;
+    if (cfg.barge > 0.5) { if (sttPaused) resumeSTT(); } else pauseSTT();
     ttsSrc.start();
     mark("audio");
     reportTiming();
@@ -864,47 +934,36 @@ async function remark(lines) {
   setState("speaking");
 }
 
-/* Two beats, not one. The first says hello; the second, once the first has
-   finished playing, says what you can do about it -- because an assistant that
-   greets you and then waits is a thing you have to guess at. `remark` knows how
-   long its own line takes (planMs, from the audio, or the estimate when there
-   is no voice), so the follow-up lands when the first one stops rather than on
-   a guess. */
-async function remarkThen(first, second, gap) {
-  /* Awaited. planMs is set by playReply from the decoded audio, and reading it
-     on the line after remark() was called read the PREVIOUS clip's duration --
-     zero, at startup. The follow-up then landed 1.4 seconds in, cutting the
-     greeting off halfway and taking the ears with it. */
-  await remark(first);
-  clearTimeout(helloAt);
-  helloAt = setTimeout(() => remark(second), Math.max(900, planMs + (gap || 600)));
-}
-let helloAt = 0;
+/* One beat. There used to be a second -- "you can ask me things, say pages" --
+   scheduled off the first one's duration, and it is gone along with the
+   machinery that scheduled it. A greeting followed by a list of instructions is
+   a tooltip read aloud, and the instructions were also what he then obeyed,
+   having heard himself say them. */
 
 /* Time of day, because "good evening" at eight in the morning is worse than no
    greeting at all -- and because it is the cheapest possible way to say that
    something is actually paying attention. */
+/* One line, and it does not tell you what to do.
+
+   It used to say hello and then, a beat later, "you can ask me things, say
+   pages" -- which is a tooltip read aloud. It also meant the first thing that
+   happened was a set of instructions, and the second thing that happened was
+   him obeying one of them, because he heard himself say it.
+
+   He introduces himself and stops. Whoever is here can work out the rest, and
+   working it out is the interesting part. */
 function greetings() {
   const h = new Date().getHours();
-  const when = h < 5 ? ["Still up, then.", "It is the middle of the night. Suits me.",
-                        "Nobody sensible is awake. Hello."]
-             : h < 12 ? ["Morning.", "Good morning. You are early.",
-                         "Morning. I have been here the whole time."]
-             : h < 18 ? ["Afternoon.", "Good afternoon.", "Afternoon. You found me."]
-             : ["Evening.", "Good evening.", "Evening. Nice of you to drop in."];
+  const when = h < 5 ? ["Still up.", "It is the middle of the night. Suits me."]
+             : h < 12 ? ["Morning.", "Morning. I have been here a while."]
+             : h < 18 ? ["Afternoon.", "Afternoon. You found me."]
+             : ["Evening.", "Evening. Nice of you to turn up."];
   return when.concat([
-    "Oh, hello.", "There you are.", "Hello. I am Glorb, apparently.",
-    "Ah. Someone.", "Hello. I was beginning to wonder."
+    "Oh. Hello.", "There you are.", "I am Glorb. Hello.",
+    "Hm. Someone.", "Hello. I was beginning to wonder.",
+    "You found me.", "Ah."
   ]);
 }
-const OFFER_LINES = [
-  "Say pages and I will show you around.",
-  "Ask me what I can do, or say pages.",
-  "There is a whole site in here. Say pages.",
-  "Say pages to see what there is. Or just talk.",
-  "You can ask me things. You can also say pages.",
-  "Try saying pages. Or ask me something impossible."
-];
 
 /* Watts, roughly: delighted by the thing in front of him and unable to resist
    pointing out that you are the one looking at it. Short, because they are said
@@ -986,24 +1045,43 @@ function toggleSTT() {
   rec.onaudiostart = () => { recAlive = performance.now(); caption("", "hearing audio…"); };
   rec.onresult = (e) => {
     recAlive = performance.now();
-    if (sttPaused || performance.now() < echoUntil) return;   // that was us
     let heard = "", interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) heard += e.results[i][0].transcript;
       else interim += e.results[i][0].transcript;
     }
     heard = heard.trim();
+    const live = (heard + " " + interim).trim();
+
+    /* Talking over him. Recognition keeps running while he speaks now, and what
+       it hears is mostly his own voice out of the speaker -- so the only thing
+       done with it is to ask whether it is HIS. If enough of the words are ones
+       he is not saying, somebody is talking over him, and the right response is
+       to stop talking. Not to obey it: the words heard during a reply are
+       thrown away, because they are half his and half yours and there is no
+       telling which is which. He goes quiet and listens, and you say it again. */
+    if (ttsPlaying) {
+      if (cfg.barge > 0.5 && live && novelWords(live, ttsText) >= 2) bargeIn();
+      return;
+    }
+    if (sttPaused || performance.now() < echoUntil) return;   // that was us
+
     // words are drawn from the interim stream, so they land while you are still
     // saying the sentence rather than after the model has replied to it
     stirred();
     feedWords(heard, interim.trim());
-    // showing the interim text proves recognition is alive even when nothing
-    // ever reaches isFinal, which is the failure that looks like doing nothing
+    /* The last time the WORDS changed, which is the thing that decides a
+       sentence has ended -- see endpointCheck. Recognition's own isFinal waits
+       for the room to go quiet, and a room with music in it never does. */
+    if (live && live !== lastHeard) { lastHeard = live; lastHeardAt = performance.now(); }
     if (!heard && interim.trim()) { caption("", "… " + interim.trim()); sawSpeechAt = performance.now(); }
     if (heard) {
+      // already sent it ourselves a moment ago, on the gap rather than on this
+      if (performance.now() < finalSwallow) { lastHeard = ""; return; }
       // how long recognition sat on it after the last word before calling it done
       endpointMs = sawSpeechAt ? Math.round(performance.now() - sawSpeechAt) : 0;
       sawSpeechAt = 0;
+      lastHeard = "";
       echoSeen = 0; lastLive = "";        // next utterance starts counting again
       /* Say "menu" and the menu comes up locally -- and then the sentence went
          on to the brain anyway, which answered that it does not have one and
@@ -1070,6 +1148,8 @@ setInterval(recWatch, 2000);
 /* ---------------- controls ---------------- */
 const SPEC = [
   ["state", [
+    ["gapMs","end of sentence ms",200,2000,20],
+    ["barge","talk over him",0,1,1],
     ["vadOn","voice threshold",0.02,0.6,0.01],
     ["holdMs","silence hold ms",100,3000,50],
     ["thinkMs","think ms",200,6000,100],
@@ -1407,7 +1487,7 @@ micBtn.onclick = async () => {
        spending an introduction on. A beat later, what to do about it. */
     setTimeout(async () => {
       if (ttsCtx && ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
-      remarkThen(greetings(), OFFER_LINES);
+      remark(greetings());
     }, 650);
   } catch (e) {
     micState = "denied";
@@ -4597,7 +4677,11 @@ const TRIGGERS = {
   // object literal the second one silently wins
   help:{text:"HELP"}, nice:{text:"NICE"},
   glorb:{text:"GLORB"}, orb:{text:"GLORB"},
-  menu:{menu:true}, options:{menu:true},
+  /* `menu` is declared at the top of this table, and was declared again HERE --
+     and the second one wins, silently, which is the second time that has
+     happened in this object. It meant the word menu went on routing through the
+     retired satellites rather than to the site. */
+  options:{pages:true},
   // solids, which is where depth actually shows
   sphere:{solid:"sphere"}, ball:{solid:"sphere"}, cube:{solid:"cube"},
   box:{solid:"cube"}, torus:{solid:"torus"}, donut:{solid:"torus"},
@@ -5093,16 +5177,32 @@ function heardSentence(heard) {
      a request to close the gallery. A command is a short thing said on its own;
      five words is generous for one and far below anything conversational. */
   const brief = flat.split(" ").length <= 5;
+  /* Going somewhere is a decision, so it needs a sentence that reads like one:
+     either almost nothing but the name of the place, or an actual instruction
+     with a verb in it. "pictures" goes. "show me the pictures" goes. "I like
+     your pictures" does not, and neither does "what is this for". */
+  const ASKED_FOR = /\b(show|shows?|open|opens?|go|take|bring|pull|see|view|display|let'?s|lets|give)\b/;
+  const deliberate = flat.split(" ").length <= 2 || ASKED_FOR.test(flat);
   if (brief && HOME_SAID.test(flat)) {
     goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";
     return "home";
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
+  /* The places, now that the whole sentence is here to judge. */
+  if (deliberate) {
+    for (const w of flat.split(" ")) {
+      const tg = TRIGGERS[w];
+      if (tg && (tg.solid || tg.model || tg.image || tg.holo || tg.seq ||
+                 tg.gallery || tg.figure || tg.pages || tg.menu)) {
+        setFormation(tg, 10); caption(heard, ""); return "place";
+      }
+    }
+  }
   /* With the site on screen, its own page names outrank the brain. "About" is a
      preposition most of the time and a page exactly when there is a card
      labelled ABOUT in front of you. */
-  if (pages.on && !pages.open && brief) {
+  if (pages.on && !pages.open && brief && deliberate) {
     const kp = pageSaid(flat);
     if (kp >= 0) { pageOpen(kp); caption(heard, ""); return "page"; }
   }
@@ -5150,10 +5250,13 @@ function feedWords(finalText, interimText) {
        the shop yesterday". The sentence matcher owns leaving, because it can
        see how long the sentence is; a word cannot. */
     if (trig && trig.home) continue;
+    /* Anything that CHANGES WHERE YOU ARE waits for the sentence. A single word
+       going past is not a request to go somewhere: "I like your pictures" was
+       opening the gallery, and "what is this for" was landing on the site. The
+       transient ones -- an emoji, a firework -- still fire on the word, because
+       they are over in a second and cost nothing if they were not meant. */
     if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq ||
-                 trig.gallery || trig.figure || trig.pages)) {
-      setFormation(trig, 10); localTook = 1; continue;
-    }
+                 trig.gallery || trig.figure || trig.pages || trig.menu)) continue;
     /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
        cool, love, wow, hmm -- and every one of them took the whole field for a
        second of ordinary conversation, which is a second the field spends not
