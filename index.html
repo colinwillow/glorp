@@ -4676,8 +4676,11 @@ const world = {
   // pose: he is IN something (sitting, lying, drunk) rather than DOING
   // something, so no timer takes him out of it and the idle rotation leaves
   // him alone. Cleared by walking, or by being told to stand up.
-  // turning: pivoting on the spot to face the target, translating nothing
-  tx: 0, tz: 0, walking: 0, run: 0, turning: 0, act: "", actUntil: 0, idleAt: 0, pose: 0,
+  // turning: pivoting on the spot before a walk, translating nothing.
+  // turnOnly: the same pivot as an instruction in its own right -- "face away",
+  // "turn around" -- with no walk waiting at the end of it.
+  tx: 0, tz: 0, walking: 0, run: 0, turning: 0, turnOnly: 0,
+  act: "", actUntil: 0, idleAt: 0, pose: 0,
   // the lowest his current clip has got to, in model units -- see playClip
   groundMin: 1e30
 };
@@ -4895,8 +4898,6 @@ const ACTS = [
   [/\b(hot|fan|warm)\b/,                          ["idle_fan_self"]],
   [/\b(nails|bored|boring)\b/,                    ["idle_look_at_nails"]],
   [/\b(fly|swat|bug|mosquito)\b/,                 ["idle_swat_fly"]],
-  [/\b(turn|spin) (left|around)\b/,               ["idle_turn_left"]],
-  [/\bturn right\b/,                              ["idle_turn_right"]],
   [/\b(tip ?toe|sneak up|quietly)\b/,             ["walk_fwd_tiptoe"]],
   [/\b(strut|swagger)\b/,                         ["walk_fwd_strut"]]
 ];
@@ -4944,6 +4945,72 @@ function playClip(name, fade, once) {
 /* Told to do something. Returns the clip it chose, so the caller knows whether
    the word meant anything -- which is what stops "dance" being answered twice,
    once by the room and once by the brain. */
+/* Where he goes and which way he points.
+
+   Frame of reference: the VIEWER's, by default. "Go left" said to somebody
+   standing in front of you means your left, not theirs -- they are facing you,
+   so their left is your right, and nobody means that unless they say it. Saying
+   "your left" switches to his own frame, which is the only time it is
+   unambiguous enough to be worth honouring.
+
+   Heading is the same angle walkTo derives with atan2(dx, dz), so a heading of
+   0 is facing +z, which is facing the camera. That makes the four screen
+   directions 0, PI, and +/- PI/2, and "his left" his heading plus PI/2. */
+const PACE = 1.15;                 // heights covered by one "go left" or "back up"
+const FACE = { me: 0, away: Math.PI, left: -Math.PI / 2, right: Math.PI / 2 };
+function faceTo(yaw) {
+  world.yawWant = yaw;
+  world.turnOnly = 1; world.walking = 0; world.pose = 0; world.actUntil = 0;
+  let dy = yaw - world.yaw;
+  while (dy > Math.PI) dy -= TAU;
+  while (dy < -Math.PI) dy += TAU;
+  // the shuffle that matches the direction, even though neither clip carries
+  // any rotation of its own -- it is feet doing something while the heading
+  // changes underneath, which beats a standing figure rotating like a turret
+  const tc = dy > 0 ? "idle_turn_left" : "idle_turn_right";
+  if (Math.abs(dy) > 0.12) playClip(haveClip(tc) ? tc : pickIdle(), 0.22);
+}
+function stepBy(ax, az) {
+  const H1 = figH1();
+  walkTo(world.x + ax * PACE * H1, world.z + az * PACE * H1, 0);
+}
+function sandboxMove(flat) {
+  const mine = /\b(your|his|him)\b/.test(flat);      // his frame, not the screen's
+  const h = world.yaw;
+  // --- facing, which is a turn and nothing else
+  if (/\b(turn|spin) (round|around)\b|\bother way\b|\bturn your back\b/.test(flat)) {
+    faceTo(h + Math.PI); return "face";
+  }
+  /* Away BEFORE toward. "Face away from me" ends in "me", so a toward-me test
+     that only looks for the word grabs it and points him straight back at you,
+     which is the exact opposite of what was asked. */
+  if (/\b(face|look|turn)\b.*\b(away|back to me|backwards)\b/.test(flat)) { faceTo(FACE.away); return "face"; }
+  if (/\b(face|look at|turn to|turn towards?|look towards?)\b.*\b(me|us|here|forward|front|this way|camera)\b/.test(flat)
+      || /\b(face|look) (forward|front|me|here)\b/.test(flat)) { faceTo(FACE.me); return "face"; }
+  if (/\b(face|look|turn)\b.*\bleft\b/.test(flat)) {
+    faceTo(mine ? h + Math.PI / 2 : FACE.left); return "face";
+  }
+  if (/\b(face|look|turn)\b.*\bright\b/.test(flat)) {
+    faceTo(mine ? h - Math.PI / 2 : FACE.right); return "face";
+  }
+  // --- moving. Toward the lens is +z, which is also heading 0.
+  const TOWARD = /\b(come|move|step|walk|get)\b.*\b(here|closer|forward|to me|towards? me|over here|nearer)\b|\bcome (here|over|closer|forward)\b|\bover here\b/;
+  const AWAY = /\b(go|move|step|back|get|walk)\b.*\b(away|back|backwards|further|farther)\b|\bback (up|off|away)\b|\bgo away\b/;
+  if (TOWARD.test(flat)) { stepBy(0, 1); return "toward"; }
+  if (AWAY.test(flat)) { stepBy(0, -1); return "away"; }
+  if (/\b(go|move|step|walk|slide|shuffle)\b.*\bleft\b|\bto (the|your) left\b/.test(flat)) {
+    if (mine) stepBy(Math.sin(h + Math.PI / 2), Math.cos(h + Math.PI / 2));
+    else stepBy(-1, 0);
+    return "left";
+  }
+  if (/\b(go|move|step|walk|slide|shuffle)\b.*\bright\b|\bto (the|your) right\b/.test(flat)) {
+    if (mine) stepBy(Math.sin(h - Math.PI / 2), Math.cos(h - Math.PI / 2));
+    else stepBy(1, 0);
+    return "right";
+  }
+  return "";
+}
+
 function sandboxSay(flat) {
   if (!world.on) return "";
   /* Out of a pose first. Nothing in the table means "stand up", so a phrase
@@ -4964,12 +5031,8 @@ function sandboxSay(flat) {
     caption(null, nm.replace(/_/g, " "));
     return nm;
   }
-  /* Come here is a move, not a pose: the one place in the room where the
-     camera is a thing he can walk toward. */
-  if (/\b(come here|come over|come to me|over here)\b/.test(flat)) {
-    walkTo(0, figH1() * 1.5); return "come";
-  }
-  if (/\b(go away|back off|leave)\b/.test(flat)) { walkTo(0, -figH1() * 2.2); return "away"; }
+  const d = sandboxMove(flat);
+  if (d) return d;
   if (/\b(stop|stay|wait|hold on)\b/.test(flat) && world.walking) {
     world.walking = 0; playClip(pickIdle(), 0.3); return "stop";
   }
@@ -4991,7 +5054,7 @@ function walkTo(x, z, run) {
      framing he fills over 40% standing still, so the same allowance walks him
      straight out of the top of the picture. */
   world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 0.9, z));
-  world.walking = 1; world.run = run ? 1 : 0; world.turning = 0;
+  world.walking = 1; world.run = run ? 1 : 0; world.turning = 0; world.turnOnly = 0;
   world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
   playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
 }
@@ -5083,7 +5146,16 @@ function updateWorld(dt, now) {
   formTilt = 0.05 + ROOM.down * world.on;
   if (!want) return;
 
-  if (world.walking) {
+  if (world.turnOnly) {
+    let dy = world.yawWant - world.yaw;
+    while (dy > Math.PI) dy -= TAU;
+    while (dy < -Math.PI) dy += TAU;
+    if (Math.abs(dy) < 0.06) {
+      world.turnOnly = 0;
+      playClip(pickIdle(), 0.35);
+      world.idleAt = now + 3000;
+    }
+  } else if (world.walking) {
     const dx = world.tx - world.x, dz = world.tz - world.z;
     const d = Math.hypot(dx, dz);
     if (d < WALK.arrive * figH1()) {
@@ -5137,18 +5209,18 @@ function updateWorld(dt, now) {
   // eased, and by the short way round. He only turns while he is going
   // somewhere -- a standing figure swinging to face a stale heading is the
   // other half of the hovering.
-  if (world.walking) {
+  if (world.walking || world.turnOnly) {
     let dy2 = world.yawWant - world.yaw;
     while (dy2 > Math.PI) dy2 -= TAU;
     while (dy2 < -Math.PI) dy2 += TAU;
-    const rate = world.turning ? WALK.turnPlace : WALK.turn;
+    const rate = (world.turning || world.turnOnly) ? WALK.turnPlace : WALK.turn;
     world.yaw += dy2 * Math.min(1, rate * (dt / 1000));
   }
 }
 function worldReset() {
   world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
   world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
-  world.pose = 0; world.groundMin = 1e30; world.turning = 0;
+  world.pose = 0; world.groundMin = 1e30; world.turning = 0; world.turnOnly = 0;
 }
 
 /* ---------------- the figure ----------------
@@ -6262,6 +6334,17 @@ function heardSentence(heard) {
      a "stop" said to a standing figure still gets you out. */
   if (world.on > 0.5 && world.walking && /\b(stop|wait|hold on|stay)\b/.test(flat)) {
     sandboxSay(flat); caption(heard, ""); return "act";
+  }
+  /* "Go back" is his instruction while he is in the room, not yours. HOME_SAID
+     owns the word everywhere else -- and "back" alone has always been a way out
+     -- but said to a figure standing in front of you it is plainly a direction,
+     and the ways out that cannot be misread (home, exit, quit, leave, never
+     mind) all still work. */
+  if (world.on > 0.5 && /\b(go|move|step|back|get)\b/.test(flat) &&
+      /\b(back|backwards|away|further|farther)\b/.test(flat) &&
+      !/\b(home|exit|quit|cancel|never ?mind)\b/.test(flat)) {
+    const d0 = sandboxMove(flat);
+    if (d0) { caption(heard, ""); return "act"; }
   }
   if (brief && HOME_SAID.test(flat)) {
     goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";

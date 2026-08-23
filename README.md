@@ -2421,6 +2421,47 @@ With the tap landing under the finger, the near fence could go from 1.0 heights
 to 1.5 — 1.0 put a hard stop in the middle of the reachable screen that read as
 him refusing to come closer.
 
+### Telling him where to go
+
+Beyond the clips, he takes directions: **come here, go back, go left, go right,
+back up, step forward** — and **turn around, face me, face away, look left, face
+right**. Facing turns him on the spot with no translation; moving steps 1.15 of
+his heights and leaves him facing the way he went.
+
+**The frame of reference is yours, not his.** "Go left" said to somebody standing
+in front of you means *your* left — they are facing you, so their left is your
+right, and nobody means that unless they say it. Saying **"your left"** switches
+to his own frame, which is the only phrasing unambiguous enough to be worth
+honouring. Measured, starting from him facing you:
+
+| said | he goes |
+|---|---|
+| `go left` | x −1.06 (screen left) |
+| `go to your left` | x +1.06 (screen right — his left) |
+| `face left` | heading 273° |
+| `face your left` | heading 87° |
+
+Two conflicts this had to settle, both of which would otherwise have bitten
+immediately:
+
+- **"Face away from me" ends in "me".** A toward-me test that only looks for the
+  word grabs it and points him straight back at you — the exact opposite of what
+  was asked. The away test runs first.
+- **"Go back" belonged to `HOME_SAID`**, the exit. Said to a figure standing in
+  front of you it is plainly a direction, so while the room is up it moves him.
+  The ways out that cannot be misread — home, exit, quit, cancel, never mind —
+  all still work, and `icmd` confirms "I went back to the shop yesterday" and "do
+  you ever want to go back" still reach the brain untouched.
+
+The two `turn left` / `turn right` rows came **out** of `ACTS`. They played
+`idle_turn_left`, which is a shuffle with 0.0° of net yaw — so asking him to turn
+left made him shuffle his feet and end up facing exactly where he started. The
+clips are still used, as feet doing something while the heading changes
+underneath, but the heading is now driven separately and actually arrives.
+
+`world.turnOnly` is the pivot as an instruction in its own right, as against
+`world.turning`, which is the pivot that happens before a walk.
+
 ### Doing versus being
 
 A wave is over when the wave is over. Sitting down is not over until you say so.
