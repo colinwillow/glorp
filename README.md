@@ -2715,7 +2715,7 @@ the levels, the microphone state, the timing breakdown, the caption, the buttons
 the spectrum, the stage chooser. All of it is for building with. At some point
 this is a thing people look at, and none of it should be there.
 
-The dim circle in the top-right corner takes it all off. One class on the body
+The **eye** in the top-right corner takes it all off. One class on the body
 hides the DOM chrome; `showBars` is set separately because the spectrum is drawn
 *into* the canvas, where a CSS rule cannot reach it. The button slides up into
 the corner the button row leaves behind, and stays visible at 22% — a way out
@@ -2727,6 +2727,14 @@ every time would mean it never gets used then.
 
 The microphone button stays. It is a control, not a readout, and it takes itself
 off the screen once the microphone is running.
+
+**It went unfound**, which is its own lesson. It was a 30 px circle at half
+opacity showing `◦`, unlabelled — and the feature behind it was eventually asked
+for as a new thing to build, while it sat in the corner working perfectly. A
+control nobody can identify is a control that does not exist. It is 38 px now,
+at 85%, and it is an open eye that becomes a struck-through eye — an icon
+everybody already reads as show/hide. It still dims to 30% once the screen is
+clean, because the way back has to stay visible, but never to 22% again.
 
 One bug, and it is the same shape as three others in here: the startup call to
 `syncBare()` went in at the first `syncStateBtns()` the file contained, which is

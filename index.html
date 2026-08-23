@@ -44,15 +44,25 @@
   /* Under the button row while the chrome is up, and slid into the corner the
      row leaves behind when it goes. Not at the bottom: the caption lives across
      the full width down there and a long reply runs straight under it. */
-  #bareBtn{position:fixed;right:14px;top:calc(58px + env(safe-area-inset-top));
-    z-index:8;width:30px;height:30px;padding:0;border-radius:50%;
-    font-size:15px;line-height:1;letter-spacing:0;color:#4A5A40;
-    background:rgba(11,11,11,.6);border:1px solid #2A3325;opacity:.5;
+  /* An eye, not a dot. It was a 30px circle at half opacity showing a bare
+     glyph, and the feature behind it -- the one that takes every readout off
+     the screen -- went unfound: asked for as a new thing to build while it was
+     sitting in the corner working perfectly. Bigger, brighter, and an icon
+     everybody already reads as show/hide. */
+  #bareBtn{position:fixed;right:12px;top:calc(56px + env(safe-area-inset-top));
+    z-index:8;width:38px;height:38px;padding:0;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    line-height:1;letter-spacing:0;color:#7FA36A;
+    background:rgba(11,11,11,.72);border:1px solid #33402C;opacity:.85;
     transition:top .18s ease,opacity .18s ease}
+  #bareBtn svg{width:19px;height:19px;fill:none;stroke:currentColor;
+    stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
   body.bare #bareBtn{top:calc(12px + env(safe-area-inset-top))}
   #bareBtn:hover,#bareBtn:focus-visible{opacity:1}
-  body.bare #bareBtn{opacity:.22}
-  body.bare #bareBtn:hover{opacity:.8}
+  /* dim once the screen is clean, but never invisible: a way out you cannot
+     see is not a way out */
+  body.bare #bareBtn{opacity:.30}
+  body.bare #bareBtn:hover{opacity:.9}
   #err{position:fixed;top:calc(52px + env(safe-area-inset-top));right:14px;left:14px;
     max-width:340px;margin-left:auto;background:rgba(40,16,16,.94);border:1px solid #4A2020;
     color:#D89A94;font-size:11.5px;line-height:1.55;padding:11px 13px;border-radius:6px;display:none}
@@ -155,7 +165,7 @@
 <canvas id="gl"></canvas>
 <div id="hud">— fps</div>
 <div id="meter"></div>
-<button id="bareBtn" aria-label="hide the readouts" title="hide the readouts">◦</button>
+<button id="bareBtn" aria-label="hide the readouts" title="hide the readouts"></button>
 <div id="tr">
   <button id="micBtn">enable mic</button>
   <button id="frzBtn" style="display:none">freeze</button>
@@ -1566,9 +1576,18 @@ function syncBare() {
   document.body.classList.toggle("bare", bare);
   // the spectrum is drawn INTO the canvas, so a CSS rule cannot reach it
   showBars = !bare && barsWant;
-  bareBtn.textContent = bare ? "\u25CB" : "\u25CF";
-  bareBtn.setAttribute("aria-label", bare ? "show the readouts" : "hide the readouts");
-  bareBtn.title = bare ? "show the readouts" : "hide the readouts";
+  // an open eye means "everything is showing, press to hide"; a struck-through
+  // one means "it is all off, press to bring it back"
+  bareBtn.innerHTML = bare
+    ? '<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/>' +
+      '<path d="M10.6 5.2A9.9 9.9 0 0 1 12 5c5 0 9 4.5 9 7a11 11 0 0 1-2.4 3.4"/>' +
+      '<path d="M6.5 7.1C4.3 8.5 3 10.6 3 12c0 2.5 4 7 9 7a9.8 9.8 0 0 0 4.2-.95"/>' +
+      '<path d="M9.9 10.1a3 3 0 0 0 4.1 4.2"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="M3 12s3.6-7 9-7 9 7 9 7-3.6 7-9 7-9-7-9-7z"/>' +
+      '<circle cx="12" cy="12" r="2.6"/></svg>';
+  const what = bare ? "show the readouts" : "hide the readouts";
+  bareBtn.setAttribute("aria-label", what);
+  bareBtn.title = what;
 }
 bareBtn.onclick = (e) => {
   e.preventDefault(); e.stopPropagation();
