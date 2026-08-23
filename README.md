@@ -2172,6 +2172,207 @@ part and keeps the part that reads.
 
 ---
 
+## The room
+
+The figure used to stand in the void. Now the particles build him and then he is
+**somewhere**: a lattice floor, a pool of light he stands in, and a place he can
+be sent to. Tap the ground and he walks there. Tell him to dance, lay down, have
+a drink, do a backflip, come here, and he does it. Tap the sky and he leaves.
+
+`world` holds the whole thing — where he is, which way he faces, what he is
+doing, whether he is *doing* it or *in* it. `updateWorld` runs it. Thirty-six
+clips come out of `colin_slim.glb`; `ACTS` maps what somebody says to which of
+them plays.
+
+### The camera never moves
+
+It cannot. The two renderers — the particle field in Canvas 2D and three.js on a
+GL canvas — agree only because they are literally the same projection: `FOC =
+scale * 1.7` pixels, `fov = 2·atan((H/2)/FOC)`, camera at `z = FOC`. Move it on
+one side and the two pictures come apart.
+
+So the room arrives by moving the *world* instead:
+
+```js
+formS    = rig.fs0 * (1 - 0.42 * world.on);   // shrink = pull back
+formTilt = 0.05 + 0.33 * world.on;            // rotate the stage = look down
+```
+
+Both are read by both renderers. Shrinking the world is pulling the camera back,
+because the camera sits `FOC` pixels away and a smaller world puts it further
+away measured in the world's own units. Rotating the stage about the origin is
+exactly orbiting the camera around it. Built at 0.40 he stood eleven of his own
+heights from the lens, which is a portrait, not a room; at 0.23 it is twenty.
+
+### The sign that hid for a whole session
+
+Screen space and three's space differ by a flip on **both** y and z — the
+formation builder writes `formY = -y` and `formZ = -z`. Flipping two of three
+axes is a rotation, not a mirror, so a rotation about the remaining axis keeps
+its sign. `gl.stage.rotation.x` was `-view.pitch`, and the two views tipped
+opposite ways about x.
+
+Standing still that is a few pixels and reads as nothing. The moment he walks
+toward the lens the disagreement grows with how far he has come. Measured
+by projecting the same five points through both pipelines:
+
+| probe (model units) | standing, before | after walking to z = 4.95 |
+|---|---|---|
+| centre | 0.0 px | **130.2 px** |
+| 1 up | 0.5 px | 128.4 px |
+| 1 toward camera | 8.6 px | **168.3 px** |
+| 1 away | 7.5 px | 97.1 px |
+
+With the sign corrected every one of them is **0.0 px**, standing and walking.
+On screen the difference is a green particle ghost a full body-length below him
+turning into a silhouette that traces him exactly.
+
+The moral is the one this file keeps learning: two pipelines that agree at rest
+are not two pipelines that agree. The test that finds this is the one that
+*moves* something.
+
+### A floor has to fit in front of the camera
+
+`WALK.floor` is the room's width in his own heights. It was 11, and what
+rendered was a stack of horizontal rules — scan lines, not ground.
+
+The camera sits about 3.4 heights out. A floor 11 heights across has a
+half-extent of 5.5, so more than half of it is level with or behind the lens,
+and the lines running **away** from the camera — the only ones that carry any
+perspective — had nothing left on screen but a sliver at the horizon. Colouring
+the two line families apart made it unambiguous: at 11, not one lengthwise line
+reached the frame. At 8, the whole lattice converges and it is a floor.
+
+Fog finishes it: `near` is `FOC * 1.05`, just past where he stands, so the far
+edge dissolves instead of ending in a visible rectangle. It used to be
+`FOC * 0.75`, which was greying out a seventh of *him*.
+
+### Tapping the floor
+
+`groundAt` intersected a plane with a world-space `(0,1,0)` normal and then
+divided by the stage scale. That is the right answer only while the stage is
+unrotated — and the stage is rotated by exactly the amount that makes the room a
+room. Measured at pitch 0.378, taking each result back through the projection:
+
+| tap | error, before | after |
+|---|---|---|
+| 215, 520 | 46 px | 0 |
+| 215, 600 | 119 px | 0 |
+| 215, 700 | 273 px | 0 |
+| 215, 820 | **401 px** | 0 |
+| 100, 650 | 203 px | 0 |
+
+He was walking somewhere nobody had pointed at. The fix takes the plane off the
+ground object's own matrix and brings the hit back through the stage rather than
+through a lone scalar; stage-local space *is* the space `world.x` and `world.z`
+are written in, so the answer needs no further conversion.
+
+With the tap landing under the finger, the near fence could go from 1.0 heights
+to 1.5 — 1.0 put a hard stop in the middle of the reachable screen that read as
+him refusing to come closer.
+
+### Doing versus being
+
+A wave is over when the wave is over. Sitting down is not over until you say so.
+The third column of `ACTS` marks the difference, and it is marked by hand rather
+than read off the clip length, because the lengths lie in both directions:
+
+| clip | duration | what it actually is |
+|---|---|---|
+| `sitting_ground_beach_pose` | **0.03 s** | a single frame the exporter wrote out as an animation |
+| `laying_idle_00` | **12.53 s** | a pose you stay in |
+| `idle_waving` | 0.77 s | a gesture |
+| `drunk_idle_00` | 7.43 s | a state |
+
+Timed off duration, sitting ended before it was visible and lying down stood him
+back up unasked. A held row loops and stays until he is told something else —
+"stand up", "get up", "enough" — and `world.pose` keeps the idle rotation from
+walking in on him.
+
+"Stop" is the one word that had to be split. `HOME_SAID` owns it everywhere else
+and everywhere else it can only mean one thing, so it is narrowed: **while he is
+actually crossing the room**, "stop" stops the walk; said to a standing figure it
+still gets you out.
+
+### Standing on the floor
+
+Some poses were authored off the origin. `laying_idle_00` keeps his lowest vertex
+1.98 units up — more than a third of his height — so played as exported he lies
+down in mid-air.
+
+No fudge table. `skinPoints` already visits every vertex, so it records the
+lowest one, and each clip is dropped until the lowest point it has reached *since
+it started* is on the ground. That is right for a pose from the first frame,
+right for a walk cycle within one stride, and it does not flatten a jump: a jump
+starts on the ground, so the minimum is set before he leaves it.
+
+One correction was needed. The crossfade *into* a pose is a blend, so the first
+frames of "lay down" are still mostly the idle he was standing in, and the
+running minimum latched onto the real floor and left him in the air. So the floor
+falls instantly and **rises only while `world.pose` is set** — a pose is static
+and authored, so letting the floor climb back to it settles him in about a fifth
+of a second, while an action is never allowed to climb.
+
+Feet above the floor, measured across a full cycle of poses:
+
+| | before | after |
+|---|---|---|
+| lay down | 1.94 | **0.00** |
+| sit down | 1.93 | **0.00** |
+| have a drink | 0.00 | 0.00 |
+| jump, 0.35 s in | 0.47 | 0.47 (still leaves the ground) |
+
+### One of him
+
+The mini orb on its perch is the way back from anything, and in a hologram or a
+gallery it is the only thing on screen that is still obviously Glorb. In the room
+it is a second, smaller him hovering over his own head — the exact "two of him"
+the perch was built to avoid. So it is off whenever `world.on > 0.25`, and the
+way out is the sky: a tap that misses the floor falls through to the
+leave-anything case at the bottom of the pick handler.
+
+### The pool of light
+
+Nothing in this room casts a shadow, and on a black floor a shadow could not be
+seen if it did — you cannot darken black. So the contact cue goes the other way:
+a soft additive pool, brightest under his feet, the same object as the mini's
+turntable. Without it he reads as pasted over a grid rather than standing on one.
+
+It sits under **him**, not under the root he hangs from. A clip is free to walk
+him away from that node — lay him down and his whole body ends up a stride
+forward of it — and a pool left behind at the origin reads as a lamp he happens
+to be near. It tracks the mean of every 16th skinned vertex, which is his own
+centre of mass in x and z and therefore lands under him standing, sitting or
+lying, and it subtracts `world.y` so it stays on the floor while he drops onto it.
+
+---
+
+## The model
+
+`colin_animations.glb` is the export: 11.82 MB, 36 clips, 82 bones. The app loads
+`colin_slim.glb`, 5.01 MB, made by `tools/glb-slim.py`. What the size actually
+was:
+
+| | saved |
+|---|---|
+| a 1.58 MB PNG that duplicated a 40 KB WebP | 1.58 MB |
+| 6,618 channels identical to the node's rest transform, dropped | |
+| translation channels whose total movement is < 0.001 units on a 5.47-tall model — bake noise — collapsed to one key | |
+| scale channels, constant throughout, collapsed to one key | |
+| rotations stored as normalised int16 instead of float32 | |
+| accessors deduplicated by content | |
+| **total** | **11.82 → 5.01 MB** |
+
+Verified against the original through three.js: 36 clips, 82 bones, texture
+intact, worst joint difference **1.8e-4 model units** across five clips at eleven
+sample times.
+
+It writes to a new path rather than in place: in this container an in-place write
+to `models/*.glb` reported the new size inside the process and left the original
+size on disk afterwards.
+
+---
+
 ## Bare
 
 Everything on this screen except the field itself is a readout — the frame rate,

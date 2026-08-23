@@ -1279,7 +1279,9 @@ say.addEventListener("keydown", (e) => {
     if (key === "home" || key === "back") { goHome("home"); return; }
     if (key === "gallery" || key === "images") { showGallery(0); return; }
     if (/^(figure|rig|colin)\b/.test(key)) {
-      showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_dance");
+      // colin_slim is the one with the 36 clips: the room is only a room if he
+      // has something to do in it. colin_dance can only dance.
+      showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_slim");
       return;
     }
     if (key === "list") {
@@ -2458,7 +2460,7 @@ async function showGallery() {
 const PAGES = [
   { key: "images", kind: "gallery", blurb: "pictures, full size",
     say: /\b(image|images|picture|pictures|photo|photos|gallery)\b/ },
-  { key: "characters", kind: "figure", src: "colin_dance", blurb: "rigged and dancing",
+  { key: "characters", kind: "figure", src: "colin_slim", blurb: "he lives in there",
     say: /\b(character|characters|colin|figure|model|models)\b/ },
   { key: "motion", kind: "soon", blurb: "films and loops",
     say: /\b(motion|film|films|video|videos|animation)\b/ },
@@ -2973,6 +2975,11 @@ function miniWant() {
   /* Only where the field is busy being something else. On the site and in the
      gallery the field IS him, lying out along the bottom, and a second small
      one floating above it says there are two. */
+  /* And not once the room has arrived. The mini exists to say he is still
+     there while the field is busy being something else -- but in the sandbox
+     the field IS him, standing on a floor, and a second small one hovering over
+     his head is the same "two of him" this function was written to avoid. */
+  if (world.on > 0.25) return 0;
   return !menuOn && !dock.on && ((form3d && formWant) || photo.t > 0.5) ? 1 : 0;
 }
 function shadeAt(size) {
@@ -3484,7 +3491,13 @@ function rigDecimate(P, N, UV, JI, JW, IDX, want) {
       if (a === b || b === c || a === c) continue;
       T.push(a, b, c);
     }
-    return { n, P: oP, N: oN, UV: oU, JI: oJ, JW: oW, T: Int32Array.from(T) };
+    /* And which original vertex each cluster stands for. That index is the
+       hook into three's own skinning: applyBoneTransform(i) answers, for
+       vertex i of the full mesh, exactly where the renderer is about to draw
+       it -- which is the only answer guaranteed to agree with the picture. */
+    const oR = new Int32Array(n);
+    for (const [, [j2, v2]] of slot) oR[j2] = v2;
+    return { n, P: oP, N: oN, UV: oU, JI: oJ, JW: oW, T: Int32Array.from(T), REP: oR };
   }
 }
 
@@ -3670,6 +3683,83 @@ function rigSkin(R, outP, outN) {
     const L = Math.hypot(mx2, my2, mz2) || 1;
     outN[v * 3] = mx2 / L; outN[v * 3 + 1] = my2 / L; outN[v * 3 + 2] = mz2 / L;
   }
+}
+
+/* The space three's skinning answers in, and the space the placement is
+   expressed in, are not the same space.
+
+   applyBoneTransform returns a position in the MESH's local coordinates. The
+   mesh sits inside the glTF scene node, which for this model carries a scale of
+   0.01 -- it came out of a tool that works in centimetres -- so its local
+   coordinates are a hundred times the numbers in the POSITION attribute. Every
+   attempt to place the particles from those numbers put them a hundred times
+   too far out, evenly across the screen, while the render beside them was
+   perfectly correct.
+
+   One matrix fixes it: mesh-local into the group that holds the model, which is
+   the space `fit.c` and the walking offsets are written in. */
+function skinGL(R) {
+  const T = window.THREE;
+  if (!rig.v3) rig.v3 = [new T.Vector3(), new T.Vector3()];
+  if (!rig.toGroup) rig.toGroup = new T.Matrix4();
+  gl.group.updateMatrixWorld(true);
+  rig.toGroup.copy(gl.group.matrixWorld).invert().multiply(gl.mesh.matrixWorld);
+}
+
+/* Every decimated vertex, skinned by three and brought into the group's space.
+   Called once when the formation is built and once a frame after that. */
+function skinPoints(R) {
+  const n = R.dec.n, bp = R.dec.P, bn = R.dec.N, REP = R.dec.REP;
+  const P2 = R.wp, N2 = R.wn, [va, vb] = rig.v3;
+  let low = 1e30;
+  for (let v = 0; v < n; v++) {
+    const r = REP[v];
+    va.set(bp[v * 3], bp[v * 3 + 1], bp[v * 3 + 2]);
+    gl.mesh.applyBoneTransform(r, va);
+    va.applyMatrix4(rig.toGroup);
+    P2[v * 3] = va.x; P2[v * 3 + 1] = va.y; P2[v * 3 + 2] = va.z;
+    if (va.y < low) low = va.y;
+    vb.set(bp[v * 3] + bn[v * 3] * 0.05, bp[v * 3 + 1] + bn[v * 3 + 1] * 0.05,
+           bp[v * 3 + 2] + bn[v * 3 + 2] * 0.05);
+    gl.mesh.applyBoneTransform(r, vb);
+    vb.applyMatrix4(rig.toGroup);
+    let nx = vb.x - va.x, ny = vb.y - va.y, nz = vb.z - va.z;
+    const L = Math.hypot(nx, ny, nz) || 1;
+    N2[v * 3] = nx / L; N2[v * 3 + 1] = ny / L; N2[v * 3 + 2] = nz / L;
+  }
+  rig.lowY = low;
+}
+
+/* And the fit has to be measured in that space too. The one computed at load
+   comes from this file's own skinning of the bind pose, which is the right
+   answer for a shape a hundred times smaller than the one three is about to
+   draw. Once three has the model, measure it again through three. */
+function rigFitGL(R) {
+  const n = R.dec.n, bp = R.dec.P, REP = R.dec.REP;
+  skinGL(R);
+  const [va] = rig.v3;
+  const lo = [1e30, 1e30, 1e30], hi = [-1e30, -1e30, -1e30];
+  const clip = gl.action && gl.action.getClip ? gl.action.getClip() : null;
+  const dur = clip ? clip.duration : 0;
+  for (let k = 0; k < 8; k++) {
+    if (gl.mixer && dur) { gl.mixer.setTime((k / 8) * dur); skinGL(R); }
+    for (let v = 0; v < n; v++) {
+      va.set(bp[v * 3], bp[v * 3 + 1], bp[v * 3 + 2]);
+      gl.mesh.applyBoneTransform(REP[v], va);
+      va.applyMatrix4(rig.toGroup);
+      const p = [va.x, va.y, va.z];
+      for (let a = 0; a < 3; a++) {
+        if (p[a] < lo[a]) lo[a] = p[a];
+        if (p[a] > hi[a]) hi[a] = p[a];
+      }
+    }
+  }
+  let m = 0;
+  for (let a = 0; a < 3; a++) m = Math.max(m, hi[a] - lo[a]);
+  R.fit = { k: m > 1e-9 ? 2 / m : 1,
+            c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2],
+            lo: lo.slice(), hi: hi.slice() };
+  if (gl.mixer) gl.mixer.setTime(0);
 }
 
 /* One fit for the whole take, not one per frame. Fitting each frame to its own
@@ -4042,7 +4132,8 @@ async function showSequence(src) {
    the right moment is what lets the model sit between the trail and the dots. */
 const glCanvas = document.getElementById("gl");
 const gl = {
-  ok: 0, ready: 0, R: null, scene: null, cam: null, root: null, group: null,
+  ok: 0, ready: 0, R: null, scene: null, cam: null, root: null, stage: null,
+  ground: null, group: null,
   mesh: null, ghost: null, mixer: null, action: null, W: 0, H: 0, src: "",
   /* The wipe, as three uniforms rather than as clipping planes. A plane cuts at
      a height in the WORLD, and the 2D side gates on a vertex's height in the
@@ -4132,8 +4223,24 @@ function glInit() {
   rim.position.set(4, 3, -6);
   gl.scene.add(rim);
   gl.scene.add(new T.AmbientLight(0xFFFFFF, 0.24));
+  /* stage (the world, at the fit's scale)
+       ground   -- a lattice at the level of his feet, which does not move
+       root     -- him: position and facing in the world
+         scene  -- the model, offset so the fit centre is the root's origin
+
+     Two groups rather than one because the ground has to STAY when he walks.
+     The camera never moves and never tilts: it sits level with his chest, and
+     a horizontal plane below a level camera recedes to a horizon on its own.
+     Tilting it would have meant tilting the 2D projection to match, and those
+     two cameras agreeing is the only reason the particles land on him. */
+  gl.stage = new T.Group();
+  gl.scene.add(gl.stage);
   gl.root = new T.Group();
-  gl.scene.add(gl.root);
+  gl.stage.add(gl.root);
+  /* Fog, so the lattice goes into the dark rather than stopping at an edge.
+     It is the same trick the hologram floor plays with geometric row spacing,
+     for free, and it applies to him too when he walks away. */
+  gl.scene.fog = new T.Fog(0x0B0B0B, 0.1, 1);
   gl.ok = 1;
   return gl.ok;
 }
@@ -4151,6 +4258,11 @@ function glLoad(buf, src, R) {
       gl.group = new T.Group();
       gl.root.add(gl.group);
       gl.group.add(g.scene);
+      if (!gl.ground) gl.ground = makeGround(T);
+      if (gl.ground.parent !== gl.stage) gl.stage.add(gl.ground);
+      // under root, not stage: the pool is his, and it walks when he does
+      if (!gl.pool) gl.pool = makePool(T);
+      if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
       let mesh = null;
       g.scene.traverse((o) => { if (o.isSkinnedMesh && !mesh) mesh = o; });
       if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
@@ -4214,9 +4326,14 @@ function glLoad(buf, src, R) {
       ghost.frustumCulled = false;
       mesh.parent.add(ghost);
       gl.mesh = mesh; gl.ghost = ghost;
+      /* Every clip, by name. The dance file had one; this one has thirty-six,
+         and the whole sandbox is the difference between "play the animation"
+         and "play THAT one". */
       gl.mixer = g.animations.length ? new T.AnimationMixer(g.scene) : null;
-      gl.action = gl.mixer ? gl.mixer.clipAction(g.animations[0]) : null;
-      if (gl.action) gl.action.play();
+      gl.clips = {};
+      for (const c of g.animations) gl.clips[c.name] = c;
+      gl.action = null;
+      if (gl.mixer) playClip(pickIdle(), 0);
       gl.src = src;
       res(g);
     }, rej);
@@ -4248,9 +4365,56 @@ function glFrame(K, FOC) {
   gl.cam.lookAt(0, 0, 0);
   gl.cam.updateProjectionMatrix();
   const f = rig.R.fit;
-  gl.root.scale.setScalar(K);
-  gl.root.position.set(-f.c[0] * K, -f.c[1] * K, -f.c[2] * K);
-  gl.root.rotation.set(-view.pitch * formT, view.yaw, 0);
+  gl.stage.scale.setScalar(K);
+  gl.stage.position.set(0, 0, 0);
+  /* Not -pitch. Screen space and three's space differ by a flip on BOTH y and
+     z (the formation builder writes formY = -y and formZ = -z), and flipping
+     two of three axes is a rotation, not a mirror -- so a rotation about the
+     remaining axis has to keep its sign, not lose it. With the minus the two
+     views tipped opposite ways about x: at rest that is a few pixels and reads
+     as nothing, but the moment he walks toward the lens the disagreement is
+     proportional to how far he has come. Measured at world.z = 4.95 it put the
+     particle silhouette 130 px below the figure it is supposed to be. */
+  gl.stage.rotation.set(view.pitch * formT, view.yaw, 0);
+  gl.root.position.set(world.x, world.y, world.z);
+  gl.root.rotation.set(0, world.yaw, 0);
+  if (gl.group) gl.group.position.set(-f.c[0], -f.c[1], -f.c[2]);
+  if (gl.ground) {
+    gl.ground.visible = world.on > 0.01;
+    // his feet, not the fit centre: the fit is centred on his middle
+    gl.ground.position.y = f.lo[1] - f.c[1];
+    gl.ground.scale.setScalar(figH1() * WALK.floor);
+    gl.ground.material.opacity = world.on * 0.9;
+  }
+  if (gl.pool) {
+    gl.pool.visible = world.on > 0.01;
+    /* Under HIM, not under the root. A clip is free to walk him away from the
+       node it is played on -- lay him down and his whole body ends up a stride
+       forward of it -- and a pool of light left behind at the origin reads as a
+       lamp he happens to be near. Averaged over every 16th skinned vertex,
+       which is his body's own centre of mass in x and z and therefore lands
+       under him standing, sitting or lying. */
+    let sx = 0, sz = 0, sn = 0;
+    const wp = rig.R && rig.R.wp;
+    if (wp) for (let v = 0; v < wp.length; v += 48) { sx += wp[v]; sz += wp[v + 2]; sn++; }
+    // minus world.y: the pool belongs to the floor, and the root it hangs from
+    // is the thing that just moved down to meet it
+    gl.pool.position.set(sn ? sx / sn - f.c[0] : 0,
+                         f.lo[1] - f.c[1] - world.y + figH1() * 0.004,
+                         sn ? sz / sn - f.c[2] : 0);
+    gl.pool.scale.setScalar(figH1() * 1.25);
+    gl.pool.material.opacity = world.on * 0.75;
+    /* Fog distances are measured from the CAMERA, in the same units the camera
+       is placed in -- which here is pixels, because the whole projection is
+       pinned to the 2D one and that one thinks in pixels. Set to the tens they
+       looked like they should be, everything including him sat past the far
+       plane and the room rendered black. */
+    /* He stands at FOC, so a near plane of 0.75 was already taking a seventh of
+       him. The fog is there to dissolve the far edge of the floor, not to grey
+       out the person: start it just past where he stands. */
+    gl.scene.fog.near = FOC * 1.05;
+    gl.scene.fog.far = FOC * 2.6;
+  }
   /* The wipes, in the shader's terms. The ghost occupies the band between the
      surface front and the texture front: below the texture line it would be a
      translucent green film over the finished model, which is not a stage, it is
@@ -4261,6 +4425,339 @@ function glFrame(K, FOC) {
   gl.ghost.visible = rig.wipe[2] > rig.wipe[3] + 0.001;
   gl.mesh.visible = rig.wipe[3] > 0.001;
   gl.R.render(gl.scene, gl.cam);
+}
+
+/* ---------------- the sandbox ----------------
+   A room he lives in, rather than a model on a turntable.
+
+   The file that arrived has thirty-six clips in it -- idles, walks, runs, a
+   backflip, four dances, a set of drunk animations, a laying pose -- so the
+   thing to build is not "play the animation" but a little world where he stands
+   on a floor, gets told to do things, and walks to where you tap.
+
+   Three facts about the clips shaped all of it:
+
+   - There is NO ROOT MOTION. A walk cycle moves his legs and leaves him where
+     he is, so walking across the room is this file's job: play the cycle, and
+     translate him at a speed tuned to match the feet.
+   - They are all in-place idles and actions of known length, so an action can
+     simply be played once and handed back to an idle when it ends.
+   - The skeleton is 82 joints and the poses come out of three's mixer, which
+     means the DOTS have to read their pose from three rather than computing
+     their own -- otherwise the particles animate one clip while the render
+     animates another, with a crossfade between them that only one of the two
+     knows about. */
+const world = {
+  on: 0, x: 0, y: 0, z: 0, yaw: 0, yawWant: 0,
+  // pose: he is IN something (sitting, lying, drunk) rather than DOING
+  // something, so no timer takes him out of it and the idle rotation leaves
+  // him alone. Cleared by walking, or by being told to stand up.
+  tx: 0, tz: 0, walking: 0, run: 0, act: "", actUntil: 0, idleAt: 0, pose: 0,
+  // the lowest his current clip has got to, in model units -- see playClip
+  groundMin: 1e30
+};
+/* In HEIGHTS, not in units.
+
+   The working space is whatever the model's exporter happened to use -- this
+   one came out of a tool in centimetres, so the numbers are a hundred times
+   what the file's POSITION attribute says, and a walk speed of "4.2 units per
+   second" meant something completely different before and after that was
+   discovered. A person walks about eight tenths of their own height per second
+   and runs about twice that, which is true of any model in any units. */
+/* floor is measured in his own heights, edge to edge. Eleven of them was a
+   parking lot: the camera sits about 3.4 heights out, so a floor with a
+   half-extent of 5.5 puts most of itself level with or behind the lens, and
+   the lines running AWAY from the camera -- the only ones that carry the
+   perspective -- had nothing left on screen but a sliver at the horizon. What
+   rendered was a stack of horizontal rules, which reads as scan lines, not as
+   ground. Measured with the two line families coloured apart: at 11 not one
+   lengthwise line reached the frame; at 8 the whole lattice converges. */
+const WALK = { speed: 0.78, runSpeed: 1.75, turn: 5.0, arrive: 0.10, floor: 8 };
+// his height in the working space, measured at load
+function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
+
+/* Nothing in this room casts a shadow, and on a black floor a shadow could not
+   be seen if it did -- you cannot darken black. So the contact cue goes the
+   other way: a soft pool of light he stands in, brightest under his feet. It is
+   the same object as the mini orb's turntable, which is the point; it says the
+   floor is a surface and that he is touching it, and without it he reads as
+   pasted over a grid rather than standing on one. */
+function makePool(T) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const x = c.getContext("2d");
+  const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0.00, "rgba(168,85,247,0.85)");
+  g.addColorStop(0.35, "rgba(140,80,220,0.32)");
+  g.addColorStop(0.70, "rgba(90,60,170,0.09)");
+  g.addColorStop(1.00, "rgba(0,0,0,0)");
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  const m = new T.Mesh(
+    new T.PlaneGeometry(1, 1),
+    new T.MeshBasicMaterial({ map: new T.CanvasTexture(c), transparent: true,
+                              depthWrite: false, blending: T.AdditiveBlending,
+                              fog: false }));
+  m.rotation.x = -Math.PI / 2;      // flat on the floor
+  m.frustumCulled = false;
+  return m;
+}
+
+function makeGround(T) {
+  /* A lattice, not a plane. The same language as the hologram's floor and the
+     one thing that makes a horizontal surface read as a surface at all when
+     there is nothing else in the room to judge it against. */
+  const g = new T.GridHelper(1, 24, 0xA855F7, 0x4E9A5C);
+  g.material.transparent = true;
+  g.material.opacity = 0.9;
+  g.material.depthWrite = false;
+  g.frustumCulled = false;
+  return g;
+}
+
+/* What he can be told to do. First match wins, so the specific ones come
+   first -- "sit down" before "down", "lay down" before "walk".
+
+   The third column is the difference between a thing he DOES and a thing he
+   IS. A wave is over when the wave is over; sitting down is not over until you
+   say so. Marked by hand rather than read off the clip length, because the
+   lengths lie in both directions: sitting_ground_beach_pose is 0.03s (a single
+   frame the exporter wrote out as an animation) and ended before it could be
+   seen, while laying_idle_00 runs 12.5s and stood him back up unasked. A held
+   row loops and stays until he is told something else. */
+const ACTS = [
+  [/\b(back ?flip|flip|somersault)\b/,            ["backflip"]],
+  [/\b(dance|dancing|breakdance|bust a move)\b/,  ["dance_uprock_00", "dance_uprock_01",
+                                                   "dace_breakdace_k-kick", "dance_breakdance_flares"], 1],
+  [/\b(jump|hop|leap)\b/,                         ["idle_jump"]],
+  [/\b(wave|waving|say hi|say hello)\b/,          ["idle_waving"]],
+  [/\b(lay|lie) (down|back)\b|\blaying\b/,        ["laying_idle_00"], 1],
+  [/\b(sit|sit down|sitting|take a seat)\b/,      ["sitting_ground_beach_pose"], 1],
+  [/\b(kneel|kneeling|get down)\b/,               ["idle_kneeling"], 1],
+  [/\b(stretch|stretching|warm up)\b/,            ["idle_stretch"]],
+  [/\b(drunk|drink|have a drink|pint|beer)\b/,    ["drunk_idle_00", "drunk_idle_01"], 1],
+  [/\b(stumble|trip)\b/,                          ["drunk_stumble"]],
+  [/\b(fight|fighting|box|square up)\b/,          ["idle_ready_to_fight"], 1],
+  [/\b(ninja|sneak|karate)\b/,                    ["idle_ninja"], 1],
+  [/\b(sad|upset|sulk)\b/,                        ["idle_sad_kick"]],
+  [/\b(happy|excited|bounce)\b/,                  ["idle_happy_bob"]],
+  [/\b(hot|fan|warm)\b/,                          ["idle_fan_self"]],
+  [/\b(nails|bored|boring)\b/,                    ["idle_look_at_nails"]],
+  [/\b(fly|swat|bug|mosquito)\b/,                 ["idle_swat_fly"]],
+  [/\b(turn|spin) (left|around)\b/,               ["idle_turn_left"]],
+  [/\bturn right\b/,                              ["idle_turn_right"]],
+  [/\b(tip ?toe|sneak up|quietly)\b/,             ["walk_fwd_tiptoe"]],
+  [/\b(strut|swagger)\b/,                         ["walk_fwd_strut"]]
+];
+const IDLES = ["idle_neutral_00", "idle_neutral_01", "idle_neutral_02", "idle_neutral_03",
+               "idle_happy_bob", "idle_stretch", "idle_look_at_nails", "idle_fan_self"];
+const WALKS = ["walk_fwd_normal", "walk_fwd_upbeat", "walk_fwd_strut"];
+
+function haveClip(n) { return gl.clips && gl.clips[n]; }
+function pickIdle() {
+  const ok = IDLES.filter(haveClip);
+  return ok.length ? ok[(Math.random() * ok.length) | 0] : (gl.clips ? Object.keys(gl.clips)[0] : "");
+}
+function pickOne(list) {
+  const ok = list.filter(haveClip);
+  return ok.length ? ok[(Math.random() * ok.length) | 0] : "";
+}
+
+/* Crossfaded, always. A cut between two poses of the same skeleton is the most
+   obviously computed thing a character can do -- it is what separates a puppet
+   from a performance, and it costs one call. */
+function playClip(name, fade, once) {
+  if (!gl.mixer || !haveClip(name)) return 0;
+  const next = gl.mixer.clipAction(gl.clips[name]);
+  next.reset();
+  next.setLoop(once ? window.THREE.LoopOnce : window.THREE.LoopRepeat, Infinity);
+  next.clampWhenFinished = !!once;
+  next.enabled = true;
+  next.setEffectiveWeight(1);
+  if (gl.action && gl.action !== next) next.crossFadeFrom(gl.action, fade == null ? 0.28 : fade, true);
+  next.play();
+  gl.action = next;
+  world.act = name;
+  /* Every clip decides for itself where the floor is. Some of these poses were
+     authored off the origin -- laying_idle_00 keeps his lowest vertex 1.98
+     units up, more than a third of his height, so played as exported he lies
+     down in mid-air. Rather than a per-clip fudge table, take the lowest point
+     the pose has reached SINCE IT STARTED and drop him until that point is on
+     the ground. It is right for a pose from the first frame, right for a walk
+     cycle within one stride, and it does not flatten a jump: a jump starts on
+     the ground, so the minimum is set before he leaves it. */
+  world.groundMin = 1e30;
+  return gl.clips[name].duration;
+}
+
+/* Told to do something. Returns the clip it chose, so the caller knows whether
+   the word meant anything -- which is what stops "dance" being answered twice,
+   once by the room and once by the brain. */
+function sandboxSay(flat) {
+  if (!world.on) return "";
+  /* Out of a pose first. Nothing in the table means "stand up", so a phrase
+     that does has to be caught before it can match something that doesn't. */
+  if (world.pose && /\b(stand( up)?|get up|sit up|up you get|enough|as you were)\b/.test(flat)) {
+    world.pose = 0; world.actUntil = 0; playClip(pickIdle(), 0.45);
+    world.idleAt = performance.now() + 5000;
+    return "up";
+  }
+  for (const [re, list, hold] of ACTS) {
+    if (!re.test(flat)) continue;
+    const nm = pickOne(list);
+    if (!nm) continue;
+    const dur = playClip(nm, 0.3, /idle_(jump|waving|sad_kick|swat_fly)|backflip|stumble/.test(nm));
+    world.walking = 0;
+    world.pose = hold ? 1 : 0;
+    world.actUntil = hold ? 0 : performance.now() + dur * 1000;
+    caption(null, nm.replace(/_/g, " "));
+    return nm;
+  }
+  /* Come here is a move, not a pose: the one place in the room where the
+     camera is a thing he can walk toward. */
+  if (/\b(come here|come over|come to me|over here)\b/.test(flat)) {
+    walkTo(0, figH1() * 1.5); return "come";
+  }
+  if (/\b(go away|back off|leave)\b/.test(flat)) { walkTo(0, -figH1() * 2.2); return "away"; }
+  if (/\b(stop|stay|wait|hold on)\b/.test(flat) && world.walking) {
+    world.walking = 0; playClip(pickIdle(), 0.3); return "stop";
+  }
+  return "";
+}
+
+function walkTo(x, z, run) {
+  /* Fenced. The camera sits about three and a half of his heights away, so a
+     tap low on the screen maps to a point almost underneath it -- he walks
+     there, fills the frame, and his head goes off the top of it. The room he is
+     allowed in stops well short of the lens. */
+  const H1 = figH1();
+  // and inside the floor, which is WALK.floor heights across: walking off the
+  // edge of the room is worse than not being able to reach the corner of it
+  const edge = WALK.floor / 2 - 0.4;
+  world.tx = Math.max(-H1 * Math.min(2.6, edge), Math.min(H1 * Math.min(2.6, edge), x));
+  // 1.5 toward the lens, not 1.0: with the tap landing where the finger is
+  // (see groundAt) the bottom third of the screen is a real place, and 1.0 put
+  // a hard stop in the middle of it that read as him refusing to come closer
+  world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 1.5, z));
+  world.walking = 1; world.run = run ? 1 : 0;
+  world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
+  playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
+}
+
+/* Where a tap on the floor lands, in the world he stands in. The camera is
+   level with his chest and never moves, so a ray through the tap meets the
+   ground plane at a real place -- which is the whole reason the camera was left
+   alone when the ground went in. */
+const rayTmp = { ray: null, plane: null, hit: null };
+function groundAt(sx, sy) {
+  if (!gl.ready || !gl.cam || !rig.R) return null;
+  const T = window.THREE;
+  if (!rayTmp.ray) {
+    rayTmp.ray = new T.Raycaster();
+    rayTmp.plane = new T.Plane();
+    rayTmp.hit = new T.Vector3();
+    rayTmp.n = new T.Vector3();
+    rayTmp.o = new T.Vector3();
+    rayTmp.inv = new T.Matrix4();
+  }
+  /* Against the floor that is actually there. This used to intersect a plane
+     with a world-space (0,1,0) normal and then divide by the stage scale --
+     which is the right answer only while the stage is unrotated, and the stage
+     is rotated by exactly the amount that makes the room a room. At pitch 0.38
+     a tap 120 px above the bottom edge came back as a point that projects 401
+     px away from the finger: he walked somewhere nobody had pointed at.
+
+     So: take the plane off the ground object's own matrix, and bring the hit
+     back through the stage rather than through a lone scalar. Stage-local IS
+     the space world.x and world.z are written in, so the answer needs no
+     further conversion. */
+  if (!gl.ground) return null;
+  gl.stage.updateMatrixWorld(true);
+  gl.ground.updateMatrixWorld(true);
+  rayTmp.ray.setFromCamera(new T.Vector2((sx / W) * 2 - 1, -(sy / H) * 2 + 1), gl.cam);
+  rayTmp.plane.setFromNormalAndCoplanarPoint(
+    rayTmp.n.set(0, 1, 0).transformDirection(gl.ground.matrixWorld).normalize(),
+    rayTmp.o.setFromMatrixPosition(gl.ground.matrixWorld));
+  if (!rayTmp.ray.ray.intersectPlane(rayTmp.plane, rayTmp.hit)) return null;
+  rayTmp.hit.applyMatrix4(rayTmp.inv.copy(gl.stage.matrixWorld).invert());
+  return [rayTmp.hit.x, rayTmp.hit.z];
+}
+
+function updateWorld(dt, now) {
+  if (!rig.on || !gl.ready) { world.on = 0; return; }
+  // the room arrives once he is built, not while he is being drawn
+  const want = rig.wipe[3] >= FIG.top && !rig.out ? 1 : 0;
+  world.on += (want - world.on) * 0.07;
+  if (gl.mixer) gl.mixer.update(dt / 1000);
+  if (rig.lowY != null && rig.R) {
+    /* Falls instantly, rises only while he is holding a pose. Since-start
+       alone was not enough: the crossfade INTO a pose is a blend, so the first
+       few frames of "lay down" are still mostly the idle he was standing in and
+       their floor is the real floor -- the minimum latched onto that and he
+       stayed in the air. A pose is static and authored, so letting the floor
+       climb back to it settles him in about a fifth of a second. An action is
+       not allowed to climb, which is what stops a jump being flattened into a
+       shuffle: mid-air is not the new ground. */
+    if (rig.lowY < world.groundMin) world.groundMin = rig.lowY;
+    // per-second, not per-frame: a phone at 30 sinks him at the same rate a
+    // laptop at 120 does, which is the whole reason this file writes eases
+    // this way everywhere else
+    else if (world.pose) world.groundMin += (rig.lowY - world.groundMin) *
+                                            (1 - Math.pow(1 - 0.08, dt / 16.67));
+    const wantY = rig.R.fit.lo[1] - world.groundMin;
+    // eased, so the first frame of a new pose is a settle rather than a jolt
+    world.y += (wantY - world.y) * (1 - Math.pow(1 - 0.22, dt / 16.67));
+  }
+  /* The camera pulls back and looks down a little as the room arrives.
+
+     It cannot literally move -- the two projections agree only because they are
+     the same projection, and moving three's camera would put the particles
+     somewhere else. But both of them read formS and view.pitch, so shrinking
+     the scale IS pulling the camera back (the camera sits FOC pixels away, so a
+     smaller world puts it further away measured in the world's own units) and
+     tilting is a rotation of the whole stage that the 2D side already applies.
+
+     Built at 0.40 he stands eleven of his own units from the lens, which is a
+     portrait, not a room -- walking four units toward it nearly doubled his
+     size and put his head off the top of the screen. At 0.23 it is twenty. */
+  formS = rig.fs0 * (1 - 0.42 * world.on);
+  formTilt = 0.05 + 0.33 * world.on;
+  if (!want) return;
+
+  if (world.walking) {
+    const dx = world.tx - world.x, dz = world.tz - world.z;
+    const d = Math.hypot(dx, dz);
+    if (d < WALK.arrive * figH1()) {
+      world.walking = 0;
+      playClip(pickIdle(), 0.35);
+      world.idleAt = now + 2000;
+    } else {
+      /* Facing first, then moving. Sliding sideways toward a target while
+         still turning is the thing that reads as a puppet on rails. */
+      world.yawWant = Math.atan2(dx, dz);
+      const sp = (world.run ? WALK.runSpeed : WALK.speed) * figH1() * (dt / 1000);
+      const step = Math.min(sp, d);
+      world.x += (dx / d) * step;
+      world.z += (dz / d) * step;
+    }
+  } else if (world.actUntil && now > world.actUntil) {
+    world.actUntil = 0;
+    playClip(pickIdle(), 0.4);
+    world.idleAt = now + 4000 + Math.random() * 6000;
+  } else if (!world.actUntil && !world.pose && world.idleAt && now > world.idleAt) {
+    // a character who plays one idle for ever is a character on a loop
+    playClip(pickIdle(), 0.6);
+    world.idleAt = now + 6000 + Math.random() * 9000;
+  }
+  // eased, and by the short way round
+  let dy = world.yawWant - world.yaw;
+  while (dy > Math.PI) dy -= TAU;
+  while (dy < -Math.PI) dy += TAU;
+  world.yaw += dy * Math.min(1, WALK.turn * (dt / 1000));
+}
+function worldReset() {
+  world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
+  world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
+  world.pose = 0; world.groundMin = 1e30;
 }
 
 /* ---------------- the figure ----------------
@@ -4296,6 +4793,7 @@ const rig = {
    just dots. Every wipe runs past the top of the body by the width of its own
    soft edge. */
 const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13 };
+const FIG_FS = 0.40;
 const FIG_STAGE = ["dots", "lines", "fill", "texture"];
 
 const rigCache = {};
@@ -4413,19 +4911,32 @@ function rigPoint(R, v, o) {
 
 async function showFigure(src) {
   takeScreen("figure");
-  src = String(src || "").trim() || "colin_dance";
+  src = String(src || "").trim() || "colin_slim";
   let R;
   try { R = await loadRig(src); }
   catch (e) { caption(null, "figure " + src + ": " + e.message); return false; }
 
-  rigPose(R, 0);
-  rigSkin(R, R.wp, R.wn);
+  /* Loaded first, THEN the formation. The formation's coordinates come out of
+     the fit, and the fit is only right once it has been measured in the space
+     three answers in -- so a load that happens afterwards is a load that
+     silently invalidates every point already placed. */
+  gl.ready = 0;
+  try {
+    await threeReady();
+    if (glInit() === 1) {
+      if (gl.src !== src || !gl.mesh) await glLoad(R.buf, src, R);
+      gl.ready = 1;
+      rigFitGL(R);
+    }
+  } catch (e) { console.log("orb three:", e.message); gl.ready = 0; }
+
+  if (gl.ready) { skinGL(R); skinPoints(R); } else { rigPose(R, 0); rigSkin(R, R.wp, R.wn); }
   const pts = new Array(R.dec.n);
   const o = [0, 0, 0, 0, 0, 0];
   for (let v = 0; v < R.dec.n; v++) { rigPoint(R, v, o); pts[v] = o.slice(); }
 
   const ok = setFormation({ points: pts, edges: R.E, tris: R.dec.T,
-                            label: src, fs: 0.40, tilt: 0.05 }, 10 * 60);
+                            label: src, fs: FIG_FS, tilt: 0.05 }, 10 * 60);
   if (!ok) return false;
 
   /* The permutation, which is the whole reason setFormation now hands one back.
@@ -4445,22 +4956,14 @@ async function showFigure(src) {
 
   // no beat before the lines: the wipe schedule owns their timing now
   wireAt = 0;
-  /* The GPU copy, same file, same pose clock. Awaited only far enough to know
-     whether it worked: if three is missing, WebGL is off, or the file will not
-     parse, the 2D surface below is still there and the build still runs -- it
-     just looks the way it looked before there was a GPU in here. */
-  gl.ready = 0;
-  try {
-    await threeReady();
-    if (glInit() === 1) {
-      gl.uLo.value = lo; gl.uSpan.value = sp;
-      if (gl.src !== src || !gl.mesh) await glLoad(R.buf, src, R);
-      gl.ready = 1;
-    }
-  } catch (e) { console.log("orb three:", e.message); gl.ready = 0; }
+  // the shader's wipe reads the raw POSITION attribute, so its bounds are the
+  // bind pose's, not the fit's
+  gl.uLo.value = lo; gl.uSpan.value = sp;
   /* Started AFTER the GPU copy is in, not before it. Three quarters of a second
      of parsing a 3.6MB file went by with the build clock already running, so
      the first thing on screen was a figure two thirds assembled. */
+  worldReset();
+  rig.fs0 = FIG_FS;
   rig.R = R; rig.src = src; rig.on = 1; rig.out = 0;
   rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
   rig.wipe = [0, 0, 0, 0];
@@ -4477,6 +4980,7 @@ function figStop() {
 }
 function figClear() {
   mini.set = 0;
+  worldReset();
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
   gl.ready = 0;
   figChooser(0);
@@ -4536,17 +5040,69 @@ function updateFigure(dt, now) {
      on the GPU for the render, this file's on the CPU for the dots -- and they
      have to be at the same instant of the same take or the particles crawl
      around on a body that is somewhere else. One clock, pushed to both. */
-  if (gl.ready && gl.mixer) gl.mixer.setTime(rig.t % R.dur);
-  rigPose(R, rig.t);
-  rigSkin(R, R.wp, R.wn);
+  /* The pose is READ from three, not computed alongside it.
+
+     Two skinning implementations agreeing on one clock was fine when the file
+     had one clip. With thirty-six and a crossfade between them there is no
+     clock to agree on: the mixer is blending two clips by an amount only it
+     knows. So the dots take the matrices three has just finished computing.
+     One skeleton, one answer, and the particles cannot drift off him. */
+  if (gl.ready && gl.mesh && gl.mesh.skeleton) {
+    /* Built from the BONES, in the mesh's own space:
+
+           jm[j] = inverse(mesh.matrixWorld) * bone[j].matrixWorld * inverseBind[j]
+
+       which is the textbook formula and depends on nothing three does
+       privately. The first two attempts went through `skeleton.boneMatrices`
+       and three's bind matrices instead, and both scattered all 3,085 particles
+       evenly across the screen while the render beside them was perfectly
+       correct -- every dot transformed by a matrix that was almost right.
+
+       The reason: boneMatrices are in WORLD space, and the world here has the
+       stage's scale in it (about 38) and the glTF scene node's own scale (0.01,
+       because the model came out of a tool that works in centimetres). three
+       cancels that with bindMatrixInverse, which it recomputes from the mesh's
+       world matrix -- but it leaves bindMatrix at whatever it was when the mesh
+       was bound, which is identity. So the composition the shader uses is not
+       one you can reproduce from the two matrices named after it. Going
+       straight to the bones sidesteps the whole question. */
+    /* three's own answer, per vertex, rather than a reconstruction of it.
+
+       Two attempts went through the matrices first -- skeleton.boneMatrices,
+       then the bones composed by hand -- and both scattered all 3,085 particles
+       evenly across the screen while the render beside them was perfectly
+       correct. The world those matrices live in has the stage's scale in it
+       (about 38) AND the glTF scene node's own (0.01, because the model came
+       out of a tool that works in centimetres), and three cancels that with a
+       bindMatrixInverse it recomputes while leaving bindMatrix at the identity
+       it was bound with. The composition the shader actually performs is not
+       one you can rebuild from the two matrices named after it.
+
+       applyBoneTransform is that composition, exported. It costs a call per
+       vertex instead of a matrix per joint, which at this count is about a
+       millisecond -- and it cannot disagree with the picture, because it IS
+       the picture. */
+    skinGL(R);
+    skinPoints(R);
+  } else {
+    rigPose(R, rig.t);                       // no GPU: the file's first clip
+    rigSkin(R, R.wp, R.wn);
+  }
   const f = R.fit, P = R.wp, N = R.wn, ord = rig.ord;
   const n = Math.min(formN, ord.length);
+  // and where he is standing, which the render applies to its own root
+  const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
   for (let i = 0; i < n; i++) {
     const v = ord[i] * 3;
-    formX[i] = (P[v] - f.c[0]) * f.k;
-    formY[i] = -(P[v + 1] - f.c[1]) * f.k;
-    formZ[i] = -(P[v + 2] - f.c[2]) * f.k;
-    fnx[i] = N[v]; fny[i] = -N[v + 1]; fnz[i] = -N[v + 2];
+    const x = P[v] - f.c[0], y = P[v + 1] - f.c[1], z = P[v + 2] - f.c[2];
+    const rx = x * cw + z * sw, rz = -x * sw + z * cw;
+    formX[i] = (rx + world.x) * f.k;
+    formY[i] = -(y + world.y) * f.k;
+    formZ[i] = -(rz + world.z) * f.k;
+    const nx = N[v], nz = N[v + 2];
+    fnx[i] = nx * cw + nz * sw;
+    fny[i] = -N[v + 1];
+    fnz[i] = -(-nx * sw + nz * cw);
   }
   // the surface only exists once its own wipe has started climbing
   solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
@@ -4635,8 +5191,8 @@ const TRIGGERS = {
   /* "menu" still works and still means this -- it is what everyone says -- but
      what it opens is the site now, not six satellites on spokes. */
   menu:{pages:true}, pages:{pages:true}, site:{pages:true}, home_page:{pages:true},
-  colin:{figure:"colin_dance"}, dance:{figure:"colin_dance"},
-  dancing:{figure:"colin_dance"}, figure:{figure:true}, character:{figure:true},
+  colin:{figure:"colin_slim"}, sandbox:{figure:"colin_slim"},
+  figure:{figure:true}, character:{figure:true},
   images:{gallery:true}, gallery:{gallery:true}, pictures:{gallery:true},
   // and back out of any of it
   home:{home:true}, back:{home:true}, stop:{home:true}, cancel:{home:true},
@@ -5183,12 +5739,22 @@ function heardSentence(heard) {
      your pictures" does not, and neither does "what is this for". */
   const ASKED_FOR = /\b(show|shows?|open|opens?|go|take|bring|pull|see|view|display|let'?s|lets|give)\b/;
   const deliberate = flat.split(" ").length <= 2 || ASKED_FOR.test(flat);
+  /* "Stop" while he is crossing the room means stop walking, not leave the
+     room -- HOME_SAID owns the word everywhere else, and everywhere else it is
+     the only thing it can mean. Narrow, and only while he is actually moving:
+     a "stop" said to a standing figure still gets you out. */
+  if (world.on > 0.5 && world.walking && /\b(stop|wait|hold on|stay)\b/.test(flat)) {
+    sandboxSay(flat); caption(heard, ""); return "act";
+  }
   if (brief && HOME_SAID.test(flat)) {
     goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";
     return "home";
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
+  /* While he is standing in his room, what he can do outranks the brain. "Do a
+     backflip" is not a question. */
+  if (world.on > 0.5 && sandboxSay(flat)) { caption(heard, ""); return "act"; }
   /* The places, now that the whole sentence is here to judge. */
   if (deliberate) {
     for (const w of flat.split(" ")) {
@@ -5522,6 +6088,19 @@ const onPick = (e) => {
     else if (formT > 0.35) { e.preventDefault(); goHome(""); }
     return;
   }
+  /* Tap the floor and he walks there. The little one is not on screen in here
+     -- he is standing right in front of you, and a second small him hovering
+     over his own head is the "two of him" the perch was built to avoid -- so
+     the way out is the sky: a tap that misses the floor falls through to the
+     leave-anything case at the bottom of this handler. */
+  if (world.on > 0.5) {
+    const g2 = groundAt(t.clientX, t.clientY);
+    if (g2 && Math.hypot(g2[0], g2[1]) < WALK.floor * figH1() * 0.45) {
+      e.preventDefault();
+      walkTo(g2[0], g2[1], Math.hypot(g2[0] - world.x, g2[1] - world.z) > figH1() * 2.2);
+      return;
+    }
+  }
   /* A model or a hologram has nothing else to touch, so a tap anywhere leaves
      it. Not the gallery -- there a tap is how you open a picture -- and not a
      word, which is gone in half a second anyway. */
@@ -5658,6 +6237,7 @@ function loop() {
   updateState(dt);
   updateFormation(dt);
   updateFigure(dt, now);
+  updateWorld(dt, now);
   updateDock();
   updateShell();
 
@@ -6194,10 +6774,18 @@ function loop() {
     }
   }
 
-  /* One trail, always. A shell used to bring its own -- 0.13 to 0.40 against
-     the orb's 0.46 -- so a firework smeared where nothing else does, and the
-     smear is most of what turned discrete stars into one big cluster. */
-  ctx.fillStyle = "rgba(11,11,11," + cfg.trail + ")";
+  /* One trail, always -- a shell used to bring its own, and a firework smearing
+     where nothing else does read as a different renderer.
+
+     Except behind a solid rendered figure. The trail is a partial clear: what
+     was on the canvas last frame is still there at 54%, which is the whole look
+     of a particle field and is a disaster for an opaque character, who came out
+     as three of himself trailing off to one side. The clear goes to full as his
+     own texture arrives -- so the dots still smear while they are the drawing,
+     and stop the moment they are a rim on something solid. */
+  const trail = rig.on && gl.ready
+    ? Math.max(cfg.trail, Math.min(1, rig.wipe[3] / FIG.top)) : cfg.trail;
+  ctx.fillStyle = "rgba(11,11,11," + trail + ")";
   ctx.fillRect(0, 0, W, H);
 
   /* The figure, rendered on the GPU and drawn in here. This is the one moment
