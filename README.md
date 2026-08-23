@@ -884,6 +884,53 @@ they are still the outermost thing.
 
 ---
 
+### He was hearing himself
+
+Reported as "it auto-goes to pages", with the right guess attached: *"I wonder
+if he's registering his own word."* He was.
+
+The greeting is two beats — hello, then what you can do about it — and the second
+was scheduled from `planMs`, which is set by `playReply` from the decoded audio.
+`remarkThen` read it on the line *after* calling `remark`, which is async, so it
+got the **previous** clip's duration. Zero, at startup. The follow-up landed 1.4
+seconds in, cutting the greeting off halfway — and an interrupted clip fires the
+old source's `onended`, which switches the ears back on. In the middle of the new
+sentence. Which happened to be *"say pages and I will show you around."*
+
+Three fixes, because one is not enough for something that drives the app:
+
+- `remarkThen` **awaits** the first line, so the gap is measured from the clip
+  that is actually playing.
+- Only the clip that is still current gets to say the talking has stopped. A
+  generation counter; an interrupted source returns from `onended` doing nothing.
+- And a local command is never acted on while he is talking or inside the room's
+  reverb afterwards. Even if a word gets through, it does not become an
+  instruction. The echo tail went from 500ms to 850.
+
+Measured, feeding the greeting's own text back in as if recognition had heard it:
+
+| | while he is talking | in the room echo | a person says it |
+|---|---|---|---|
+| before | opens pages | opens pages | opens pages |
+| after | nothing | nothing | opens pages |
+
+### Two prompts, one at a time
+
+"It asks for permission, says audio failed, asks again, then works."
+
+The two prompts are unavoidable — see below — but the *sequence* was ours. The
+wait between them was **1.5 seconds**, and what it is waiting for is a person
+reading a permission dialog. It timed out with the first dialog still open and
+called `getUserMedia` into the middle of it, which failed and had to be asked
+again afterwards. It waits nine seconds now, and resolves on a grant, a refusal,
+or the timeout — whichever comes first.
+
+The "audio failed" was a second thing in the same moment: **iOS suspends an
+AudioContext whenever the page loses focus, and a permission dialog counts.** The
+context built during the tap was already asleep by the time the first sentence
+tried to play. Every playback resumes it first now, which is free when it is
+already running.
+
 ### He lies down
 
 The top-of-screen orb on its perch was a small one drawn *separately*: 130 dots
@@ -908,6 +955,21 @@ made out of him.
 **Tap it to go home. Hold it to open the site.** A hold is the only gesture a
 grid of tappable things has not already spent, and it gives the bar a job besides
 being a way out.
+
+And it is a **split**, not a move. Only about 46% of the field goes down to the
+bar; the rest stays where it always is, resting in the middle, dimmed to a third,
+still breathing with the room. So he is never entirely somewhere else — the bar
+is him lying down and the ring behind the page is still him standing there, and
+you can watch the two halves separate. The dim orb that used to be *drawn* behind
+the page is gone: it is the real field now. A drawn copy of something that could
+be the thing itself is the wrong answer in a program whose whole subject is
+particles actually travelling.
+
+That needed one fix underneath. The bar's resting positions were copied out of
+`formX[0..formN]` — but the particles in a shared formation are spread *through*
+the index rather than taken off the front, because particles are ordered by angle
+and the first 46% of them is a 46% arc. It was copying a mixture of bar positions
+and whatever the particles that stayed behind happened to be holding.
 
 Two placement bugs on the way in. The bar landed exactly on the talk button — 58
 pixels tall, 74 off the bottom edge — so every tap meant for the bar hit the

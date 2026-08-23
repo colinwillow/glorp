@@ -201,7 +201,7 @@ const DEFAULTS = {
   autoWord:0,
   dot:0.52, sizeHi:26, falloff:70, follow:1, split:0.44, splitEll:0, splitJaw:0, splitShape:0,
   trail:0.46, rK:-0.5, gK:7, bK:-2, base:120,
-  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:500, volume:3.4, snap:0.3, flashMs:1100
+  vadOn:0.14, holdMs:700, thinkMs:1500, speakMs:2800, sylRate:4.2, echoTail:850, volume:3.4, snap:0.3, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -778,6 +778,7 @@ function analyseTts() {
   tts.impulse = Math.max(tts.impulse * 0.86, Math.min(1, flux * 0.05) * g);
 }
 
+let ttsGen = 0;
 async function playReply(text) {
   if (!brain.url) return false;
   try {
@@ -800,12 +801,27 @@ async function playReply(text) {
       return false;
     }
     ensureTtsCtx();
+    /* Resumed here, every time. iOS suspends an AudioContext whenever the page
+       loses focus, and a permission dialog counts -- so the context built during
+       the tap was already asleep by the time the first sentence tried to play,
+       and the sentence failed. Resuming is free when it is already running. */
+    if (ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
     const audio = await ttsCtx.decodeAudioData(await res.arrayBuffer());
     if (ttsSrc) { try { ttsSrc.stop(); } catch (e) {} }
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
+    /* Only the clip that is actually playing gets to say the talking has
+       stopped. Interrupting one -- which happens whenever a second line starts
+       before the first has finished -- fires the OLD source's onended, and that
+       switched the ears back on in the middle of the new sentence. He then
+       heard himself say "say pages" and opened the pages.
+
+       That is the whole of the "it goes to pages on its own" bug, and the
+       answer to "is he registering his own word": he was. */
+    const gen = ++ttsGen;
     ttsSrc.onended = () => {
+      if (gen !== ttsGen) return;            // a clip that was cut short
       ttsPlaying = false;
       echoUntil = performance.now() + cfg.echoTail;
       setTimeout(resumeSTT, cfg.echoTail);
@@ -854,10 +870,14 @@ async function remark(lines) {
    long its own line takes (planMs, from the audio, or the estimate when there
    is no voice), so the follow-up lands when the first one stops rather than on
    a guess. */
-function remarkThen(first, second, gap) {
-  remark(first);
+async function remarkThen(first, second, gap) {
+  /* Awaited. planMs is set by playReply from the decoded audio, and reading it
+     on the line after remark() was called read the PREVIOUS clip's duration --
+     zero, at startup. The follow-up then landed 1.4 seconds in, cutting the
+     greeting off halfway and taking the ears with it. */
+  await remark(first);
   clearTimeout(helloAt);
-  helloAt = setTimeout(() => remark(second), Math.max(1400, planMs + (gap || 700)));
+  helloAt = setTimeout(() => remark(second), Math.max(900, planMs + (gap || 600)));
 }
 let helloAt = 0;
 
@@ -995,6 +1015,8 @@ function toggleSTT() {
   // every error, including no-speech: silence here is what made this invisible
   rec.onerror = (e) => {
     if (e.error === "not-allowed" || e.error === "service-not-allowed") recOn = false;
+    // a refusal is an answer: whoever is waiting on the dialog can stop waiting
+    if (recStart) { const r = recStart; recStart = null; r(); }
     caption("", "speech error: " + e.error);
   };
   /* Restarted on a timer, not from inside onend.
@@ -1366,7 +1388,14 @@ micBtn.onclick = async () => {
     if (talkPref && !recOn) {
       caption("", "this asks twice — speech, then the microphone. Both are this page.");
       toggleSTT();
-      await recReady(1500);
+      /* Nine seconds, not one and a half. What this is waiting for is a person
+         reading a permission dialog, and a second and a half is not long enough
+         to read one -- so the wait timed out with the first dialog still open
+         and getUserMedia was called into the middle of it. That is the "asks,
+         fails, asks again, works" sequence: the second request arrived while
+         the first was unanswered, failed, and had to be made again afterwards.
+         recReady resolves on the grant, on a refusal, or on the timeout. */
+      await recReady(9000);
     }
     await openAnalyser();
     micBig.classList.add("off");
@@ -1376,7 +1405,10 @@ micBtn.onclick = async () => {
     /* And say hello. This is the first moment there is a voice to say it with
        and a microphone to hear the answer, which makes it the only moment worth
        spending an introduction on. A beat later, what to do about it. */
-    setTimeout(() => remarkThen(greetings(), OFFER_LINES), 500);
+    setTimeout(async () => {
+      if (ttsCtx && ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
+      remarkThen(greetings(), OFFER_LINES);
+    }, 650);
   } catch (e) {
     micState = "denied";
     micBig.style.animation = "";
@@ -1836,7 +1868,7 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
 const view = { turn: 0, yaw: 0, yaw0: 0, pitch: 0, deep: false };
 let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "", formRate = 0.045;
 // held rather than timed: see the note in setFormation
-let formHold = 0;
+let formHold = 0, formKeepRing = 0;
 const HOLD_S = 30;
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
@@ -2185,7 +2217,12 @@ function drawCover(img, x, y, w, h, alpha) {
    made out of him.
 
    Tap it to go home. Hold it to open the site. */
-const DOCK = { fs: 0.5, w: 0.37, h: 0.017, amp: 2.6, hold: 420 };
+/* `share` is the half of this that matters most. Only part of the field goes
+   down to the bar; the rest stays where it always is, resting in the middle,
+   dimmed, still breathing with the room. So he is never entirely somewhere
+   else -- the bar is him lying down and the ring behind the page is still him
+   standing there, and you can watch the two halves separate. */
+const DOCK = { fs: 0.5, w: 0.37, h: 0.017, amp: 2.6, hold: 420, share: 0.46, dim: 0.34 };
 const dock = { on: 0, bx: null, by: null, hw: 1, yc: 0, yc0: 0, at: 0, held: 0 };
 /* Above the talk button while the talk button is there. The bar was landing
    exactly on it -- the button is 58px tall sitting 74px off the bottom edge --
@@ -2214,21 +2251,27 @@ function dockPoints() {
 
 function dockStart() {
   dock.on = 1; dock.at = performance.now(); dock.held = 0;
-  // the sorted targets, kept as the resting shape the spectrum moves away from
-  dock.bx = Float32Array.from(formX.subarray(0, formN));
-  dock.by = Float32Array.from(formY.subarray(0, formN));
+  /* Indexed by particle, not packed. Only part of the field is in the bar and
+     the ones that are are spread THROUGH the index rather than taken off the
+     front -- particles are ordered by angle, so the first 46% of them is a 46%
+     arc. Copying formX[0..formN] therefore copied a mixture of bar positions
+     and whatever the particles that stayed behind happened to be holding. */
+  dock.bx = new Float32Array(MAX);
+  dock.by = new Float32Array(MAX);
+  for (let i = 0; i < MAX; i++) if (formOn[i]) { dock.bx[i] = formX[i]; dock.by[i] = formY[i]; }
 }
 function dockStop() { dock.on = 0; dock.bx = null; dock.held = 0; }
 
 function updateDock() {
   if (!dock.on || !dock.bx) return;
   if (!pages.on && !gallery.on) { dockStop(); return; }
-  const n = Math.min(formN, dock.bx.length);
+  const n = Math.min(MAX, Math.round(cfg.count));
   const s2 = DOCK.fs * scale;
   const amp = DOCK.h * (H / s2) * DOCK.amp;
   // where the bar wants to be this frame, which moves when the button goes
   dock.yc += ((H / 2 - dockBottom()) / s2 - dock.yc) * 0.07;
   for (let i = 0; i < n; i++) {
+    if (!formOn[i]) continue;
     const u = (dock.bx[i] / dock.hw + 1) / 2;
     let b = drive.spectrum[Math.max(0, Math.min(BANDS - 1, (u * BANDS) | 0))] || 0;
     b += drive.scale * 0.35;
@@ -2311,7 +2354,8 @@ async function showGallery() {
   gallery.at = performance.now();
   clearPhoto();
   // the field docks rather than leaving
-  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1 }, 3600);
+  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1,
+                 share: DOCK.share, keepRing: 1 }, 3600);
   dockStart();
   caption(null, shots.length + " pictures · drag to scroll · tap one");
   if (!quiet) remark(GALLERY_LINES);
@@ -2522,7 +2566,8 @@ async function showPages() {
   takeScreen("pages");
   pages.on = 1; pages.at = performance.now(); pages.i = -1; pages.open = 0; pages.hit = -1;
   clearPhoto();
-  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1 }, 3600);
+  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1,
+                 share: DOCK.share, keepRing: 1 }, 3600);
   dockStart();
   caption(null, "pages · tap one, or say its name");
   // the pictures page shows the pictures, so it needs a few of them
@@ -2921,21 +2966,11 @@ function orbDots(X, Y, R, e, now, k) {
   ctx.globalAlpha = 1;
 }
 
-/* He lives back there.
-
-   The site's border lines used to release after thirty seconds and the whole
-   field drifted back to the ring behind the cards, which looked accidental and
-   was -- but it also looked good, so it is a thing now rather than a bug. A big
-   dim orb behind the page, reacting to the room, at about a sixth of full
-   strength: present enough to notice when it moves, faint enough that the cards
-   are still the thing you are reading. */
-function drawBackOrb(now, k) {
-  const want = (pages.on && !pages.open) || (gallery.on && gallery.mode === "grid") ? 1 : 0;
-  backOrb += (want - backOrb) * 0.05;
-  if (backOrb < 0.01) return;
-  orbDots(cx, cy, Math.min(W, H) * 0.44, backOrb * 0.30, now, k * 3.2);
-}
-let backOrb = 0;
+/* The one behind the page used to be drawn here -- a second, fake orb at low
+   alpha over the top of the real field. It IS the real field now: only part of
+   it goes down to the bar, and what stays behind is genuinely him, dimmed. A
+   drawn copy of something that could be the thing itself is the wrong answer in
+   a program whose whole subject is particles actually travelling. */
 // hit target is generous: it is a way out, and a way out should be easy to find
 function miniHit(x, y) {
   return mini.t > 0.35 && Math.hypot(x - mini.x, y - mini.y) < mini.r * 2.1;
@@ -5104,7 +5139,11 @@ function feedWords(finalText, interimText) {
       const k = MENU.findIndex((it) => it.label === w2);
       if (k >= 0) { menuPick(k); echoSeen = settled; return; }
     }
-    /* Commands, always. Saying "menu" or "hologram" is asking for a thing. */
+    /* Commands, always. Saying "menu" or "hologram" is asking for a thing --
+       unless he said it. A word arriving while he is talking, or inside the
+       room's reverb afterwards, is his own voice coming back through the
+       speaker, and acting on it means the app drives itself. */
+    if (ttsPlaying || performance.now() < echoUntil) continue;
     const trig = TRIGGERS[w2];
     /* Home is NOT handled word by word. "home" and "back" are ordinary words,
        and firing on them as they go past closed the gallery on "I went back to
@@ -5179,7 +5218,14 @@ function setFormation(spec, seconds) {
      index means nothing if only some vertices have particles standing on them
      -- but a word or an emoji takes a share and leaves the rest on the rim,
      still breathing and still reacting. */
-  const share = formE || form3d ? 1 : Math.max(0.08, Math.min(1, cfg.share));
+  const share = formE || form3d ? 1
+              : spec && spec.share != null ? Math.max(0.08, Math.min(1, spec.share))
+              : Math.max(0.08, Math.min(1, cfg.share));
+  /* Whether the particles that are NOT in the shape get pushed out of its way.
+     A word wants that -- the ring would draw straight through the letters. A
+     dock does not: the point of leaving half the field behind is that half the
+     field is still him, resting in the middle where he always is. */
+  formKeepRing = spec && spec.keepRing ? 1 : 0;
 
   /* Much smaller when the field is shared. The perimeter cannot go outside the
      containment wall -- that is what the wall is -- so the only way to have a
@@ -5333,7 +5379,8 @@ function updateFormation(dt) {
   const rate = 1 - Math.pow(1 - formRate, dt / 16.67);
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
-    formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false; formHold = 0;
+    formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
+    formHold = 0; formKeepRing = 0;
     formE = null; wireT = 0; view.turn = 0; formTri = null; solidWant = 0;
     // or the next formation inherits a hologram's camera and reads stale biases
     formHasB = false; formTilt = null; formSpin = null; holoE = null; formWide = 0;
@@ -5850,7 +5897,7 @@ function loop() {
          it and the bottom half under it, and the word can stay small. The
          arch peaks in the middle because (1 - ux^2) is 1 there and 0 at the
          ends, which is the shape a brow makes. */
-      if (!held && formT > 0.002 && !isCore) {
+      if (!held && formT > 0.002 && !isCore && !formKeepRing) {
         /* Walked along the arc, not taken from cos of the angle. cos bunches
            hard at both ends -- uniform angles are not uniform in x -- and the
            first version piled a third of the field into two lumps at the tips.
@@ -6106,6 +6153,10 @@ function loop() {
     // a figure is built from the floor up: a particle whose height the wipe has
     // not reached yet is still out in the ring, on its way
     const fT = held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
+    /* The half that stayed behind, while he is docked. At full strength it
+       competes with the page; gone entirely and he is only the bar. Dimmed, it
+       is a presence behind the cards that moves when you talk. */
+    const backT = dock.on && !held ? 1 - (1 - DOCK.dim) * formT : 1;
     let hidden = false;
     if (culling && held) {
       const nzv = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
@@ -6244,6 +6295,7 @@ function loop() {
     // the dots on a menu are the menu; the ring-sized ones are too timid for it
     if (menuOn && menuGroup[i] !== -1) rad *= 1 + 0.75 * formT;
     if (deep) rad *= persp;              // near is bigger, which is most of the depth
+    if (backT < 1) rad *= 0.30 + 0.70 * backT;
     if (rad > radCap) rad = radCap;
     const sx = cx + rx * persp, sy = cy + ry * persp;
     if (wireT > 0.002 || solidT > 0.002) {
@@ -6551,7 +6603,6 @@ function loop() {
     }
   }
 
-  drawBackOrb(now, k);
   drawPages();
   drawGallery(dt);
   drawMini(now, k);
