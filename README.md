@@ -2773,8 +2773,15 @@ the generic lines for that person, with `{}` standing in for the name. A name
 with no entry is a stranger and gets the generic treatment — which is the point,
 since the whole thing hangs on being told who you are.
 
-Colin and Rowan are in. Adding people is copying the shape; nothing else needs
-touching.
+Colin, Faith and Rowan are in. Adding people is copying the shape; nothing else
+needs touching.
+
+**The cap bit once already.** `about` was scrubbed and truncated at 400
+characters on the way into the Worker, which is a sensible bound for a name and
+far too tight for what a profile turned out to be — measured, it was cutting
+Rowan off mid-sentence and losing the van crashes, the gambling, the bitcoin and
+the fishing. A family tree runs past nine hundred. The bound is 2000 now, and the
+three entries measure 208, 926 and 556.
 
 Worth being clear-eyed about: saying a name is the *only* check. Anyone who says
 "I'm Rowan" gets everything in Rowan's entry read back at them. That is exactly

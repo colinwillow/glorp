@@ -200,9 +200,12 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      to be here. */
   const guest = (typeof body.guest === "string" ? body.guest : "")
     .trim().replace(/[^A-Za-z' -]/g, "").slice(0, 24);
-  // scrubbed and bounded like everything else that reaches a system prompt
+  /* Scrubbed and bounded like everything else that reaches a system prompt --
+     but 400 was far too tight for what a profile turned out to be. Measured, it
+     was cutting Rowan off mid-sentence and losing half of what it knew about
+     him; a family tree runs well past a thousand. */
   const about = (typeof body.about === "string" ? body.about : "")
-    .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 400);
+    .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 2000);
 
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
