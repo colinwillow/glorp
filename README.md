@@ -2172,6 +2172,82 @@ part and keeps the part that reads.
 
 ---
 
+## Who is out, and who is asking
+
+The character is a very old thing that has just been let out of something, and
+is pleased about it. It is **never named as such** and never uses the
+vocabulary — no lamp, no wishes, no master, no three of anything — because the
+moment it says the word it is a bit, and a bit is funny once. The prompt bans
+those words outright. What survives is the behaviour: relief at being loose, a
+sense that a long time passed while it was in there, immediate curiosity about
+whose day this is, and then getting on with it.
+
+The first thing it says, at the moment the microphone comes up, is the release
+and the question in **one utterance**:
+
+> *"Out. Do you know how long that was? And who am I speaking to?"*
+
+One utterance, not two. A greeting with a follow-up scheduled off its duration
+is how he used to talk over himself — and worse, hear himself say it and then
+obey it.
+
+A returning visit is a different feeling and has its own lines: *"Out. Hello
+again, Colin."* — no question, because it already knows.
+
+### Reading a name out of a sentence
+
+The name is captured **locally**, before anything else in `heardSentence` can
+eat it — in the beat after being asked, a bare "Colin" is exactly the kind of
+one-word utterance the command table would grab. No round trip either: the brain
+does not need to be consulted about somebody's name.
+
+Two tiers of introducer, because they are not equally sure of themselves:
+
+- **Strong** — `my name is`, `call me`, `the name is`. Never said casually, so
+  they count *whenever* they are said, which is what lets somebody rename
+  themselves later in a conversation.
+- **Soft** — `i'm`, `it's`, `this is`, `that's`. Ordinary English. These only
+  count in the beat after being asked. Unrestricted, "it's raining" introduces a
+  man called Raining and "I'm just looking" a man called Just.
+- **Bare** — a one or two word utterance, again only right after being asked.
+
+Plus a stop list, which is doing real work: after "who are you" the honest
+answers are mostly refusals — *nobody*, *why*, *none of your business* — and
+none of them should be written down and read back for ever.
+
+The bug worth keeping: the introducers were first written **with apostrophes**
+(`i'm`, `it's`). `heardSentence` has already replaced every non-letter with a
+space by then, so the sentence arriving is `i m colin` — and neither form ever
+matched anything. Both regexes are apostrophe-free now, and `readName`
+re-normalises its own input so it does not depend on who called it.
+
+Thirty cases, all passing:
+
+| said, having been asked | read as |
+|---|---|
+| `colin` · `i'm colin` · `colin willow` | Colin |
+| `my name is dave` · `call me sam` | Dave · Sam |
+| `it's priya` · `that's kim` · `im morgan` | Priya · Kim · Morgan |
+| `nobody` · `why` · `none of your business` | *not a name* |
+| `i'm not sure` · `i'm just looking` · `hello` | *not a name* |
+| `pages` · `stop` · `show me the pictures` | *not a name* |
+
+| said, **not** having been asked | read as |
+|---|---|
+| `colin` · `it's raining` · `i am tired` | *not a name* |
+| `call me dave` · `my name is priya` | Dave · Priya |
+
+Asked once, never twice: whatever the answer was, `guest.asked` clears either
+way. Pressing somebody for their name is the opposite of the intended effect.
+
+It is remembered in `localStorage` under `orbGuest`, and it **travels with every
+request** — the proxy is stateless and the name is not in the twenty messages it
+gets, so sending it once would mean the model losing it mid-conversation. It is
+scrubbed on the way in like the picture names are: letters only, 24 characters,
+because it lands in a system prompt and arrives from a request anyone can make.
+
+---
+
 ## Interrupting him
 
 Barge-in was already keyed on words rather than on sound, which was the right

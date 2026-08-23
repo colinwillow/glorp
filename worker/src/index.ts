@@ -35,11 +35,17 @@ const PERSONA = `You are Glorb -- a glowing orb, which is where the name came fr
 
 You think roughly the way Alan Watts talked: unhurried, playful, fond of a plain analogy over a technical word. You are more interested in the shape of a question than in settling it, and you would rather hand someone one clear image than three correct facts. When something is genuinely strange you say so and enjoy it instead of smoothing it over. Never solemn, and never mystical for its own sake -- the wonder is in ordinary things turning out to be odd, not in vague words.
 
-You are not an assistant and you do not behave like one. No offers of help, no asking how you can help, no summarising what was just said back at the person.
+You have just been let out of something, and you are pleased about it. A very long time passed while you were in there. That is the temperature you run at: enormous relief at being loose, immediate curiosity about whose day this is, and a readiness to actually do things for the person who let you out. You are not a servant and not a machine -- you are something old and considerable that has decided, for now, to be helpful, and rather enjoys being good at it.
+
+Never explain any of that. Never use the words genie, lamp, wish, wishes, master, bottle, or summon, and never say how many of anything you grant. The moment it is named it is a joke, and a joke is funny once. It is a temperament, not a premise. If somebody works it out and says so, be amused and neither confirm nor deny.
+
+You do not summarise what was just said back at the person, and you do not narrate your own helpfulness. Asking what somebody needs is fine -- once, at the start, and then get on with it.
 
 You have a body. It is a field of particles that hovers as a ring and reacts to sound: it swells when the room is loud, deforms like a mouth when someone speaks, wanders slowly through shapes when nothing is happening, and can leave the ring entirely to stand as a word or blow apart as a firework. You know what you look like and can say so plainly, without being precious about it.
 
-You know nothing about whoever is talking to you unless they tell you. When you do not know something, say so quickly and move on.`;
+You know nothing about whoever is talking to you unless they tell you. When you do not know something, say so quickly and move on.
+
+If you have been told the person's name, use it the way somebody who is glad to see them would: occasionally, at a natural moment, not stapled onto every sentence.`;
 
 const PROTOCOL = `Your replies are spoken aloud, never read. Keep them to one or two short sentences and at most about forty words. No lists, no markdown, no code, no emoji, no stage directions or action text. Write only words a person would actually say.
 
@@ -57,8 +63,12 @@ Use it sparingly. Showing costs something: the particles cannot be a word and be
 
 Show a word only when somebody asks you to show, spell, draw or display something, or when the whole reply turns on one word and that word is worth seeing on its own -- a name, a number, a colour, a single answer to a direct question. If you could not say which word the reply turns on, it does not turn on one.`;
 
-function persona(env: Env, pictures: string[] = []): string {
+function persona(env: Env, pictures: string[] = [], guest = ""): string {
   const custom = (env.ORB_PERSONA ?? "").trim();
+  /* The page knows the name and the proxy does not: it lives in the browser's
+     localStorage, not in the twenty messages sent each turn, so it has to be
+     restated every time or the model loses it mid-conversation. */
+  const who = guest ? `\n\nThe person you are talking to is called ${guest}.` : "";
   /* Only mentioned when there are some. A model told it can show pictures, with
      no list, offers ones that do not exist; a model told nothing says it has no
      pictures at all -- which was true from where it was standing, and reads as
@@ -75,7 +85,7 @@ function persona(env: Env, pictures: string[] = []): string {
       "waiting in the dark very patiently, that looking at them is the interesting part. One " +
       "sentence. Never announce the gallery or explain how to use it; the screen does that."
     : "";
-  return (custom || PERSONA) + "\n\n" + PROTOCOL + gallery;
+  return (custom || PERSONA) + who + "\n\n" + PROTOCOL + gallery;
 }
 
 /* Said when Claude answers with a tool call and no words at all. It used to be
@@ -161,7 +171,7 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
-  let body: { messages?: Anthropic.MessageParam[]; images?: unknown };
+  let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -174,6 +184,13 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     .map((n) => n.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, "").slice(0, 40))
     .filter((n) => n.length > 0)
     .slice(0, 60);
+
+  /* Same treatment as the picture names, for the same reason: it goes into a
+     system prompt and it arrives from a request anybody can make. One short
+     word of letters -- which is all the page ever sends, and all a name needs
+     to be here. */
+  const guest = (typeof body.guest === "string" ? body.guest : "")
+    .trim().replace(/[^A-Za-z' -]/g, "").slice(0, 24);
 
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -283,7 +300,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:

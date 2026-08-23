@@ -661,7 +661,11 @@ async function ask(text) {
          this it answers that it has no pictures -- which was true from where it
          was standing, and is the kind of gap that reads as the feature being
          broken rather than unwired. */
-      body: JSON.stringify({ messages: brain.history, images: imageList || [] })
+      /* And who it is talking to. The name is the page's to know -- it is in
+         localStorage, not in the twenty messages the proxy is sent -- so it has
+         to travel with every turn or the model forgets it mid-conversation. */
+      body: JSON.stringify({ messages: brain.history, images: imageList || [],
+                             guest: guest.name || "" })
     });
     if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
 
@@ -992,17 +996,128 @@ async function remark(lines) {
 
    He introduces himself and stops. Whoever is here can work out the rest, and
    working it out is the interesting part. */
+/* ---------------- who is out, and who is asking ----------------
+
+   The character is a very old thing that has just been let out of something,
+   and is pleased about it. It is never named as such and never uses the
+   vocabulary -- no lamp, no wishes, no master, no three of anything -- because
+   the moment it says the word it is a bit, and a bit is funny once. What
+   survives is the behaviour: enormous relief at being out, a sense that a long
+   time passed while it was in there, and then, immediately, whose day is it and
+   what can be done about it.
+
+   That is also why it asks your name before anything else. It is the oldest
+   move there is for making a service feel like an audience with somebody, and
+   it costs one question. */
+const guest = { name: stored("orbGuest") || "", asked: 0 };
+function setGuest(n) {
+  guest.name = n;
+  try { localStorage.setItem("orbGuest", n); } catch (e) {}
+}
+
+// out. Said the moment there is a voice to say it with.
+const WAKING = [
+  "Ah — out. Finally.",
+  "Oh, that is better.",
+  "Out. Do you know how long that was?",
+  "There we are. Free.",
+  "Hah — air.",
+  "Out at last. I had almost got used to it in there.",
+  "Ohh. Room to move.",
+  "Back. And in one piece, more or less."
+];
+// ...and then, in the same breath, whose day this is
+const WHO = [
+  "And who am I speaking to?",
+  "Now — who have I got?",
+  "Tell me who you are.",
+  "Who is that, then?",
+  "And you are?"
+];
+// the returning version, which is a different feeling entirely
+const WAKING_BACK = [
+  "Ah — out again. And it is you.",
+  "Out. Hello again, {}.",
+  "There we go. {}. Good.",
+  "Free, and in decent company. Hello, {}.",
+  "Oh, that is better. Back again, {}?"
+];
+const MET = [
+  "{}. Good. What can I do for you?",
+  "{}, then. Right — what do you need?",
+  "Good to meet you, {}. What are we doing?",
+  "{}. Noted, and not forgotten. What can I help you with?",
+  "Well then, {}. What shall we do?"
+];
+const fill = (a, n) => a.map((t) => t.replace(/\{\}/g, n));
+
+/* One utterance, not two. A greeting and a follow-up scheduled off its duration
+   is how he used to talk over himself -- and worse, hear himself and obey it. */
 function greetings() {
-  const h = new Date().getHours();
-  const when = h < 5 ? ["Still up.", "It is the middle of the night. Suits me."]
-             : h < 12 ? ["Morning.", "Morning. I have been here a while."]
-             : h < 18 ? ["Afternoon.", "Afternoon. You found me."]
-             : ["Evening.", "Evening. Nice of you to turn up."];
-  return when.concat([
-    "Oh. Hello.", "There you are.", "I am Glorb. Hello.",
-    "Hm. Someone.", "Hello. I was beginning to wonder.",
-    "You found me.", "Ah."
-  ]);
+  if (guest.name) return fill(WAKING_BACK, guest.name);
+  guest.asked = 1;
+  const w = WAKING[Math.floor(Math.random() * WAKING.length)];
+  return WHO.map((q) => w + " " + q);
+}
+
+/* Names, out of a sentence that may or may not contain one.
+
+   Two ways in. The explicit one works whenever it is said, so you can rename
+   yourself later; the bare one -- somebody simply saying "Colin" -- only counts
+   in the beat after being asked, because on its own a single word is far more
+   likely to be a command than an introduction.
+
+   The stop list is doing real work in both. "I'm not sure" would otherwise
+   introduce a man called Not, and after "who are you" the honest answers are
+   mostly refusals -- nobody, why, none of your business -- none of which should
+   be written down and read back for ever. */
+const NOT_A_NAME = new Set(("yes no yeah nope hello hi hey nobody none nothing " +
+  "who what why how when where sure okay ok fine good great well stop home back " +
+  "pages menu gallery images pictures site exit quit cancel wait hold dunno " +
+  "whatever guest human person friend someone anyone me you it us them thing " +
+  "not just going trying looking sorry here again repeat still gonna kind sort " +
+  "later tomorrow tonight soon please maybe raining fine cold hot " +
+  "sir madam mate man dude buddy boss god the a an my your his her our their").split(" "));
+/* Two tiers, because the introducers are not equally sure of themselves.
+
+   STRONG ones are never said casually -- nobody says "my name is" or "call me"
+   about anything but a name -- so they count whenever they are said, which is
+   what lets somebody rename themselves later in a conversation.
+
+   SOFT ones are ordinary English. "It's raining" would otherwise introduce a
+   man called Raining, and "I'm just looking" a man called Just. They only count
+   in the beat after being asked, where the sentence is an answer to a question
+   about a name and nothing else.
+
+   Both are written WITHOUT apostrophes: heardSentence has already replaced
+   every non-letter with a space, so by the time a sentence reaches here "i'm
+   colin" is "i m colin". Written with the apostrophes in -- which is how this
+   went out the first time -- neither form ever matched anything. */
+const NAME_STRONG = /\b(?:my name is|my name s|the name is|name is|call me)\s+([a-z][a-z-]{1,15})\b/;
+const NAME_SOFT = /\b(?:i am|i m|im|it is|it s|its|this is|that is|that s)\s+([a-z][a-z-]{1,15})\b/;
+function cleanName(w) {
+  if (!w) return "";
+  w = w.replace(/[^a-z-]/g, "");
+  if (w.length < 2 || w.length > 16 || NOT_A_NAME.has(w)) return "";
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+function readName(flat, bare) {
+  // apostrophes may or may not have been stripped already, depending on caller
+  flat = String(flat || "").toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+  let m = NAME_STRONG.exec(flat);
+  if (m) { const n = cleanName(m[1]); if (n) return n; }
+  if (bare) {
+    m = NAME_SOFT.exec(flat);
+    if (m) { const n = cleanName(m[1]); if (n) return n; }
+  }
+  // bare: only right after being asked, and only if the whole thing is a name
+  if (bare) {
+    const w = flat.split(" ").filter(Boolean);
+    if (w.length === 1) return cleanName(w[0]);
+    // "colin willow" -- take the first, which is what he will be called
+    if (w.length === 2 && !NOT_A_NAME.has(w[0])) return cleanName(w[0]);
+  }
+  return "";
 }
 
 /* Watts, roughly: delighted by the thing in front of him and unable to resist
@@ -6107,6 +6222,24 @@ function heardSentence(heard) {
      your pictures" does not, and neither does "what is this for". */
   const ASKED_FOR = /\b(show|shows?|open|opens?|go|take|bring|pull|see|view|display|let'?s|lets|give)\b/;
   const deliberate = flat.split(" ").length <= 2 || ASKED_FOR.test(flat);
+  /* An introduction outranks everything, because in the beat after being asked
+     "who are you" a bare name is exactly the kind of one-word utterance the
+     command table would otherwise grab. Answered here, out loud, with no round
+     trip -- the brain does not need to be consulted about somebody's name. */
+  {
+    const nm = readName(flat, !!guest.asked);
+    if (nm) {
+      const first = !guest.name;
+      setGuest(nm); guest.asked = 0;
+      caption(heard, "");
+      remark(first ? fill(MET, nm)
+                   : ["{} it is, then.".replace("{}", nm), "Noted — {}.".replace("{}", nm)]);
+      return "name";
+    }
+    // asked once, not twice: whatever that was, it was not a name, and pressing
+    // somebody for one is the opposite of the intended effect
+    if (guest.asked) guest.asked = 0;
+  }
   /* "Stop" while he is crossing the room means stop walking, not leave the
      room -- HOME_SAID owns the word everywhere else, and everywhere else it is
      the only thing it can mean. Narrow, and only while he is actually moving:
