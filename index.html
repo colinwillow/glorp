@@ -4399,7 +4399,14 @@ function glLoad(buf, src, R) {
       gl.clips = {};
       for (const c of g.animations) gl.clips[c.name] = c;
       gl.action = null;
+      gl.speeds = null;
       if (gl.mixer) playClip(pickIdle(), 0);
+      /* Measured once, after the build rather than during it: clipSpeed drives
+         the mixer's clock to sample, so doing it while the wipes are climbing
+         would stutter the thing everyone is looking at. */
+      if (gl.mixer) setTimeout(() => {
+        for (const nm of Object.keys(gl.clips)) if (/walk|run/.test(nm)) clipSpeed(nm);
+      }, 1200);
       gl.src = src;
       res(g);
     }, rej);
@@ -4459,14 +4466,30 @@ function glFrame(K, FOC) {
     // arrives by growing out of the floor with the room, not by popping
     gl.portal.scale.setScalar(H1p * PORTAL.r * (0.55 + 0.45 * world.on));
     const u = gl.portal.userData;
-    if (u && u.spin1) {
+    if (u && u.dots) {
       const tp = performance.now() / 1000;
-      u.spin1.rotation.y = tp * 0.6;
-      u.spin2.rotation.y = -tp * 0.9;
-      u.spin1.position.y = 0.68 + Math.sin(tp * 1.3) * 0.02;
-      u.spin2.position.y = 0.80 + Math.sin(tp * 1.7 + 1) * 0.03;
-      // the machine hears what he hears -- the glow is the room's VU meter
-      for (const m of u.glow) m.emissiveIntensity = 0.9 + drive.scale * 2.8;
+      u.marks.rotation.y = tp * 0.30;             // drawPerch's t * 0.30
+      /* Near green, far purple -- the cue that says the circle is lying down.
+         drawPerch keys it off the sine of the mark's angle because in 2D that
+         IS its depth; here the depth is real, so read it off the world matrix
+         and the cue survives the camera moving. */
+      u.marks.updateMatrixWorld(true);
+      /* CAMERA depth, not world z. The stage is pitched by a third of a radian,
+         so world z is not what is nearer the lens: measured, that put four of
+         the twenty marks on the wrong side of the split. */
+      const mi = gl.cam.matrixWorldInverse.elements;
+      const camZ = (e) => e[12]*mi[2] + e[13]*mi[6] + e[14]*mi[10] + mi[14];
+      const pz = camZ(gl.portal.matrixWorld.elements);
+      const span = gl.portal.scale.x * 0.84;
+      for (const d of u.dots) {
+        // > 0 means nearer the lens than the disc's own centre
+        const near = 0.5 + 0.5 * Math.max(-1, Math.min(1, (camZ(d.matrixWorld.elements) - pz) / span));
+        d.material.color.setHex(near > 0.5 ? 0x8FE05A : 0x7B3FC4);
+        d.material.opacity = 0.18 + 0.72 * near;
+      }
+      u.glow.material.opacity = 0.65 + drive.scale * 1.5;   // the room's VU meter
+      u.beam.material.opacity = 0.07 + drive.scale * 0.22;
+      u.beam.scale.y = 1 + drive.scale * 0.20;
     }
   }
   if (gl.pool) {
@@ -4535,7 +4558,8 @@ const world = {
   // pose: he is IN something (sitting, lying, drunk) rather than DOING
   // something, so no timer takes him out of it and the idle rotation leaves
   // him alone. Cleared by walking, or by being told to stand up.
-  tx: 0, tz: 0, walking: 0, run: 0, act: "", actUntil: 0, idleAt: 0, pose: 0,
+  // turning: pivoting on the spot to face the target, translating nothing
+  tx: 0, tz: 0, walking: 0, run: 0, turning: 0, act: "", actUntil: 0, idleAt: 0, pose: 0,
   // the lowest his current clip has got to, in model units -- see playClip
   groundMin: 1e30
 };
@@ -4547,6 +4571,85 @@ const world = {
    second" meant something completely different before and after that was
    discovered. A person walks about eight tenths of their own height per second
    and runs about twice that, which is true of any model in any units. */
+/* How fast a locomotion clip says he is travelling, in his own heights per
+   second, measured off the clip itself.
+
+   Every clip in this file was exported WITHOUT root motion -- measured, the
+   root and hip bones move 0.000 in all thirty-six of them -- so the walking is
+   the program's job. It was doing it with one constant for every walk, and the
+   clips do not agree with each other, let alone with the constant:
+
+       walk_fwd_normal  1.036      walk_fwd_strut   0.537
+       walk_fwd_upbeat  0.972      walk_fwd_tiptoe  0.277
+       run_fwd          2.811      run_fwd_fast     3.214
+
+   Against a fixed 0.78 the strut travels 45% too fast and the normal walk 25%
+   too slow, and which one you got was a coin toss on every walk -- which is
+   exactly the "sometimes the root motion is much faster than his steps".
+
+   The measurement is the standard one: whichever foot is on the ground is not
+   really sliding, the world is moving under it, so the speed the ground foot
+   travels backwards through the model IS the speed the body should go forwards.
+   Sampled in GROUP space, because that is the only space around here where y is
+   up and figH1() is the height -- in the mesh's own space the model is rotated
+   and scaled by 0.01, and a first attempt that measured there got a negative
+   body height and silently counted nothing. */
+function clipSpeed(name) {
+  if (!gl.speeds) gl.speeds = {};
+  if (gl.speeds[name] != null) return gl.speeds[name];
+  gl.speeds[name] = 0;                       // and never try twice, whatever happens
+  const T = window.THREE, clip = gl.clips && gl.clips[name];
+  if (!clip || !clip.duration || !gl.mixer || !gl.mesh || !gl.mesh.skeleton) return 0;
+  const by = {};
+  for (const bn of gl.mesh.skeleton.bones) by[bn.name] = bn;
+  const feet = [by["mixamorig_LeftToeBase"], by["mixamorig_RightToeBase"]];
+  if (!feet[0] || !feet[1]) return 0;
+  const inv = new T.Matrix4(), v = new T.Vector3();
+  const at = (bn) => v.setFromMatrixPosition(bn.matrixWorld).applyMatrix4(inv).clone();
+  const was = gl.mixer.time, keep = gl.action;
+  for (const a of gl.mixer._actions.slice()) a.stop();
+  const act = gl.mixer.clipAction(clip);
+  act.reset(); act.setEffectiveWeight(1); act.play();
+  const N = 60, H = figH1() || 1;   // coarser undercounts the stance arc by ~25%
+  /* Two passes, and a MEDIAN rather than a mean.
+
+     "The lower foot" is not "the foot on the ground": a run has a flight phase
+     with both feet up, and the lower of two airborne feet is still airborne.
+     So the clip's own floor is found first and only a foot inside a small band
+     above it counts as stance.
+
+     The median matters more. Printing the per-frame stance speeds, a walk is a
+     flat plateau -- 0.78 0.79 0.79 0.80 0.80 0.80 0.81 ... -- a foot genuinely
+     nailed to the floor. A run has no plateau at all: 0.00 0.95 2.11 2.42 2.60
+     3.05 3.40, because the cycle is stylised and the foot keeps moving through
+     its lowest moment. Averaging arc length over the contact window let the
+     near-zero samples at the very bottom drag the run down to 2.08 and it kept
+     skating; the median lands on the representative 2.6 and agrees with the
+     walk's plateau to within 0.01 where there IS one. */
+  const samp = [];
+  let floorY = 1e30;
+  for (let k = 0; k <= N; k++) {
+    gl.mixer.setTime((k / N) * clip.duration);
+    gl.group.updateMatrixWorld(true);
+    inv.copy(gl.group.matrixWorld).invert();
+    const fp = [at(feet[0]), at(feet[1])];
+    samp.push(fp);
+    floorY = Math.min(floorY, fp[0].y, fp[1].y);
+  }
+  const band = floorY + H * 0.06, step = clip.duration / N, sp = [];
+  for (let k = 1; k < samp.length; k++)
+    for (let f = 0; f < 2; f++)
+      if (samp[k][f].y < band && samp[k - 1][f].y < band)
+        sp.push(Math.hypot(samp[k][f].x - samp[k - 1][f].x,
+                           samp[k][f].z - samp[k - 1][f].z) / H / step);
+  sp.sort((a, b) => a - b);
+  act.stop();
+  if (keep) { keep.reset(); keep.setEffectiveWeight(1); keep.play(); gl.action = keep; }
+  gl.mixer.setTime(was);
+  gl.speeds[name] = sp.length ? sp[sp.length >> 1] : 0;
+  return gl.speeds[name];
+}
+
 /* floor is measured in his own heights, edge to edge. Eleven of them was a
    parking lot: the camera sits about 3.4 heights out, so a floor with a
    half-extent of 5.5 puts most of itself level with or behind the lens, and
@@ -4555,7 +4658,12 @@ const world = {
    rendered was a stack of horizontal rules, which reads as scan lines, not as
    ground. Measured with the two line families coloured apart: at 11 not one
    lengthwise line reached the frame; at 8 the whole lattice converges. */
-const WALK = { speed: 0.78, runSpeed: 1.75, turn: 5.0, arrive: 0.10, floor: 8 };
+/* turn is while walking, turnPlace is while pivoting on the spot, both in
+   radians a second. 5.0 was 286 deg/s -- he spun like a turret while his legs
+   played a forward walk cycle, which is most of the hovering. A walking person
+   turns at about 120 deg/s. faceFirst is how far off the target has to be
+   before he stops and turns to face it instead of arcing round. */
+const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 8 };
 /* The source machine. It stands in the middle of the room, he is built in
    front of it, and the orb lives above it: when the particles assemble him,
    the last arc of the ring does not trace him at all -- it lifts off and
@@ -4566,7 +4674,7 @@ const WALK = { speed: 0.78, runSpeed: 1.75, turn: 5.0, arrive: 0.10, floor: 8 };
    share is the fraction of the ring that splits off. Drop a custom model in
    at models/portal.glb and it replaces the built one, scaled to the same
    height, no code change. */
-const PORTAL = { x: -0.95, z: -1.8, r: 0.85, hover: 1.02, orbR: 0.20, share: 0.09 };
+const PORTAL = { x: 0, z: -3.3, r: 1.0, hover: 1.06, orbR: 0.24, share: 0.11 };
 // his height in the working space, measured at load
 function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
 
@@ -4604,39 +4712,65 @@ function makePool(T) {
    about its own axis is invisible -- the tilt is what makes the motion show. */
 function makePortal(T) {
   const g = new T.Group();
-  const dark  = new T.MeshStandardMaterial({ color: 0x17131f, metalness: 0.75, roughness: 0.35 });
-  const dark2 = new T.MeshStandardMaterial({ color: 0x241b33, metalness: 0.6,  roughness: 0.45 });
-  const glowP = new T.MeshStandardMaterial({ color: 0x2a1140, emissive: 0xA855F7,
-                                             emissiveIntensity: 1.1, metalness: 0.2, roughness: 0.5 });
-  const glowG = new T.MeshStandardMaterial({ color: 0x0d2012, emissive: 0x6BE05A,
-                                             emissiveIntensity: 1.3, metalness: 0.2, roughness: 0.5 });
-  const base = new T.Mesh(new T.CylinderGeometry(0.34, 0.46, 0.12, 10), dark);
-  base.position.y = 0.06; g.add(base);
-  const neck = new T.Mesh(new T.CylinderGeometry(0.20, 0.31, 0.10, 10), dark2);
-  neck.position.y = 0.17; g.add(neck);
-  const throat = new T.Mesh(new T.CylinderGeometry(0.10, 0.14, 0.06, 10), glowG);
-  throat.position.y = 0.25; g.add(throat);
-  for (let k = 0; k < 3; k++) {
-    const a = (k / 3) * TAU;
-    const arm = new T.Group();
-    const rod = new T.Mesh(new T.CylinderGeometry(0.022, 0.05, 0.52, 6), dark);
-    rod.position.y = 0.26; arm.add(rod);
-    const tip = new T.Mesh(new T.SphereGeometry(0.02, 8, 8), glowP);
-    tip.position.y = 0.54; arm.add(tip);
-    arm.position.set(Math.cos(a) * 0.30, 0.16, Math.sin(a) * 0.30);
-    // tipped in toward the axis, so the three of them cage the space the orb sits in
-    arm.rotation.set(-0.40 * Math.sin(a), 0, 0.40 * Math.cos(a));
-    g.add(arm);
+  /* The turntable the little one perches on, at room scale. drawPerch draws it
+     in 2D as an ellipse because that is a flat disc seen at a shallow angle --
+     so in three it is simply the disc, and the perspective comes free.
+
+     The first version of this was a plinth with three prongs and it read as a
+     flying saucer. This is the shape the app already owns. */
+  const face = new T.Mesh(new T.CylinderGeometry(1, 1, 0.055, 64),
+    new T.MeshStandardMaterial({ color: 0x0E100C, metalness: 0.35, roughness: 0.65 }));
+  face.position.y = 0.055; g.add(face);
+  // the edge under the face, which is the thing that gives it thickness
+  const edge = new T.Mesh(new T.CylinderGeometry(0.985, 0.93, 0.075, 64),
+    new T.MeshStandardMaterial({ color: 0x1C0C2C, metalness: 0.5, roughness: 0.5 }));
+  edge.position.y = 0.012; g.add(edge);
+  // the purple line drawPerch strokes around the rim
+  const rim = new T.Mesh(new T.TorusGeometry(1.0, 0.008, 8, 96),
+    new T.MeshBasicMaterial({ color: 0x8B4FE0, fog: false }));
+  rim.rotation.x = Math.PI / 2; rim.position.y = 0.083; g.add(rim);
+
+  /* Twenty marks around the rim, turning. In 2D their colour keys off which
+     half of the ellipse they are on -- near green, far purple -- which is the
+     only cue saying the ellipse is a circle lying down. Here they are real
+     points in a real circle, so the same cue is applied per frame from each
+     one's actual depth rather than from its angle. */
+  const marks = new T.Group();
+  marks.position.y = 0.09;
+  const dots = [];
+  for (let i = 0; i < 20; i++) {
+    const a = (i / 20) * TAU;
+    const d = new T.Mesh(new T.SphereGeometry(0.022, 10, 10),
+      new T.MeshBasicMaterial({ color: 0x7B3FC4, transparent: true, fog: false }));
+    d.position.set(Math.cos(a) * 0.84, 0, Math.sin(a) * 0.84);
+    marks.add(d); dots.push(d);
   }
-  const spin1 = new T.Group(), spin2 = new T.Group();
-  const ring  = new T.Mesh(new T.TorusGeometry(0.22, 0.013, 8, 40), glowP);
-  const ring2 = new T.Mesh(new T.TorusGeometry(0.15, 0.009, 8, 32), glowP.clone());
-  ring.rotation.x = Math.PI / 2 + 0.22;
-  ring2.rotation.x = Math.PI / 2 - 0.30;
-  spin1.add(ring); spin1.position.y = 0.68;
-  spin2.add(ring2); spin2.position.y = 0.80;
-  g.add(spin1); g.add(spin2);
-  g.userData = { spin1, spin2, glow: [glowP, glowG, ring2.material] };
+  g.add(marks);
+
+  // and the glow on the face, where he touches it
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const x = c.getContext("2d");
+  const rg = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  rg.addColorStop(0.0, "rgba(139,47,214,0.62)");
+  rg.addColorStop(0.55, "rgba(139,47,214,0.18)");
+  rg.addColorStop(1.0, "rgba(139,47,214,0)");
+  x.fillStyle = rg; x.fillRect(0, 0, 128, 128);
+  const glow = new T.Mesh(new T.PlaneGeometry(1.75, 1.75),
+    new T.MeshBasicMaterial({ map: new T.CanvasTexture(c), transparent: true,
+                              depthWrite: false, blending: T.AdditiveBlending, fog: false }));
+  glow.rotation.x = -Math.PI / 2; glow.position.y = 0.092;
+  g.add(glow);
+
+  // a shaft of light standing where the orb sits, so the disc and the ball read
+  // as one object rather than two things at the same address
+  const beam = new T.Mesh(new T.CylinderGeometry(0.055, 0.30, 1.0, 20, 1, true),
+    new T.MeshBasicMaterial({ color: 0x8B4FE0, transparent: true, opacity: 0.10,
+                              side: T.DoubleSide, depthWrite: false,
+                              blending: T.AdditiveBlending, fog: false }));
+  beam.position.y = 0.6; g.add(beam);
+
+  g.userData = { marks, dots, glow, beam };
   return g;
 }
 
@@ -4793,7 +4927,7 @@ function walkTo(x, z, run) {
     world.tx = PORTAL.x * H1 + ux * pr;
     world.tz = PORTAL.z * H1 + uz * pr;
   }
-  world.walking = 1; world.run = run ? 1 : 0;
+  world.walking = 1; world.run = run ? 1 : 0; world.turning = 0;
   world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
   playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
 }
@@ -4887,12 +5021,38 @@ function updateWorld(dt, now) {
       world.idleAt = now + 2000;
     } else {
       /* Facing first, then moving. Sliding sideways toward a target while
-         still turning is the thing that reads as a puppet on rails. */
+         still turning is the thing that reads as a puppet on rails -- and with
+         the old 286 deg/s it was a turret slide. Anything more than faceFirst
+         off, he stops and pivots: no translation at all until he is pointing
+         roughly the right way.
+
+         The turn clips are a shuffle, not a rotation -- measured, both of them
+         come back with 0.0 degrees of net yaw, so there is nothing in them to
+         drive the heading with. What they are good for is feet that look busy
+         while the heading changes underneath, which beats a forward walk cycle
+         going sideways. */
       world.yawWant = Math.atan2(dx, dz);
-      const sp = (world.run ? WALK.runSpeed : WALK.speed) * figH1() * (dt / 1000);
-      const step = Math.min(sp, d);
-      world.x += (dx / d) * step;
-      world.z += (dz / d) * step;
+      let dy = world.yawWant - world.yaw;
+      while (dy > Math.PI) dy -= TAU;
+      while (dy < -Math.PI) dy += TAU;
+      if (world.turning) {
+        if (Math.abs(dy) < 0.20) {
+          world.turning = 0;
+          playClip(world.run && haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS), 0.22);
+        }
+      } else if (Math.abs(dy) > WALK.faceFirst) {
+        world.turning = 1;
+        const tc = dy > 0 ? "idle_turn_left" : "idle_turn_right";
+        playClip(haveClip(tc) ? tc : pickIdle(), 0.22);
+      } else {
+        /* His own stride rate, not a constant. See clipSpeed: with one number
+           for every walk, the strut travelled 45% too fast and the normal walk
+           25% too slow, and which you got was a coin toss. */
+        const sp = clipSpeed(world.act) * figH1() * (dt / 1000);
+        const step = Math.min(sp, d);
+        world.x += (dx / d) * step;
+        world.z += (dz / d) * step;
+      }
     }
   } else if (world.actUntil && now > world.actUntil) {
     world.actUntil = 0;
@@ -4903,16 +5063,21 @@ function updateWorld(dt, now) {
     playClip(pickIdle(), 0.6);
     world.idleAt = now + 6000 + Math.random() * 9000;
   }
-  // eased, and by the short way round
-  let dy = world.yawWant - world.yaw;
-  while (dy > Math.PI) dy -= TAU;
-  while (dy < -Math.PI) dy += TAU;
-  world.yaw += dy * Math.min(1, WALK.turn * (dt / 1000));
+  // eased, and by the short way round. He only turns while he is going
+  // somewhere -- a standing figure swinging to face a stale heading is the
+  // other half of the hovering.
+  if (world.walking) {
+    let dy2 = world.yawWant - world.yaw;
+    while (dy2 > Math.PI) dy2 -= TAU;
+    while (dy2 < -Math.PI) dy2 += TAU;
+    const rate = world.turning ? WALK.turnPlace : WALK.turn;
+    world.yaw += dy2 * Math.min(1, rate * (dt / 1000));
+  }
 }
 function worldReset() {
   world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
   world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
-  world.pose = 0; world.groundMin = 1e30;
+  world.pose = 0; world.groundMin = 1e30; world.turning = 0;
 }
 
 /* ---------------- the figure ----------------

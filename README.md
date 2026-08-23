@@ -2429,9 +2429,32 @@ just not on screen, which is the difference between a transition and a costume.
 
 ### The source machine
 
-The room has a centrepiece now: a freestanding machine — a tiered plinth, three
-prongs leaning in over a glowing throat, two tilted rings precessing above it —
-and **the orb lives over it**. When the particles assemble him, the last arc of
+The room has a centrepiece: **the perch, at room scale**, standing in the middle
+of the floor behind him — and **the orb lives over it**.
+
+The first version was a plinth with three prongs and it read as a flying saucer.
+The app already owned the right shape: `drawPerch`, the turntable the mini orb
+sits on. It draws an ellipse in 2D because that is what a flat disc looks like at
+a shallow angle, so in three it is simply the disc and the perspective comes
+free — dark face, purple rim, twenty marks turning at `t * 0.30`, a glow where he
+touches it, and a shaft of light standing up to the ball so the two read as one
+object rather than two things at the same address.
+
+The one detail worth porting carefully is the marks' colour. In 2D it keys off
+`sin(angle)` — near green, far purple — which IS the depth in a hand-drawn
+ellipse, and it is the only cue saying the ellipse is a circle lying down. In
+three the depth is real, so it is read per frame from **camera** space, not world
+z: the stage is pitched by a third of a radian, so world z is not what is nearer
+the lens. Checked by projecting all twenty marks, 19 land on the correct side and
+the 20th sits exactly on the seam.
+
+(The rig that checked it was wrong first, and in an instructive way: it compared
+each mark to the portal's *origin*, which is on the floor, while the marks ride
+0.09 above it — so the boundary marks were misclassified by construction.
+Comparing against the ring's own centre is the same measurement done in the same
+place.)
+
+ When the particles assemble him, the last arc of
 the ring (`PORTAL.share`, 9% — 278 of 3,085) does not trace him at all: once the
 dot wipe passes his waist it lifts off and becomes a small breathing ball of
 dust hovering over the machine. That is where Glorb is while the room is up.
@@ -2469,9 +2492,94 @@ height and re-centred on its own bounding box, no code change. Two walking
 rules keep it solid: a tap inside its footprint slides to its rim — and a tap
 dead on its centre has no direction to slide along (scaling a zero-length
 offset moves nothing, which is how the first version let him walk into the
-plinth), so that case takes the direction from where HE stands. Torus trivia
-that cost a screenshot: a ring spinning about its own axis is invisible — the
-rings hang tilted off spinner groups, so the precession is what shows.
+plinth), so that case takes the direction from where HE stands.
+
+### Nobody baked the root motion
+
+Every clip in this file was exported **without root motion**. Measured across all
+thirty-six, the `root` and `mixamorig_Hips` bones move `0.000` — the character
+animates in place and travelling is the program's job. That is the right call for
+a game and it means the program has to do the job properly.
+
+It was not. One constant, `WALK.speed = 0.78`, drove every walk, and the clips do
+not agree with each other:
+
+| clip | its own speed (heights/s) |
+|---|---|
+| `walk_fwd_normal` | 0.84 |
+| `walk_fwd_upbeat` | 0.78 |
+| `walk_fwd_strut` | 0.45 |
+| `walk_fwd_tiptoe` | 0.20 |
+| `run_fwd` | 2.56 |
+| `run_fwd_fast` | 2.34 |
+
+`WALKS` is picked at random on every walk, so against a fixed 0.78 the strut
+travelled **90% too fast** and which one you got was a coin toss — exactly the
+"sometimes the root motion is much faster than his steps".
+
+`clipSpeed(name)` measures it off the clip. The standard trick: whichever foot is
+on the ground is not really sliding, the world is moving under it, so the speed
+the ground foot travels backwards through the model IS the speed the body should
+go forwards. Cached per clip, warmed 1.2 s after load — sampling drives the
+mixer's clock, so doing it while the wipes are climbing would stutter the thing
+everyone is watching.
+
+Ground-foot slip, simulated at a fixed 1/60 (the headless rig runs at 4 fps, so
+any real-time foot measurement is meaningless — the foot moves a whole stride
+between frames):
+
+| clip | slip standing still | at the old constant | at its own speed |
+|---|---|---|---|
+| `walk_fwd_normal` | 0.81 | 0.11 | **0.10** |
+| `walk_fwd_strut` | 0.42 | 0.38 | **0.10** |
+| `run_fwd` | 2.19 | 1.63 | 1.54 |
+
+Two things that took a measurement each to get right:
+
+- **Height, in one space.** The first attempt measured feet in the mesh's own
+  space and normalised by `figH1()`, which is group space — the mesh carries the
+  glTF 0.01 scale and a rotation, so the body came out **−30.4 units tall** and
+  the "is this foot down" test, comparing against a negative height, silently
+  counted nothing. Everything happens in group space now, the one place where y
+  is up and `figH1()` is the height.
+- **Median, not mean.** Printing the per-frame stance speeds, a walk is a flat
+  plateau — `0.78 0.79 0.79 0.80 0.80 0.80 0.81` — a foot genuinely nailed down.
+  A run has no plateau at all: `0.00 0.95 2.11 2.42 2.60 3.05 3.40`, because the
+  cycle is stylised and the foot keeps moving through its lowest moment.
+  Averaging arc length let the near-zero samples at the bottom drag the run to
+  2.08 and it kept skating; the median lands on 2.56 and agrees with the walk's
+  plateau to within 0.01 where there is one.
+
+**The run is not fixed and cannot be**, and the sweep says so: no constant body
+speed takes its slip below about 1.5, because the foot never plants. The skating
+is in the animation. A `run_fwd` with a real stance phase would fix it at source.
+
+### Turning without hovering
+
+`WALK.turn` was 5.0 rad/s — **286°/s**. He spun like a turret while his legs
+played a forward walk cycle, which is most of what reads as hovering. A walking
+person turns at about 120°/s.
+
+The turn clips cannot help: `idle_turn_left` and `idle_turn_right` both come back
+with **0.0° of net yaw**. They are foot shuffles, not rotations, so there is
+nothing in them to drive a heading with. What they are good for is feet that look
+busy while the heading changes underneath, which beats a forward walk cycle going
+sideways.
+
+So: more than `faceFirst` (0.85 rad, 49°) off the target and he **stops and
+pivots** — the turn clip plays, `world.yaw` eases at `turnPlace`, and he
+translates nothing at all until he is pointing roughly the right way. Under 49°
+he arcs round while walking at `turn`. And he only turns while he is going
+somewhere; a standing figure easing toward a stale heading was the other half of
+the hovering.
+
+Simulated at a fixed 1/60, distance travelled while pivoting, in his heights:
+
+| target | pivot frames | walk frames | slid while turning |
+|---|---|---|---|
+| straight away from the lens (180°) | 86 | 316 | **0.0000** |
+| hard left (90°) | 65 | 183 | **0.0000** |
+| toward the lens (0°) | 0 | 171 | **0.0000** |
 
 ### One of him
 
