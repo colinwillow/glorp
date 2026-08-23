@@ -2172,6 +2172,80 @@ part and keeps the part that reads.
 
 ---
 
+## Interrupting him
+
+Barge-in was already keyed on words rather than on sound, which was the right
+idea. The arithmetic around it was wrong: it counted novel words in the **whole
+transcript** and stopped at two. Over a ten-second reply that means any two
+stray words at any two moments, and a recogniser has exactly one thing it can
+turn a cough, a door or a television into — words. He interrupted himself two
+words into his own answer, constantly, and the answer was not recoverable.
+
+Same principle as the endpointer, applied the other way round. Judge it on
+words, and on words that arrive like somebody **talking**:
+
+- **`grace` (700 ms).** Nothing counts for the first stretch of his reply. When
+  he starts, the transcript still holds the tail of the question that prompted
+  him, and every word of it is novel by construction. That window is the
+  baseline, not an interruption.
+- **`gap` (900 ms).** The words have to keep coming. A transcript that has not
+  changed for this long is a room, not a sentence, and the count starts over.
+- **`cfg.barge`.** How many novel words in one unbroken burst it takes. It used
+  to be a 0/1 toggle; it is now the number itself, and **0 means nothing
+  interrupts him** — he finishes every thought and recognition is paused while
+  he talks, so he cannot hear himself at all.
+
+Replaying transcripts against the real function, at the shipped default of 4:
+
+| what is happening | old rule | now |
+|---|---|---|
+| stray words seconds apart | **stops him** | finishes |
+| your own question still in the buffer | **stops him** | finishes |
+| a cough transcribed as three tokens | **stops him** | finishes |
+| his own voice back through the speaker | finishes | finishes |
+| somebody talking over him | stops him | stops him |
+| a television with continuous dialogue | stops him | **stops him** |
+
+The last row is not a bug and no word rule fixes it: a television playing speech
+*is* speech, and telling it from a person needs speaker identification, which
+this does not have. Turn the dial down for a hair trigger (2 catches a two-word
+interruption but a mumble stops him too), or to 0 in a noisy room.
+
+### The bug in the first version of the fix
+
+Keying the burst on *the novel count going up* looked right and was not.
+Somebody saying "hang on, wait, what about the other one" is talking the whole
+way through — but `about` and `the` happened to be words he was saying too, so
+the count sat still for 1020 ms across them, the gap rule called it a pause, and
+the burst reset two words from the end. The trace:
+
+```
+1200  n=1  base=0  reach=1  | ... hang
+1540  n=2  base=0  reach=2  | ... hang wait
+1880  n=3  base=0  reach=3  | ... hang wait what
+2220  n=3  base=0  reach=3  | ... hang wait what about     <- count stalls
+2560  n=3  base=0  reach=3  | ... hang wait what about the
+2900  n=4  base=3  reach=1  | ... hang wait what about the other   <- reset, let through
+```
+
+It is the **transcript** changing that says someone is still speaking, not the
+novel count — the same signal `endpointCheck` already keys on. Keyed there, the
+last row reaches 4 and fires.
+
+### A way to shut him up that is not talking at him
+
+Raising the bar means he talks through more of the room, which is the point, and
+it also meant the only way to stop him was to say four words at him — no use at
+all if the recogniser is having a bad time. There was no manual stop anywhere in
+the file.
+
+`hush()` is the stopping half of `bargeIn`, lifted out, and `goHome` calls it.
+Every tap-out the app already has goes through `goHome`: the little one on his
+perch, a tap on the sky in the room, a tap on a hologram, the dock bar. All of
+them now also shut him up.
+
+---
+
 ## The room
 
 The figure used to stand in the void. Now the particles build him and then he is

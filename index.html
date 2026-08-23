@@ -206,7 +206,7 @@ const DEFAULTS = {
      him stops him. gapMs is the whole latency story in a noisy room: recognition
      will happily sit on a finished sentence for seconds waiting for the music to
      stop. */
-  gapMs:620, barge:1, volume:3.4, snap:0.3, flashMs:1100
+  gapMs:620, barge:4, volume:3.4, snap:0.3, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -552,15 +552,53 @@ function novelWords(a, b) {
   return n;
 }
 let ttsText = "";
+/* What it takes to stop him mid-sentence.
+
+   The word test was right and the arithmetic around it was not. It counted
+   novel words in the WHOLE transcript and stopped at two -- so over a ten
+   second reply, any two stray words at any two moments were enough, and a
+   recogniser has only one thing it can turn a cough or a television into:
+   words. He interrupted himself constantly, two words into his own answer,
+   and there was no getting the answer back.
+
+   Same principle as the endpointer, then, applied the other way round: judge
+   it on words, and on words that arrive like somebody TALKING. Two things
+   have to be true.
+
+   - `gap`: the words have to keep coming. A transcript that has not changed
+     for this long is a room, not a sentence, and the count starts over. Note
+     that it is the TRANSCRIPT changing, not the novel count going up: somebody
+     saying "hang on, wait, what about the other one" is talking the whole way
+     through, and the fact that "about" and "the" are words he happened to use
+     as well does not mean they stopped. Keyed on the count, that sentence
+     reset its own burst two words from the end and let it through.
+   - `grace`: nothing counts for the first stretch of his reply. When he starts
+     talking, the transcript still holds the tail of the question that prompted
+     him, and every word of it is novel by construction. That window is the
+     baseline, not an interruption.
+
+   cfg.barge is the number of words in one burst that it takes. Zero means
+   nothing does: he finishes every thought, and recognition is paused while he
+   talks, so he cannot hear himself at all. */
+const BARGE = { gap: 900, grace: 700 };
+let bargeN = 0, bargeBase = 0, bargeLast = 0, bargeFrom = 0, bargeLive = "";
+function bargeWatch(live) {
+  const now = performance.now();
+  if (live === bargeLive) return;            // nothing new was said
+  const quiet = bargeLast ? now - bargeLast : 1e9;
+  bargeLive = live; bargeLast = now;
+  const n = novelWords(live, ttsText);
+  if (now < bargeFrom) { bargeBase = bargeN = n; return; }
+  // the transcript restarted -- a new utterance, not a longer one
+  if (n < bargeN || quiet > BARGE.gap) bargeBase = n === 0 ? 0 : bargeN;
+  bargeN = n;
+  if (n - bargeBase >= cfg.barge) bargeIn();
+}
 function bargeIn() {
   if (!ttsPlaying) return;
-  ttsGen++;                                  // the clip being stopped says nothing
-  try { if (ttsSrc) ttsSrc.stop(); } catch (e) {}
-  ttsPlaying = false; ttsText = "";
-  plan = null;
+  hush();
   // the transcript so far is half his and half yours; drop it and start clean
   lastHeard = "";
-  echoUntil = performance.now() + 200;
   pauseSTT();
   setTimeout(resumeSTT, 200);
   setState("listening");
@@ -901,7 +939,9 @@ async function playReply(text) {
        his own voice and none of it is acted on -- the only question asked of it
        is whether the words are his. Deaf, he cannot be interrupted at all. */
     ttsText = text;
-    if (cfg.barge > 0.5) { if (sttPaused) resumeSTT(); } else pauseSTT();
+    bargeN = bargeBase = bargeLast = 0;
+    bargeFrom = performance.now() + BARGE.grace;
+    if (cfg.barge >= 1) { if (sttPaused) resumeSTT(); } else pauseSTT();
     ttsSrc.start();
     mark("audio");
     reportTiming();
@@ -1061,7 +1101,7 @@ function toggleSTT() {
        thrown away, because they are half his and half yours and there is no
        telling which is which. He goes quiet and listens, and you say it again. */
     if (ttsPlaying) {
-      if (cfg.barge > 0.5 && live && novelWords(live, ttsText) >= 2) bargeIn();
+      if (cfg.barge >= 1 && live) bargeWatch(live);
       return;
     }
     if (sttPaused || performance.now() < echoUntil) return;   // that was us
@@ -1149,7 +1189,7 @@ setInterval(recWatch, 2000);
 const SPEC = [
   ["state", [
     ["gapMs","end of sentence ms",200,2000,20],
-    ["barge","talk over him",0,1,1],
+    ["barge","words to interrupt",0,6,1],
     ["vadOn","voice threshold",0.02,0.6,0.01],
     ["holdMs","silence hold ms",100,3000,50],
     ["thinkMs","think ms",200,6000,100],
@@ -5344,7 +5384,21 @@ function menuPoints() {
    this puts the orb back. There was no way to leave the menu except by choosing
    from it, which is a corner to be stuck in, and nothing at all could be
    cancelled once it started. */
+/* Quiet, whatever else this does. Raising the bar for barge-in means he talks
+   through more of the room -- which is the point -- but it also means the only
+   way to stop him was to say four words at him, and if the recogniser is having
+   a bad time that is not a way out at all. Every tap-out the app already has
+   comes through here: the little one on his perch, a tap on the sky in the
+   room, a tap on a hologram, the dock bar. All of them now also shut him up. */
+function hush() {
+  if (!ttsPlaying) return;
+  ttsGen++;                                  // the clip being stopped says nothing
+  try { if (ttsSrc) ttsSrc.stop(); } catch (e) {}
+  ttsPlaying = false; ttsText = ""; plan = null;
+  echoUntil = performance.now() + 200;
+}
 function goHome(why) {
+  hush();
   stopSequence();
   /* A figure LEAVES rather than vanishing: the same four wipes, run down in the
      opposite order, so the colour drains off before the surface does and the
