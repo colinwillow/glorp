@@ -129,13 +129,40 @@ from deleting that variable. Do not add `ORB_PERSONA` to `wrangler.toml` — the
 file would then win over the dashboard on every deploy, which is exactly the
 thing being avoided.
 
-### Changing the code without a computer
+### Deploying: already automatic
 
-Connect the Worker to the repo once: Workers & Pages → `orb-brain` → Settings →
-**Build** → Connect to Git → this repo, with **root directory** `worker`. After
-that every push to `main` deploys the Worker on its own. The dashboard's inline
-editor is not an option here — this Worker has an npm dependency and needs a
-build step.
+**This Worker is connected to the repo and deploys itself.** Workers & Pages →
+`orb-brain` → Settings → **Build** → connected to this repo with **root
+directory** `worker`. Every push to `main` builds and deploys it. There is
+nothing to run and no computer to be at. `npx wrangler deploy` is the manual
+fallback, not the normal path.
+
+The connection lives entirely in the Cloudflare dashboard, so it leaves **no
+trace in this repo** — no `.github/workflows`, nothing in `wrangler.toml`.
+Reading the repo and concluding "this has not been deployed" is wrong, and has
+been got wrong from inside a sandbox more than once. Nor can it be checked by
+curl from every environment: sandboxed sessions may have a network policy that
+403s `*.workers.dev` at the proxy before the request leaves the machine.
+
+**How to actually check what is live**, from anything with a browser:
+
+```
+https://orb-brain.<you>.workers.dev/persona
+```
+
+Look for a distinctive sentence from `PROTOCOL` — currently *"This is a
+CONVERSATION, not a menu system."* `PROTOCOL` is compiled into the code and is
+appended after `PERSONA`, so unlike the persona half it **cannot** be overridden
+by the dashboard's `ORB_PERSONA` variable. That makes it a true test of whether
+the code deployed, rather than of what somebody typed into a text field.
+
+The one real failure mode: a build that **failed** leaves the previous version
+serving, silently. `tsc` has broken twice here on backticks inside template
+literals. If the marker sentence is missing, the Worker's Deployments tab has
+the failed build and its log — a different problem from "nobody deployed it".
+
+The dashboard's inline editor is not an option here — this Worker has an npm
+dependency and needs a build step.
 
 ## Choices worth knowing
 
