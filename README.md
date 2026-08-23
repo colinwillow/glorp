@@ -884,6 +884,66 @@ they are still the outermost thing.
 
 ---
 
+### He lies down
+
+The top-of-screen orb on its perch was a small one drawn *separately*: 130 dots
+of its own, fading in on their own timer, with the field doing something else
+entirely. It appeared rather than arrived, which is the one thing this program is
+not supposed to do.
+
+So on the site and in the gallery, **the field itself becomes the bar**. The same
+particles that were the orb travel down and lie out in a wide flat band along the
+bottom, and when the page closes they gather back up into the middle. That is the
+whole point of having a particle field, and it is what the two border lines were
+not doing: a line across the top and a line across the bottom is a *sheet*, and a
+sheet collapsing into a ball reads as particles arriving from the sides rather
+than as one thing changing shape.
+
+It also **reacts**, which a formation normally cannot — a fully formed shape
+overrides the audio deformation completely, which is exactly why the border lines
+sat there dead. The bar's targets are rewritten every frame from the spectrum
+instead, the same trick the rig uses to animate a skeleton. It is a live meter
+made out of him.
+
+**Tap it to go home. Hold it to open the site.** A hold is the only gesture a
+grid of tappable things has not already spent, and it gives the bar a job besides
+being a way out.
+
+Two placement bugs on the way in. The bar landed exactly on the talk button — 58
+pixels tall, 74 off the bottom edge — so every tap meant for the bar hit the
+button and nothing reached the canvas at all. And the tap was being handled in
+`onPick`, which runs *after* `onUp`, which clears the gesture's start time
+partway through — so the tap arrived looking like a press that had lasted
+forever. Whatever owns the screen, the way out of it is now the first thing
+checked.
+
+The small orb on its perch stays for the states where the field is busy being
+something else — a hologram, or Colin. There, it flies **out of the middle of the
+field** rather than switching on where it lands.
+
+### Nothing arrives from a corner
+
+A particle that has never been used sits at (0, 0) — the top-left of the screen —
+because that is what an empty `Float32Array` holds. Borrow some for a formation
+and they fly in from the corner, which is the one direction nothing else in here
+ever comes from.
+
+They come up from below the bottom edge now, spread across the width and already
+moving upward, so a field that needs more of itself grows rather than leaking in
+from a corner.
+
+### One place at a time
+
+Asking **out loud** for a page while the site was on screen loaded it straight
+over the top: cards behind, photographs in front, both live. Tapping a card was
+fine — tapping goes through `pageOpen`, which closes the grid before it opens
+anything. The spoken route does not: a word matches a trigger and calls the
+destination directly, so the tidying up existed on only one of the two paths into
+the same place.
+
+It belongs at the destination, not on the way in. Every place calls `takeScreen`
+first, and whichever one is arriving turns the others off.
+
 ### A glimpse or a place
 
 Reported as: leave the app, come back, and the field is a loose orb drifting

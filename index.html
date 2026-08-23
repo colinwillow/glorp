@@ -1726,6 +1726,22 @@ function buildBase(cnt) {
     bx[i] = Math.cos(a); by[i] = Math.sin(a);
   }
 }
+/* Particles that have never been used start at (0, 0) -- the top-left corner of
+   the screen -- because that is what an empty Float32Array holds. Borrow some
+   for a formation and they fly in from the corner, which is the one direction
+   nothing else in here ever comes from.
+
+   They come up from below the bottom edge instead, spread across the width and
+   already moving upward, so a field that needs more of itself grows rather than
+   leaks in from a corner. */
+function borrowFrom(from, to) {
+  for (let i = from; i < to; i++) {
+    px[i] = W * (0.08 + 0.84 * hash(i * 5 + 2));
+    py[i] = H + 30 + 90 * hash(i * 5 + 3);
+    vx[i] = 0; vy[i] = -1.2 - hash(i * 5 + 4);
+    pz[i] = vz[i] = 0;
+  }
+}
 let seeded = false;
 function seedNear(cnt, spawnR) {
   for (let i = 0; i < cnt; i++) {
@@ -2024,6 +2040,7 @@ const photo = { img: null, t: 0, want: 0, half: [1, 1], at: 0 };
 
 const imageCache = {};
 async function showImage(src, seconds) {
+  takeScreen("photo");
   const key = src.toLowerCase();
   if (!imageCache[key]) {
     caption(null, "loading " + src + "…");
@@ -2110,7 +2127,11 @@ const MINI_TOP = 96;
    presses it -- so the grids give it room while it exists and take the room
    back afterwards, rather than permanently reserving a strip for a button that
    is usually gone. */
-function uiBottom() { return micBig && micBig.classList.contains("off") ? 78 : 150; }
+function uiBottom() {
+  const btn = micBig && micBig.classList.contains("off") ? 78 : 150;
+  // and the bar, when he is lying along the bottom, which is taller than either
+  return dock.on ? Math.max(btn, dockBottom() + 58) : btn;
+}
 const GRID = { cols: 3, gap: 10, edge: 12, top: 168 };
 
 function tileRect(k) {
@@ -2145,6 +2166,89 @@ function drawCover(img, x, y, w, h, alpha) {
   ctx.drawImage(img, (img.width - sw) / 2, (img.height - sh) / 2, sw, sh, x, y, w, h);
   ctx.restore();
   ctx.globalAlpha = 1;
+}
+
+/* ---------------- the dock ----------------
+   When a page is on screen, the field itself becomes a wide flat bar along the
+   bottom. Not a small orb drawn separately at the top -- THE FIELD. The same
+   particles that were the orb travel down and lie out in a band, and when the
+   page closes they gather back up into the middle. That is the whole point of a
+   particle field and it is what the two border lines were not doing: a line
+   across the top and a line across the bottom is a sheet, and a sheet collapsing
+   into a ball reads as particles arriving from the sides rather than as one
+   thing changing shape.
+
+   It also reacts, which a formation normally cannot: a fully formed shape
+   overrides the audio deformation completely, which is why the border lines sat
+   there dead. The bar's targets are rewritten every frame from the spectrum
+   instead -- the same trick the rig uses to animate -- so it is a live meter
+   made out of him.
+
+   Tap it to go home. Hold it to open the site. */
+const DOCK = { fs: 0.5, w: 0.37, h: 0.017, amp: 2.6, hold: 420 };
+const dock = { on: 0, bx: null, by: null, hw: 1, yc: 0, yc0: 0, at: 0, held: 0 };
+/* Above the talk button while the talk button is there. The bar was landing
+   exactly on it -- the button is 58px tall sitting 74px off the bottom edge --
+   so every tap meant for the bar hit the button instead and nothing reached the
+   canvas at all. It moves when the button goes, easing rather than jumping,
+   because updateDock rewrites the targets every frame anyway. */
+function dockBottom() { return micBig && micBig.classList.contains("off") ? 92 : 158; }
+
+function dockPoints() {
+  const s2 = DOCK.fs * scale;
+  const hw = (W * DOCK.w) / s2;
+  const hh = (H * DOCK.h) / s2;
+  const yc = (H / 2 - dockBottom()) / s2;
+  dock.hw = hw; dock.yc = yc; dock.yc0 = yc;
+  const pts = [], N = 900;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * TAU;
+    /* A band rather than an outline: the orb is a shell with a gap and a core,
+       and squashing that flat is what keeps it recognisably him rather than a
+       progress bar. */
+    const rr = 0.50 + 0.62 * hash(i * 2 + 5);
+    pts.push([Math.cos(a) * hw * rr, yc + Math.sin(a) * hh * rr]);
+  }
+  return pts;
+}
+
+function dockStart() {
+  dock.on = 1; dock.at = performance.now(); dock.held = 0;
+  // the sorted targets, kept as the resting shape the spectrum moves away from
+  dock.bx = Float32Array.from(formX.subarray(0, formN));
+  dock.by = Float32Array.from(formY.subarray(0, formN));
+}
+function dockStop() { dock.on = 0; dock.bx = null; dock.held = 0; }
+
+function updateDock() {
+  if (!dock.on || !dock.bx) return;
+  if (!pages.on && !gallery.on) { dockStop(); return; }
+  const n = Math.min(formN, dock.bx.length);
+  const s2 = DOCK.fs * scale;
+  const amp = DOCK.h * (H / s2) * DOCK.amp;
+  // where the bar wants to be this frame, which moves when the button goes
+  dock.yc += ((H / 2 - dockBottom()) / s2 - dock.yc) * 0.07;
+  for (let i = 0; i < n; i++) {
+    const u = (dock.bx[i] / dock.hw + 1) / 2;
+    let b = drive.spectrum[Math.max(0, Math.min(BANDS - 1, (u * BANDS) | 0))] || 0;
+    b += drive.scale * 0.35;
+    // pushed away from the bar's own middle, so it swells rather than slides
+    const off = dock.by[i] - dock.yc0;
+    formY[i] = dock.yc + off + (off > 0 ? 1 : -1) * b * amp;
+    formX[i] = dock.bx[i] * (1 + drive.scale * 0.05);
+  }
+}
+// the bar, in screen pixels, for hit testing
+function dockRect() {
+  const s2 = DOCK.fs * scale;
+  const half = DOCK.h * H * 1.5 + 18;
+  return { x: cx - dock.hw * s2, y: cy + dock.yc * s2 - half,
+           w: dock.hw * s2 * 2, h: half * 2 };
+}
+function dockHit(x, y) {
+  if (!dock.on || formT < 0.4) return false;
+  const r = dockRect();
+  return x >= r.x - 20 && x <= r.x + r.w + 20 && y >= r.y - 16 && y <= r.y + r.h + 16;
 }
 
 /* Two lines of particles, top and bottom, with a slow wave along them. It is a
@@ -2185,6 +2289,7 @@ async function fetchImage(src) {
 }
 
 async function showGallery() {
+  takeScreen("gallery");
   /* Whether the page has to say something itself, decided BEFORE the first
      await. When the brain opened the gallery it is already writing a line about
      it, and by the time the pictures have loaded it may well be speaking -- so
@@ -2205,8 +2310,9 @@ async function showGallery() {
   gallery.scroll = 0; gallery.vel = 0; gallery.i = 0;
   gallery.at = performance.now();
   clearPhoto();
-  // the field lines the frame rather than leaving
-  setFormation({ points: edgePoints(), label: "gallery", fs: EDGE_FS, wide: 1 }, 3600);
+  // the field docks rather than leaving
+  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1 }, 3600);
+  dockStart();
   caption(null, shots.length + " pictures · drag to scroll · tap one");
   if (!quiet) remark(GALLERY_LINES);
   return true;
@@ -2391,10 +2497,33 @@ function pageCard(pg, r, e, lit) {
   ctx.restore();
 }
 
+/* One place at a time.
+
+   Asking OUT LOUD for a page while the site was on screen loaded it straight
+   over the top: cards behind, photographs in front, both live. Tapping a card
+   was fine, because tapping goes through pageOpen, which closes the grid before
+   it opens anything. The spoken route does not -- a word matches a trigger and
+   calls the destination directly -- so the tidying up only existed on one of
+   the two paths into the same place.
+
+   It belongs at the destination rather than on the way in. Every place calls
+   this first, and whichever one is arriving turns the others off. */
+function takeScreen(who) {
+  if (who !== "pages" && pages.on) pagesClose();
+  if (who !== "gallery" && gallery.on) {
+    gallery.on = 0; gallery.mode = "grid"; gallery.shots = []; gallery.drag = null;
+  }
+  if (who !== "figure" && rig.on) figClear();
+  if (who !== "photo") clearPhoto();
+  if (who !== "seq") stopSequence();
+}
+
 async function showPages() {
+  takeScreen("pages");
   pages.on = 1; pages.at = performance.now(); pages.i = -1; pages.open = 0; pages.hit = -1;
   clearPhoto();
-  setFormation({ points: edgePoints(), label: "pages", fs: EDGE_FS, wide: 1 }, 3600);
+  setFormation({ points: dockPoints(), label: "dock", fs: DOCK.fs, wide: 1 }, 3600);
+  dockStart();
   caption(null, "pages · tap one, or say its name");
   // the pictures page shows the pictures, so it needs a few of them
   if (!pages.shots.length) {
@@ -2417,8 +2546,8 @@ function pageOpen(k) {
   stirred();
   setTimeout(() => {
     if (!pages.on || pages.i !== k) return;
-    if (pg.kind === "gallery") { pagesClose(); showGallery(0); }
-    else if (pg.kind === "figure") { pagesClose(); showFigure(pg.src); }
+    if (pg.kind === "gallery") showGallery(0);          // takeScreen closes the grid
+    else if (pg.kind === "figure") showFigure(pg.src);
     else caption(null, pg.key + " · " + pg.blurb);
   }, 340);
   return true;
@@ -2716,7 +2845,10 @@ function drawPerch(x, y, R, e, t) {
 /* Not while the menu is up: the menu's own hub IS the orb, reacting, and a
    second smaller one above it says there are two of him. */
 function miniWant() {
-  return !menuOn && (pages.on || gallery.on || (form3d && formWant) || photo.t > 0.5) ? 1 : 0;
+  /* Only where the field is busy being something else. On the site and in the
+     gallery the field IS him, lying out along the bottom, and a second small
+     one floating above it says there are two. */
+  return !menuOn && !dock.on && ((form3d && formWant) || photo.t > 0.5) ? 1 : 0;
 }
 function shadeAt(size) {
   let j = ((size - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
@@ -2732,7 +2864,11 @@ function drawMini(now, k) {
      somewhere else gets him walking there instead of cutting. Snapped on the
      first frame, or he flies in from the top-left corner the first time. */
   const sp = miniSpot();
-  if (!mini.set) { mini.ax = sp[0]; mini.ay = sp[1]; mini.set = 1; }
+  /* Out of the middle, not out of nowhere. The first frame put him straight on
+     his perch at full size, which reads as an element switching on -- and the
+     one thing this program is supposed to be about is that things travel. He
+     starts where the field is and flies up. */
+  if (!mini.set) { mini.ax = cx; mini.ay = cy; mini.set = 1; }
   mini.ax += (sp[0] - mini.ax) * 0.075;
   mini.ay += (sp[1] - mini.ay) * 0.075;
   mini.x = mini.ax; mini.y = mini.ay; mini.r = R;
@@ -3696,6 +3832,7 @@ function hologramPoints(verts, yaw0, shell, slices) {
 }
 
 async function showHologram(src, seconds) {
+  takeScreen("holo");
   const shell = /\bshell\b/i.test(src || "");
   // cross-sections are on unless asked otherwise: they are what makes it read
   const bare = /\b(bare|lines)\b/i.test(src || "");
@@ -3732,6 +3869,7 @@ function stopSequence() { clearTimeout(seqAt); seqAt = 0; }
 
 async function showSequence(src) {
   stopSequence();
+  takeScreen("seq");
   const shell = /\bshell\b/i.test(src || "");
   src = String(src || "").replace(/\b(shell|bare|lines)\b/ig, "").trim() || "test_head";
   const m = await loadModel(src);
@@ -4159,6 +4297,7 @@ function rigPoint(R, v, o) {
 }
 
 async function showFigure(src) {
+  takeScreen("figure");
   src = String(src || "").trim() || "colin_dance";
   let R;
   try { R = await loadRig(src); }
@@ -4341,6 +4480,7 @@ function figPick(nm) {
 }
 
 async function showModel(src, seconds) {
+  takeScreen("model");
   const m = await loadModel(src);
   if (!m) return false;
   const ok = setFormation({ points: m.pts, edges: m.edges, tris: m.tris,
@@ -4537,6 +4677,7 @@ function goHome(why) {
   if (rig.on && !rig.out) { figStop(); if (why) caption(null, why); stirred(); return true; }
   gallery.on = false; gallery.shots = []; gallery.drag = null; clearPhoto();
   pagesClose();
+  dockStop();
   mini.set = 0;
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
@@ -5109,7 +5250,7 @@ function setFormation(spec, seconds) {
   if (want !== have) {
     if (!formCountWas) formCountWas = cfg.count;
     if (want < have) handBack(want);   // spread the survivors rather than truncate
-    else { cfg.count = want; syncPanel(); }
+    else { borrowFrom(have, want); cfg.count = want; syncPanel(); }
   }
 
   const n = Math.min(MAX, want);
@@ -5244,6 +5385,18 @@ const swipe = { x: 0, y: 0, t: 0 };
 const onDown = (e) => {
   const t = e.changedTouches ? e.changedTouches[0] : e;
   swipe.x = t.clientX; swipe.y = t.clientY; swipe.t = performance.now();
+  /* Press and hold on the bar opens the site. A hold is the only gesture left
+     that a grid of tappable things has not already spent, and it gives the bar
+     something to be besides a way out. */
+  clearTimeout(dock.held);
+  if (dockHit(t.clientX, t.clientY)) {
+    dock.held = setTimeout(() => {
+      dock.held = 0;
+      if (Math.abs(mx - swipe.x) > 16 || Math.abs(my - swipe.y) > 16) return;
+      if (!pages.on || pages.open) showPages();
+      else goHome("");
+    }, DOCK.hold);
+  }
   if (gallery.on && gallery.mode === "grid") {
     gallery.drag = { y: t.clientY, was: gallery.scroll, last: t.clientY, at: performance.now() };
     gallery.vel = 0;
@@ -5265,6 +5418,17 @@ const onDrag = (e) => {
 const onUp = (e) => {
   const wasDrag = gallery.drag;
   gallery.drag = null;
+  /* The bar, before anything else looks at this event. onUp runs ahead of
+     onPick and clears swipe.t partway through, so a dock tap handled in onPick
+     saw a timestamp of zero and decided the press had lasted forever. Whatever
+     owns the screen, the way out of it is the first thing checked. */
+  const td = e.changedTouches ? e.changedTouches[0] : e;
+  const quick = swipe.t && performance.now() - swipe.t < DOCK.hold;
+  const onBar = dockHit(td.clientX, td.clientY);
+  const holdFired = dock.held === 0;
+  clearTimeout(dock.held); dock.held = 0;
+  if (onBar && quick && !holdFired) { e.preventDefault(); swipe.t = 0; goHome(""); return; }
+  if (onBar) { swipe.t = 0; return; }        // a hold, already dealt with
   if (!gallery.on || !swipe.t) return;
   const t = e.changedTouches ? e.changedTouches[0] : e;
   /* The little one is handled by onPick, which runs after this. Without this
@@ -5344,6 +5508,7 @@ function loop() {
   updateState(dt);
   updateFormation(dt);
   updateFigure(dt, now);
+  updateDock();
   updateShell();
 
   const baseR = cfg.radius * scale;
