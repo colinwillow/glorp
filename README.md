@@ -2322,6 +2322,37 @@ Feet above the floor, measured across a full cycle of poses:
 | have a drink | 0.00 | 0.00 |
 | jump, 0.35 s in | 0.47 | 0.47 (still leaves the ground) |
 
+### The particles are the transition, not the costume
+
+The four wipes hand over in order — dots, lines, surface, colour — and each
+particle steps aside once the real surface has arrived under it. Except on the
+silhouette, where a rim of dots survived: that rim was **permanent**, so the
+transition never actually finished. It became part of how he looked, and he
+walked around his room wearing a green outline over a model that already has a
+texture.
+
+So the rim fades out across the last `FIG.rim` (0.34) of the texture wipe's
+travel. Counting the particles that end with a non-zero radius, using the draw
+loop's own formula:
+
+| | particles drawn on him |
+|---|---|
+| wipe front at 0.00 | 3085 / 3085 |
+| wipe front at 0.07 | 3085 / 3085 |
+| **fully built (1.13)** | **0 / 3085** |
+| leaving, front back to 0.79 | 1894 / 3085 |
+| leaving, front back to 0.19 | 2940 / 3085 |
+| leaving, front back to 0.00 | 3085 / 3085 |
+
+Nothing about that is one-way, and nothing needed writing twice. `figWipes` runs
+the same four numbers **down** when he leaves, so the reverse reads for free: the
+colour retreats, the rim comes back up out of it, then the surface goes, then the
+lines, then he is dots again.
+
+The particles are still *there* the whole time — holding the formation, chasing
+the skeleton, ready to be drawn the instant the front comes back down. They are
+just not on screen, which is the difference between a transition and a costume.
+
 ### One of him
 
 The mini orb on its perch is the way back from anything, and in a hologram or a

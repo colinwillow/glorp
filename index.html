@@ -4792,7 +4792,8 @@ const rig = {
    the finished figure was missing its crown: no surface on it and no texture,
    just dots. Every wipe runs past the top of the body by the width of its own
    soft edge. */
-const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13 };
+// rim: how much of the texture wipe's travel the silhouette dots fade out over
+const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13, rim: 0.34 };
 const FIG_FS = 0.40;
 const FIG_STAGE = ["dots", "lines", "fill", "texture"];
 
@@ -6958,17 +6959,34 @@ function loop() {
        drawings that introduce them -- so once the real surface has arrived
        under a particle it has done its job and gets out of the way.
 
-       Except on the silhouette. `nzv` is the vertex normal's component along
-       the view axis, already computed above for the back-surface culling, and a
-       particle whose normal is nearly perpendicular to the camera is standing
-       on the edge of the figure. Those stay: a rim of dots around him is the
-       one place the field and the model are obviously the same object. */
+       On the silhouette they stay a while longer. `nzv` is the vertex normal's
+       component along the view axis, already computed above for the
+       back-surface culling, and a particle whose normal is nearly
+       perpendicular to the camera is standing on the edge of the figure. A rim
+       of dots around him while he is arriving is the one moment the field and
+       the model are obviously the same object.
+
+       A WHILE longer, not for ever. The rim used to be permanent, which meant
+       he walked around his room wearing a green outline: the transition never
+       finished, it just became part of how he looked. So the rim itself fades
+       out across the last stretch of the texture wipe. By the time the front
+       clears the top of his head every held particle is at zero radius and what
+       is on screen is the model and nothing else -- which is the whole point of
+       having built a model.
+
+       Nothing here is one-way. figWipes runs the same four numbers DOWN when he
+       leaves, so this reads backwards for free: the texture front descends, the
+       rim comes back up out of it, then the surface goes, then the lines, then
+       he is dots again. */
     if (rig.on && gl.ready) {
       const g4 = figGate(i, 3);
       if (g4 > 0) {
         const nzv2 = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
         const edge = 1 - Math.min(1, Math.abs(nzv2) / 0.34);
-        rad *= 1 - g4 * (1 - edge * 0.85);
+        // 1 while the front is still climbing, 0 once it has finished
+        const rimK = 1 - Math.max(0, Math.min(1,
+          (rig.wipe[3] - (FIG.top - FIG.rim)) / FIG.rim));
+        rad *= 1 - g4 * (1 - edge * 0.85 * rimK);
       }
     }
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
