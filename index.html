@@ -943,15 +943,29 @@ function toggleSTT() {
   if (!SR) { caption("", "this browser has no speech recognition (needs Chrome, or Safari 14.5+)"); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
-  /* Chrome asks twice on purpose: getUserMedia covers the analyser, and the
-     Web Speech API is a separate grant because the audio leaves the machine.
-     Nothing to fix -- but unexplained it reads as the page being broken. */
+  /* TWO PROMPTS IS THE FLOOR, and it is worth writing down because it keeps
+     being reported as a regression. This page needs two different things from
+     the microphone: an analyser, for the visualiser, which is getUserMedia; and
+     speech recognition, which is a separate grant because the audio leaves the
+     device. Safari and Chrome both treat those as two permissions and ask for
+     them separately. Nothing here can merge them -- the Web Speech API does not
+     expose its stream, and an analyser cannot be built from one that does not
+     exist.
+
+     What CAN be fixed is a third: that was the recovery path calling
+     getUserMedia again on its own, seconds later, which is why it sometimes
+     went to three. The watchdog waits twenty seconds from the grant now.
+
+     They are asked in the order that survives -- speech first, analyser second
+     -- because whoever asks LAST keeps the microphone. */
   rec.onstart = () => {
+    recRunning = 1; recAlive = performance.now();
     caption("", "listening… say something");
     if (recStart) { const r = recStart; recStart = null; r(); }
   };
-  rec.onaudiostart = () => caption("", "hearing audio…");
+  rec.onaudiostart = () => { recAlive = performance.now(); caption("", "hearing audio…"); };
   rec.onresult = (e) => {
+    recAlive = performance.now();
     if (sttPaused || performance.now() < echoUntil) return;   // that was us
     let heard = "", interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -979,15 +993,57 @@ function toggleSTT() {
     }
   };
   // every error, including no-speech: silence here is what made this invisible
-  rec.onerror = (e) => caption("", "speech error: " + e.error);
-  rec.onend = () => {
-    if (recOn && !sttPaused) {
-      try { rec.start(); } catch (err) { caption("", "restart failed: " + err.message); }
-    }
+  rec.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") recOn = false;
+    caption("", "speech error: " + e.error);
   };
+  /* Restarted on a timer, not from inside onend.
+
+     A recogniser ends constantly -- every silence, every network hiccup, and
+     always when the app goes to the background -- and the whole design here
+     depends on it coming back. Calling start() synchronously inside onend
+     throws InvalidStateError on Safari, because the engine has not released
+     yet; the old code caught that, printed it into a caption nobody was
+     looking at, and then never tried again. Recognition was dead for the rest
+     of the session while the analyser carried on reacting to sound perfectly.
+     Which is exactly what "it hears me but it does not take commands" is. */
+  rec.onend = () => { recRunning = 0; if (recOn && !sttPaused) recKick(180); };
+  recRunning = 0;
   try { rec.start(); } catch (err) { caption("", "could not start: " + err.message); return; }
   recOn = true; talkBtn.classList.add("on"); talkBtn.textContent = "listening";
 }
+
+/* Whether the engine is actually running, as opposed to whether we asked it
+   to. recOn is the wish; recRunning is the fact, and the gap between them is
+   where every one of these bugs has lived. */
+let recRunning = 0, recAlive = 0, recKickAt = 0, recTries = 0;
+function recKick(ms) {
+  clearTimeout(recKickAt);
+  recKickAt = setTimeout(() => {
+    if (!recOn || sttPaused || !rec || recRunning) return;
+    if (document.visibilityState !== "visible") return;   // it will not start hidden
+    try { rec.start(); recTries = 0; }
+    catch (err) {
+      /* Backing off rather than hammering: a start() that throws while the
+         engine is still shutting down succeeds a moment later, and one that
+         throws because the permission is gone never will. */
+      recTries++;
+      if (recTries < 6) recKick(300 * recTries);
+      else caption("", "speech recognition will not restart — tap the mic");
+    }
+  }, ms);
+}
+/* And a watchdog, on positive evidence only. Not a timer since the last word:
+   a quiet room is not a fault, and rebuilding the recogniser to find out can
+   cost another permission prompt on iOS. The signal is that we want it running
+   and it is not -- which onend tells us exactly. */
+function recWatch() {
+  if (!recOn || sttPaused || recRunning) return;
+  if (document.visibilityState !== "visible") return;
+  if (performance.now() - recAlive < 2500) return;
+  recKick(0);
+}
+setInterval(recWatch, 2000);
 
 /* ---------------- controls ---------------- */
 const SPEC = [
@@ -1308,7 +1364,7 @@ micBtn.onclick = async () => {
        Both prompts still happen, but in the order that survives, and inside the
        same tap. */
     if (talkPref && !recOn) {
-      caption("", "two permissions: speech first, then the microphone");
+      caption("", "this asks twice — speech, then the microphone. Both are this page.");
       toggleSTT();
       await recReady(1500);
     }
@@ -1349,8 +1405,12 @@ function wake() {
     caption("", "the mic was released while this was in the background — tap to start it again");
     return;
   }
-  // recognition stops on its own and its onend restart never fires while hidden
-  if (recOn && rec && !sttPaused) { try { rec.start(); } catch (e) { /* already running */ } }
+  /* Recognition stops on its own the moment the app goes to the background, and
+     its onend restart cannot run while hidden. Coming back is the moment to
+     start it again -- through the same backing-off path as everything else,
+     and with a beat first, because the engine is not ready the instant the app
+     is foregrounded. */
+  if (recOn && rec && !sttPaused) { recRunning = 0; recKick(350); }
 }
 document.addEventListener("visibilitychange", wake);
 window.addEventListener("pageshow", wake);
@@ -1386,7 +1446,13 @@ async function openAnalyser(stream) {
     prev: new Float32Array(an.frequencyBinCount),
     time: new Float32Array(an.fftSize), floorDb: -55, db: -99,
     // four seconds of loudness history, which is what the floor is read from
-    hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0 };
+    hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0,
+    /* When this stream was granted. The watchdog will not ask for another one
+       within twenty seconds of it, because on iOS a second getUserMedia can
+       raise a second permission prompt -- and a prompt arriving on its own,
+       seconds after the one you just answered, is the third ask nobody could
+       explain. */
+    grabAt: performance.now(), deadAt: 0 };
   micState = "live";
   return A;
 }
@@ -1753,6 +1819,9 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
    rotation to unwind, and the projection is the identity again. */
 const view = { turn: 0, yaw: 0, yaw0: 0, pitch: 0, deep: false };
 let formN = 0, formT = 0, formWant = 0, formUntil = 0, formLabel = "", formRate = 0.045;
+// held rather than timed: see the note in setFormation
+let formHold = 0;
+const HOLD_S = 30;
 /* A glyph is flat and fills the frame edge to edge; a solid has a third axis
    and a diagonal, so the same number puts its corners off screen and into the
    containment wall, which then fights the formation for them. */
@@ -2303,7 +2372,9 @@ function pageCard(pg, r, e, lit) {
   ctx.beginPath();
   if (ctx.roundRect) ctx.roundRect(r.x, r.y, r.w, r.h, rad);
   else ctx.rect(r.x, r.y, r.w, r.h);
-  ctx.fillStyle = "rgba(16,18,14,0.90)";
+  // not quite opaque: the one living behind the site has to be visible through
+  // it, or he is only in the gaps and might as well not be there
+  ctx.fillStyle = "rgba(14,16,12,0.84)";
   ctx.fill();
   ctx.lineWidth = 1;
   ctx.strokeStyle = lit ? "#B6E08A" : "#2F3A28";
@@ -2677,6 +2748,13 @@ function drawMini(now, k) {
      Everything below is read straight off `drive` -- the same seam the field
      reads -- so if the big one is moving this one is moving, and if this one is
      still then the microphone is dead. Which makes it a status light too. */
+  orbDots(X, Y, R, e, now, k);
+  ctx.globalAlpha = 1;
+}
+
+/* The orb, drawn from `drive` at whatever size and strength is asked for. Two
+   callers: the little one on his perch, and the one living behind the site. */
+function orbDots(X, Y, R, e, now, k) {
   const sw = 1 + drive.scale * 0.5;
   const wob = drive.turbulence * 0.20 + drive.impulse * 0.30;
   ctx.globalAlpha = e;
@@ -2706,6 +2784,22 @@ function drawMini(now, k) {
   }
   ctx.globalAlpha = 1;
 }
+
+/* He lives back there.
+
+   The site's border lines used to release after thirty seconds and the whole
+   field drifted back to the ring behind the cards, which looked accidental and
+   was -- but it also looked good, so it is a thing now rather than a bug. A big
+   dim orb behind the page, reacting to the room, at about a sixth of full
+   strength: present enough to notice when it moves, faint enough that the cards
+   are still the thing you are reading. */
+function drawBackOrb(now, k) {
+  const want = (pages.on && !pages.open) || (gallery.on && gallery.mode === "grid") ? 1 : 0;
+  backOrb += (want - backOrb) * 0.05;
+  if (backOrb < 0.01) return;
+  orbDots(cx, cy, Math.min(W, H) * 0.44, backOrb * 0.30, now, k * 3.2);
+}
+let backOrb = 0;
 // hit target is generous: it is a way out, and a way out should be easy to find
 function miniHit(x, y) {
   return mini.t > 0.35 && Math.hypot(x - mini.x, y - mini.y) < mini.r * 2.1;
@@ -5058,18 +5152,38 @@ function setFormation(spec, seconds) {
   /* A solid should live exactly as long as its look-around takes: land, draw
      itself in, turn once, go. A duration picked out of the air either cuts it
      off mid-turn or leaves it standing there afterwards. */
+  /* A 3D formation normally sizes its own life off the spin, so it gets one
+     full turn before it leaves. That ignored `seconds` entirely -- which is
+     fine for a head and wrong for the figure, which asked for ten minutes and
+     got twenty-three seconds and then stopped dancing and disappeared. An
+     explicit duration past the hold threshold wins over the spin: it is a
+     place, however it was made. */
+  const asked = Math.max(0.3, seconds || 5);
   const secs = asMenu ? 30                 // it waits to be chosen from
+             : asked > HOLD_S ? asked
              : form3d ? 1 / Math.max(0.05, Math.abs(formSpin != null ? formSpin : cfg.spin)) + 3.4
-                      : Math.max(0.3, Math.min(30, seconds || 5));
+                      : asked;
   formRate = secs < 2 ? 0.12 : 0.045;      // a glimpse has to arrive before it goes
-  formUntil = performance.now() + Math.min(30, secs) * 1000;
+  /* A formation is either a GLIMPSE or a PLACE, and the difference is whether
+     it expires. Everything went through one 30-second cap, so the site's border
+     lines -- asked for with 3600 seconds -- quietly released after half a minute
+     and the field drifted back to the ring behind the cards. It read as a bug
+     that appeared when you left the app and came back, because half a minute is
+     about how long that takes. The figure had it too: it would have stopped
+     dancing and vanished after thirty seconds of anybody watching it.
+
+     Anything asking for longer than the cap is held instead: it stays until its
+     owner takes it down, which is what goHome and the page navigation already
+     do. The cap still bounds a word, which is what it was for. */
+  formHold = secs > HOLD_S ? 1 : 0;
+  formUntil = performance.now() + Math.min(HOLD_S, secs) * 1000;
   formLabel = asMenu ? "menu" : spec && (spec.label || spec.solid) ? String(spec.label || spec.solid)
             : spec && spec.shape === "face" ? "face" : String((spec && spec.text) || "");
   return true;
 }
 
 function updateFormation(dt) {
-  if (formWant && performance.now() > formUntil) formWant = 0;
+  if (formWant && !formHold && performance.now() > formUntil) formWant = 0;
   /* Ease both ways; a formation that snaps in reads as a glitch, not a gesture.
      But the ease is a fixed fraction per frame, which takes about a second to
      arrive -- fine for a shape that then stands there, useless for a word meant
@@ -5078,7 +5192,7 @@ function updateFormation(dt) {
   const rate = 1 - Math.pow(1 - formRate, dt / 16.67);
   formT += (formWant - formT) * rate;
   if (formT < 0.002 && !formWant) {
-    formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false;
+    formT = 0; formLabel = ""; form3d = false; view.yaw = 0; menuOn = false; formHold = 0;
     formE = null; wireT = 0; view.turn = 0; formTri = null; solidWant = 0;
     // or the next formation inherits a hologram's camera and reads stale biases
     formHasB = false; formTilt = null; formSpin = null; holoE = null; formWide = 0;
@@ -5303,8 +5417,8 @@ function loop() {
      are eased, and they overlap: for about a second you can see the dots
      through the photograph, which is the only frame in which it is obvious that
      one became the other. */
-  // the frame stays as long as the pictures do
-  if (gallery.on && formLabel === "gallery") formUntil = now + 4000;
+  // (the gallery used to refresh formUntil here every frame, which was this
+  //  same idea done once, for one caller, by hand)
   if (photo.at && now > photo.at) { photo.want = 1; photo.at = 0; }
   photo.t += (photo.want - photo.t) * (1 - Math.pow(1 - 0.022, dt / 16.67));
   // ...but not while one is still waiting its beat. This cleanup ran on the very
@@ -6272,6 +6386,7 @@ function loop() {
     }
   }
 
+  drawBackOrb(now, k);
   drawPages();
   drawGallery(dt);
   drawMini(now, k);
@@ -6337,7 +6452,9 @@ function loop() {
     const f2 = (x) => x.toFixed(2);
     meter.textContent = "lvl " + f2(drive.scale) + "  hue " + f2(drive.hue) +
                         "  turb " + f2(drive.turbulence) + "  hit " + f2(drive.impulse) +
-                        "\nmic " + micWord() + "  in " + f2(mic.scale) +
+                        "\nmic " + micWord() +
+                        "  hear " + (!recOn ? "off" : recRunning ? "on" : "stalled") +
+                        "  in " + f2(mic.scale) +
                         (standalone ? "  [standalone]" : "") +
                         (brain.url ? "" : "  [no endpoint]") +
                         (A ? "  dB " + Math.round(A.db) + "  room " + Math.round(A.floorDb) : "");

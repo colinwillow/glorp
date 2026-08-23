@@ -884,6 +884,98 @@ they are still the outermost thing.
 
 ---
 
+### A glimpse or a place
+
+Reported as: leave the app, come back, and the field is a loose orb drifting
+behind the page instead of the two border lines it was holding.
+
+Nothing to do with leaving the app. **Every formation went through one thirty
+second cap.** The site's border lines asked for 3600 seconds and got thirty; the
+figure asked for ten minutes and got twenty-three. Half a minute is about how
+long it takes to leave an app and come back, which is why it read as a
+backgrounding bug and why it had never been noticed sitting still.
+
+A formation is now either a **glimpse**, which expires — a word, an emoji, a face
+— or a **place**, which is held until its owner takes it down. Anything asking
+for longer than the cap is a place. The cap still bounds a word, which is all it
+was ever for. The gallery had a line refreshing its own expiry every frame,
+which was this same idea done once, by hand, for one caller.
+
+The figure needed a second fix on top: a 3D formation sizes its own life off the
+spin so it gets one full turn before it leaves, and that ignored the requested
+duration entirely. An explicit duration past the threshold now wins over the
+spin. Left alone for forty seconds, the figure used to stop dancing and vanish.
+
+### It hears you but it does not listen
+
+The other half of the same report: after coming back, the visualiser still
+reacted to sound but nothing was being *understood*.
+
+Those are two different subsystems on one microphone. The analyser was fine. The
+recogniser was dead, and it had been dead since the first time it ended.
+
+A recogniser ends constantly — every silence, every network hiccup, and always
+when the app goes to the background — and this whole design depends on it coming
+back. It was restarted from inside its own `onend`:
+
+```js
+rec.onend = () => { if (recOn && !sttPaused) { try { rec.start(); } catch (err) { caption(err) } } }
+```
+
+`start()` called synchronously inside `onend` throws `InvalidStateError` on
+Safari, because the engine has not released yet. The catch printed it into a
+caption nobody was reading, and then nothing ever tried again.
+
+It restarts on a timer now, backing off, and gives up loudly rather than
+silently. There is a `recRunning` flag — `recOn` is the *wish*, `recRunning` is
+the *fact*, and every bug in this area has lived in the gap between them — plus a
+watchdog that fires on that gap rather than on a timer since the last word. A
+quiet room is not a fault, and rebuilding a recogniser to find out can cost
+another permission prompt.
+
+Measured against a fake recogniser that behaves the way Safari's does — it ends
+on its own, and `start()` throws for 250ms afterwards — over four deaths:
+
+| | starts | engine running |
+|---|---|---|
+| before | 1 | no |
+| after | 5 | yes |
+
+The HUD says `hear on` / `hear stalled` / `hear off` now, because this failure
+was invisible from the outside: the microphone said `live` the whole time and it
+was telling the truth.
+
+### Two prompts is the floor
+
+It keeps being reported as a regression, so: this page needs two different things
+from the microphone. An **analyser**, for the visualiser, which is
+`getUserMedia`. And **speech recognition**, which is a separate grant because the
+audio leaves the device. Safari and Chrome both treat those as two permissions
+and ask separately. Nothing here can merge them — the Web Speech API does not
+expose its stream, and an analyser cannot be built out of one that does not
+exist.
+
+They are asked in the order that survives — speech first, analyser second —
+because whoever asks **last** keeps the microphone.
+
+What *was* fixable is the third prompt: the recovery path calling
+`getUserMedia` again on its own, seconds after the one you had just answered.
+The watchdog now waits twenty seconds from the grant, and the grant time is
+recorded when the stream actually arrives rather than when somebody taps.
+
+### The one behind
+
+The bug above put the whole field back into a loose orb behind the page, and it
+looked good. So it is a thing now rather than an accident: a large, dim orb
+living behind the site, reacting to the room at about a third of full strength,
+with the cards at 84% rather than 90% so he shows through them. Present enough to
+notice when it moves, faint enough that the cards are still what you are reading.
+
+It is drawn from `drive` like the little one — same construction, different size
+and strength — so it costs 130 dots and nothing else.
+
+---
+
 ### One tap, two handlers
 
 A page card highlighted when you touched it and then did not open. It opened
