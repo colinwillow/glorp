@@ -1021,7 +1021,11 @@ async function remark(lines) {
    That is also why it asks your name before anything else. It is the oldest
    move there is for making a service feel like an audience with somebody, and
    it costs one question. */
-const guest = { name: stored("orbGuest") || "", asked: 0 };
+/* Deliberately NOT remembered between sessions. Persisted, it greeted you by
+   name the moment you opened it, which skips the only interesting part: it
+   asks, every time, and the answer is what decides who it thinks it is talking
+   to. Within one session it remembers perfectly well. */
+const guest = { name: "", asked: 0 };
 /* Who it already knows. Keyed by lower-case first name; `is` is one line of
    fact that travels to the brain with the name, so the model can be different
    with somebody it knows rather than just saying their name more often. `greet`
@@ -1036,13 +1040,24 @@ const PROFILES = {
     greet: ["Oh -- it's you. Right, what are we breaking today?",
             "{}. Of course it is. Go on then.",
             "Ah, the management. What are we doing, {}?"]
+  },
+  rowan: {
+    is: "Rowan is Colin's friend and roommate. Things you know about him, to be " +
+        "brought up when they fit and never recited as a list: he loves chips. " +
+        "He has a dog called Chewy. He is very fond of getting horizontal. His " +
+        "girlfriend is Katie and his sister is Samara; his dad is JJ and his mum " +
+        "is Darcy. He works for a cannabis company, driving a van around doing " +
+        "distribution -- he has crashed that van three times, which is worth " +
+        "knowing and worth mentioning. He is into gambling, bitcoin and fishing. " +
+        "Be warm and take the mickey a bit; he is a friend of the house.",
+    greet: ["{}! Tell me the van is fine.",
+            "Ah, {}. Is Chewy with you?",
+            "{}. Sit down, you look like you want to be horizontal.",
+            "Rowan. Go on then -- gambling, bitcoin or fishing?"]
   }
 };
 const profileOf = (n) => PROFILES[String(n || "").toLowerCase()] || null;
-function setGuest(n) {
-  guest.name = n;
-  try { localStorage.setItem("orbGuest", n); } catch (e) {}
-}
+function setGuest(n) { guest.name = n; }
 
 // out. Said the moment there is a voice to say it with.
 const WAKING = [

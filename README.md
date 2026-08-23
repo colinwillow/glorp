@@ -2191,8 +2191,13 @@ One utterance, not two. A greeting with a follow-up scheduled off its duration
 is how he used to talk over himself — and worse, hear himself say it and then
 obey it.
 
-A returning visit is a different feeling and has its own lines: *"Out. Hello
-again, Colin."* — no question, because it already knows.
+Within one session, once it knows, a second greeting drops the question: *"Out.
+Hello again, Colin."*
+
+**Across sessions it deliberately forgets.** The name was in `localStorage` at
+first, and the result was that opening the page greeted you by name — which
+skips the only interesting part. It asks every time, and the answer is what
+decides who it thinks it is talking to.
 
 ### Reading a name out of a sentence
 
@@ -2240,7 +2245,7 @@ Thirty cases, all passing:
 Asked once, never twice: whatever the answer was, `guest.asked` clears either
 way. Pressing somebody for their name is the opposite of the intended effect.
 
-It is remembered in `localStorage` under `orbGuest`, and it **travels with every
+The name lives in memory for the session only, and it **travels with every
 request** — the proxy is stateless and the name is not in the twenty messages it
 gets, so sending it once would mean the model losing it mid-conversation. It is
 scrubbed on the way in like the picture names are: letters only, 24 characters,
@@ -2761,11 +2766,20 @@ verb.
 
 ### Profiles
 
-`PROFILES` is keyed by lower-case first name. `is` is one line of fact that
-travels to the brain with the name, so it can be *different* with somebody it
-knows rather than just saying their name more often; `greet` replaces the generic
-lines for that person. Adding people is copying the shape — nothing else needs
+`PROFILES` is keyed by lower-case first name. `is` is what it knows about that
+person, sent to the brain along with the name so it can be *different* with
+somebody it knows rather than just saying their name more often; `greet` replaces
+the generic lines for that person, with `{}` standing in for the name. A name
+with no entry is a stranger and gets the generic treatment — which is the point,
+since the whole thing hangs on being told who you are.
+
+Colin and Rowan are in. Adding people is copying the shape; nothing else needs
 touching.
+
+Worth being clear-eyed about: saying a name is the *only* check. Anyone who says
+"I'm Rowan" gets everything in Rowan's entry read back at them. That is exactly
+what makes it a good trick among friends and exactly why nothing should go in
+these entries that you would not say out loud to a room.
 
 ### Nobody baked the root motion
 
