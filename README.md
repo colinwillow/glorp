@@ -2472,6 +2472,68 @@ Feet above the floor, measured across a full cycle of poses:
 | have a drink | 0.00 | 0.00 |
 | jump, 0.35 s in | 0.47 | 0.47 (still leaves the ground) |
 
+### They were replaced, not shrunk
+
+The build read as a crossfade — the dots looked like they *faded out* while the
+model arrived, rather than getting smaller. They were not shrinking at all.
+
+A held 3D particle takes its radius from a constant, `sizeHiPx * cfg.dot * 0.13`,
+with a 15% taper on top, and the branch that picks it flips the instant the
+formation is set. Measured across a whole build:
+
+| | mean radius |
+|---|---|
+| first frame of the formation | 1.89 px |
+| four seconds later, fully built | 1.61 px |
+
+**0.28 px over four seconds.** The dots were swapped, in one frame, for smaller
+ones — while `cfg.trail` at 0.46 kept the old fat ones on screen for several
+frames afterwards. Two populations overlapping while one decays *is* a
+crossfade. That is exactly what it looked like, because that is what it was.
+
+`radA` keeps the radius actually drawn, and a model's particles ease toward the
+new one instead of jumping to it — the same dot getting smaller. Same build,
+after:
+
+| | mean radius | largest |
+|---|---|---|
+| orb at rest | 4.46 | 11.3 |
+| formation forming | 3.67 | 8.04 |
+| nearly built | 1.81 | 2.15 |
+
+Only for models. A firework's `sparkle` **is** per-frame noise on the radius and
+smoothing it would take the fizz out; a menu node's swell is meant to be
+immediate feedback under a thumb. Both are excluded.
+
+**The tail is as important as the ease.** `form3d` is cleared the moment `formT`
+reaches zero — which is *before* the dots have finished becoming the orb again.
+Gated on `form3d` alone, the last leg out snapped: measured, **1.86 → 4.01 px in
+a single frame** at the handover, the one visible jolt in an otherwise smooth
+exit. The gate now stays open for 900 ms after the formation lets go.
+
+### The smear was doing the sizes' job
+
+`cfg.trail` is 0.46 — each frame paints over less than half the last one, so a
+dot lingers for several frames. That is the orb's motion blur and most of why
+the resting field looks liquid. During a build it was also the only thing
+changing: the clear lifted only once the **texture** wipe began climbing, two
+and a half seconds in, so the entire assembly happened under a heavy smear.
+
+Blended with `formT` it now thins as the figure forms — 0.46 → 0.57 → 0.76 → 1.0
+across a build, instead of sitting at 0.46 until the very end. Some smear is
+what stops the dots looking like a spreadsheet; this much was hiding the
+transition it was supposed to soften.
+
+### The disc through his waist
+
+Found in a build screenshot, not looked for. The machine appeared at
+`world.on > 0.01` — but the room's arrival is what pulls the camera back, and
+until it has, everything is still framed as a portrait, so a disc three heights
+behind him projects straight through his middle and he builds inside a hoop. It
+now waits until the pull-back is properly under way (`world.on` past 0.35) and
+grows in over the rest of it, and the orb ball waits with it rather than hovering
+over an empty floor.
+
 ### The particles are the transition, not the costume
 
 The four wipes hand over in order — dots, lines, surface, colour — and each

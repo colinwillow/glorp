@@ -2000,6 +2000,13 @@ const pz = new Float32Array(MAX), vz = new Float32Array(MAX);
 const zbuf = new Float32Array(MAX);
 // where each particle actually landed on screen, kept so the edges can be drawn
 // between them afterwards rather than projected a second time
+/* The radius actually drawn, kept so the next frame can ease away from it
+   rather than jump. See the ease in the draw loop: without it a model's dots
+   do not shrink into place, they are REPLACED, and with a trail on top that
+   reads as a crossfade rather than as the same particles becoming smaller. */
+const radA = new Float32Array(MAX);
+// how long the radius ease keeps running after a 3D formation lets go
+let radTail = 0;
 const sxA = new Float32Array(MAX), syA = new Float32Array(MAX);
 const szA = new Float32Array(MAX), visA = new Uint8Array(MAX);
 const ord = new Int32Array(MAX);
@@ -4595,10 +4602,16 @@ function glFrame(K, FOC) {
   }
   if (gl.portal) {
     const H1p = figH1();
-    gl.portal.visible = world.on > 0.01;
+    /* Not at 0.01. The room's arrival is what pulls the camera back, and until
+       it has, everything is still framed as a portrait -- so a disc sitting
+       three heights behind him projects straight through his waist and he
+       stands in a hoop for the whole build. It waits until the pull-back is
+       properly under way and then grows in over the rest of it. */
+    const pOn = Math.max(0, Math.min(1, (world.on - 0.35) / 0.5));
+    gl.portal.visible = pOn > 0.01;
     gl.portal.position.set(PORTAL.x * H1p, f.lo[1] - f.c[1], PORTAL.z * H1p);
     // arrives by growing out of the floor with the room, not by popping
-    gl.portal.scale.setScalar(H1p * PORTAL.r * (0.55 + 0.45 * world.on));
+    gl.portal.scale.setScalar(H1p * PORTAL.r * (0.55 + 0.45 * pOn));
     const u = gl.portal.userData;
     if (u && u.dots) {
       const tp = performance.now() / 1000;
@@ -5566,7 +5579,8 @@ function updateFigure(dt, now) {
      fallback fills triangles between particle slots, and a triangle with one
      corner hijacked to the orb is a shard stretched across the room. (The GL
      path never fills from the slots, and the edge pass skips the arc.) */
-  const orbN = gl.ready ? Math.round(n * PORTAL.share) : 0;
+  // and the ball waits for its machine, or it hovers over an empty floor
+  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * PORTAL.share) : 0;
   rig.orbFrom = orbN ? n - orbN : 1e9;
   if (orbN) {
     const H1o = figH1();
@@ -7303,8 +7317,20 @@ function loop() {
      as three of himself trailing off to one side. The clear goes to full as his
      own texture arrives -- so the dots still smear while they are the drawing,
      and stop the moment they are a rim on something solid. */
+  /* And the smear thins as the shape arrives.
+
+     cfg.trail is 0.46 -- each frame paints over less than half the last one, so
+     a dot lingers for several frames. That is the orb's motion blur and it is
+     most of why the resting field looks liquid. It is also, during a build, the
+     thing doing the work that the sizes were supposed to do: the clear only
+     started lifting once the TEXTURE wipe began climbing, two and a half
+     seconds in, so the whole assembly happened under a heavy smear and read as
+     a dissolve. Blended with formT it thins as the figure forms -- some smear
+     is what stops the dots looking like a spreadsheet, but not this much. */
+  const trailBase = form3d && formWant
+    ? cfg.trail + (0.78 - cfg.trail) * Math.max(0, Math.min(1, formT)) : cfg.trail;
   const trail = rig.on && gl.ready
-    ? Math.max(cfg.trail, Math.min(1, rig.wipe[3] / FIG.top)) : cfg.trail;
+    ? Math.max(trailBase, Math.min(1, rig.wipe[3] / FIG.top)) : trailBase;
   ctx.fillStyle = "rgba(11,11,11," + trail + ")";
   ctx.fillRect(0, 0, W, H);
 
@@ -7351,6 +7377,10 @@ function loop() {
      shaped vaguely like a head. Rotate each point's own surface normal with the
      camera and drop the ones facing away. Softened at the boundary, or the
      silhouette pops as a hard edge sweeps around it while the model turns. */
+  /* About a second to close most of the gap, per second rather than per frame
+     so a 30Hz phone shrinks at the same rate as a 120Hz laptop. */
+  const radEase = 1 - Math.pow(1 - 0.055, dt / 16.67);
+  if (form3d) radTail = now + 900;
   const culling = formHasN && deep && cfg.solid > 0.001 && formT > 0.02;
   const cullK = cfg.solid * formT;
 
@@ -7541,6 +7571,34 @@ function loop() {
     if (deep) rad *= persp;              // near is bigger, which is most of the depth
     if (backT < 1) rad *= 0.30 + 0.70 * backT;
     if (rad > radCap) rad = radCap;
+    /* And the size TRAVELS, like everything else in here.
+
+       A held 3D particle takes its radius from a constant -- sizeHiPx * dot *
+       0.13 -- and the branch that picks it flips the instant the formation is
+       set. Measured across a build, every particle sat at 1.89px on the first
+       frame and 1.61px at the end: a 0.28px change over four seconds, which is
+       to say the dots never shrank at all. They were swapped, in one frame,
+       for smaller ones, while the trail kept the old fat ones on screen for
+       several frames afterwards -- and two populations overlapping while one
+       decays is a crossfade. That is exactly what it looked like.
+
+       Eased from whatever was drawn last frame, it is the same dot getting
+       smaller, which is what it was always supposed to be. Only for models:
+       a firework's sparkle IS per-frame noise on the radius and smoothing it
+       would take the fizz out, and a menu node's swell is meant to be
+       immediate feedback under a thumb. */
+    /* The tail matters as much as the ease. form3d is cleared the moment formT
+       reaches zero, which is BEFORE the dots have finished becoming the orb
+       again -- so gating on form3d alone let the last leg out snap: measured,
+       the radius went 1.86 to 4.01 in a single frame at the handover, which is
+       the one visible jolt in an otherwise smooth exit. The gate stays open for
+       a beat after the formation lets go. */
+    if (now < radTail && !bs && !menuOn) {
+      const prev = radA[i];
+      // seeded on first use, or a model would grow in from nothing
+      if (prev > 0.001) rad = prev + (rad - prev) * radEase;
+    }
+    radA[i] = rad;
     const sx = cx + rx * persp, sy = cy + ry * persp;
     if (wireT > 0.002 || solidT > 0.002) {
       sxA[i] = sx; syA[i] = sy; szA[i] = rz; visA[i] = hidden || !held ? 0 : 1;
