@@ -5531,7 +5531,26 @@ function updateFigure(dt, now) {
   // something else took the field -- a shell, a word, a reload. Nothing to wipe.
   if (!formWant && !rig.out) { figClear(); return; }
   if (rig.out && now - rig.out > (FIG.start[3] * 0.55 + FIG.climb * 0.8 + 0.4) * 1000) {
-    formWant = 0; formUntil = 0; figClear(); return;
+    /* formT goes with it, and this is the one line that made the deconstruct
+       incoherent.
+
+       A rig particle's hold is TWO gates multiplied: formT globally, and
+       figGate(i,0) per particle as the dots wipe runs down the body. By the
+       time the rig ends the wipe has been at zero for four hundred milliseconds
+       -- every particle is already free and drifting back to the ring -- but
+       formT is still 1, because nothing was driving it down. So the frame
+       rig.on cleared, the gate stopped being formT * 0 and became plain formT,
+       and all 3,085 particles snapped back onto the figure's last pose at full
+       strength before dissolving a second time.
+
+       Measured over the whole exit: every frame moves a particle 1.4px on
+       average, except that one, which moved them 107.9px (worst 211px). It is
+       the only discontinuity in the sequence.
+
+       Zeroing formT here is exactly continuous -- every gate is already zero at
+       this instant, so nothing moves on the frame it happens. It just removes
+       something for the field to snap back to. */
+    formWant = 0; formUntil = 0; formT = 0; figClear(); return;
   }
   figWipes(now);
   const R = rig.R;

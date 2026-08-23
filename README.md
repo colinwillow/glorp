@@ -2472,6 +2472,55 @@ Feet above the floor, measured across a full cycle of poses:
 | have a drink | 0.00 | 0.00 |
 | jump, 0.35 s in | 0.47 | 0.47 (still leaves the ground) |
 
+### Two release mechanisms, stacked
+
+The deconstruct ran smoothly and then, in one frame, every particle jumped back
+onto the figure's last pose and dissolved a second time. Reported as "one frame
+is this, the very next frame is that", and it was exactly that.
+
+A rig particle's hold is **two gates multiplied**:
+
+```js
+const fT = held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
+```
+
+`formT` globally, and `figGate(i, 0)` per particle as the dots wipe runs down
+the body. Leaving, the wipe reaches zero at 2.92 s and every particle is already
+free and drifting back to the ring — but `formT` is still **1**, because nothing
+was driving it down. `figClear()` fires at 3.32 s, `rig.on` goes false, and the
+gate stops being `formT * 0` and becomes plain `formT`. Full strength, instantly,
+onto a formation the field had already let go of.
+
+Logged every frame across the whole exit:
+
+| frame | mean particle movement | what changed |
+|---|---|---|
+| 45–47 | 1.49, 1.45, 1.41 px | — |
+| **48** | **107.88 px** (worst 211 px) | `rig.on` 1 → 0 |
+| 49–52 | 8.09, 14.46, 15.10, 12.72 px | dissolving a second time |
+
+It was the only discontinuity in the sequence. Every other frame of the
+deconstruct moves a particle about 1.4 px.
+
+The fix is one line — `formT = 0` where the rig ends — and it is exactly
+continuous: every gate is already zero at that instant, so nothing moves on the
+frame it happens. It just removes something for the field to snap back to.
+After:
+
+| frame | mean particle movement |
+|---|---|
+| 46–48 | 1.45, 1.41, 1.36 px |
+| **49 — `rig.on` clears** | **1.56 px** |
+| 50–51 | 1.50, 2.46 px |
+
+Indistinguishable from its neighbours, and 69× smaller than before. The particle
+count hands back 3085 → 3200 across the same frame without a visible step.
+
+The guess in the room was that this was a 2D-to-3D seam — two renderers being
+crossfaded. It was not: both gates live in the 2D field and neither knows the
+GL layer exists. The seam was between **two things that both release the
+formation**, one per-particle and one global, with nothing sequencing them.
+
 ### They were replaced, not shrunk
 
 The build read as a crossfade — the dots looked like they *faded out* while the
