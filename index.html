@@ -113,19 +113,26 @@
      particles rather than simply on top of everything. */
   #gl{position:fixed;left:0;top:0;pointer-events:none;opacity:0;
     width:1px;height:1px}
+  /* It used to be a red circle with a microphone in it, which is the browser's
+     idea of what this is rather than ours -- a warning colour, on a screen that
+     has no warning colours anywhere else in it, for the one thing you are meant
+     to press. It says what it does now, and it is the same violet and green as
+     everything else. */
   #mic{position:fixed;left:50%;transform:translateX(-50%);
-    bottom:calc(76px + env(safe-area-inset-bottom));
-    width:64px;height:64px;border-radius:50%;border:2px solid #FF3B4E;
-    background:rgba(255,59,78,.10);display:flex;align-items:center;justify-content:center;
+    bottom:calc(74px + env(safe-area-inset-bottom));
+    height:46px;padding:0 20px 0 16px;gap:10px;border-radius:23px;
+    border:1px solid #6B2FB5;background:rgba(24,10,38,.82);
+    display:flex;align-items:center;justify-content:center;
+    font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#C8F49A;
     cursor:pointer;-webkit-tap-highlight-color:transparent;
-    box-shadow:0 0 0 0 rgba(255,59,78,.45);animation:micPulse 2.4s ease-out infinite}
-  #mic:active{background:rgba(255,59,78,.24)}
-  #mic svg{width:26px;height:26px;fill:#FF6675}
+    box-shadow:0 0 0 0 rgba(139,47,214,.5);animation:micPulse 2.8s ease-out infinite}
+  #mic:active{background:rgba(46,18,72,.94)}
+  #mic svg{width:17px;height:17px;fill:#B6E08A;flex:none}
   #mic.off{display:none}
   @keyframes micPulse{
-    0%{box-shadow:0 0 0 0 rgba(255,59,78,.40)}
-    70%{box-shadow:0 0 0 16px rgba(255,59,78,0)}
-    100%{box-shadow:0 0 0 0 rgba(255,59,78,0)}}
+    0%{box-shadow:0 0 0 0 rgba(139,47,214,.45)}
+    70%{box-shadow:0 0 0 15px rgba(139,47,214,0)}
+    100%{box-shadow:0 0 0 0 rgba(139,47,214,0)}}
   #cap b{display:block;color:#C8F49A;font-weight:400;margin-bottom:3px}
   #cap i{display:block;font-style:normal;color:#3E4A38;font-size:10px;
     letter-spacing:.08em;margin-top:5px}
@@ -151,7 +158,7 @@
   <button id="tuneBtn">tune</button>
 </div>
 <div id="err"></div>
-<button id="mic" aria-label="enable microphone"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg></button>
+<button id="mic" aria-label="talk to Glorb"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg><span>talk to glorb</span></button>
 <div id="cap"></div>
 <div id="fig"></div>
 <div id="panel"></div>
@@ -586,7 +593,7 @@ async function ask(text) {
         if (ctl.show) {
           shown = true;
           if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery ||
-              ctl.show.figure)
+              ctl.show.figure || ctl.show.pages)
             setFormation(ctl.show, ctl.show.seconds);
           else pendingShow = ctl.show;
         }
@@ -836,6 +843,44 @@ async function remark(lines) {
   if (!spoke) planSpeech(line);
   setState("speaking");
 }
+
+/* Two beats, not one. The first says hello; the second, once the first has
+   finished playing, says what you can do about it -- because an assistant that
+   greets you and then waits is a thing you have to guess at. `remark` knows how
+   long its own line takes (planMs, from the audio, or the estimate when there
+   is no voice), so the follow-up lands when the first one stops rather than on
+   a guess. */
+function remarkThen(first, second, gap) {
+  remark(first);
+  clearTimeout(helloAt);
+  helloAt = setTimeout(() => remark(second), Math.max(1400, planMs + (gap || 700)));
+}
+let helloAt = 0;
+
+/* Time of day, because "good evening" at eight in the morning is worse than no
+   greeting at all -- and because it is the cheapest possible way to say that
+   something is actually paying attention. */
+function greetings() {
+  const h = new Date().getHours();
+  const when = h < 5 ? ["Still up, then.", "It is the middle of the night. Suits me.",
+                        "Nobody sensible is awake. Hello."]
+             : h < 12 ? ["Morning.", "Good morning. You are early.",
+                         "Morning. I have been here the whole time."]
+             : h < 18 ? ["Afternoon.", "Good afternoon.", "Afternoon. You found me."]
+             : ["Evening.", "Good evening.", "Evening. Nice of you to drop in."];
+  return when.concat([
+    "Oh, hello.", "There you are.", "Hello. I am Glorb, apparently.",
+    "Ah. Someone.", "Hello. I was beginning to wonder."
+  ]);
+}
+const OFFER_LINES = [
+  "Say pages and I will show you around.",
+  "Ask me what I can do, or say pages.",
+  "There is a whole site in here. Say pages.",
+  "Say pages to see what there is. Or just talk.",
+  "You can ask me things. You can also say pages.",
+  "Try saying pages. Or ask me something impossible."
+];
 
 /* Watts, roughly: delighted by the thing in front of him and unable to resist
    pointing out that you are the one looking at it. Short, because they are said
@@ -1268,6 +1313,10 @@ micBtn.onclick = async () => {
     micBtn.textContent = "mic";
     frzBtn.style.display = "";
     analyse();
+    /* And say hello. This is the first moment there is a voice to say it with
+       and a microphone to hear the answer, which makes it the only moment worth
+       spending an introduction on. A beat later, what to do about it. */
+    setTimeout(() => remarkThen(greetings(), OFFER_LINES), 500);
   } catch (e) {
     micState = "denied";
     micBig.style.animation = "";
@@ -2080,6 +2129,275 @@ async function showGallery() {
   return true;
 }
 
+/* ---------------- pages ----------------
+   The menu is gone. Six labelled satellites on spokes was a diagram of a menu
+   rather than a place, and next to a wall of real photographs it looked like
+   the part that had not been designed yet.
+
+   What replaces it is the site. Six cards, two columns, and the left column
+   arrives from the left and the right column from the right -- literally, which
+   is the difference between this and the picture grid, where whole rows fold in
+   alternately. Tap one, or say its name, and it opens.
+
+   A page is a `kind` and whatever that kind needs. Three of them already exist
+   as features and are simply pointed at; the rest draw themselves and say so.
+   Adding one is a line in this array. */
+const PAGES = [
+  { key: "images", kind: "gallery", blurb: "pictures, full size",
+    say: /\b(image|images|picture|pictures|photo|photos|gallery)\b/ },
+  { key: "characters", kind: "figure", src: "colin_dance", blurb: "rigged and dancing",
+    say: /\b(character|characters|colin|figure|model|models)\b/ },
+  { key: "motion", kind: "soon", blurb: "films and loops",
+    say: /\b(motion|film|films|video|videos|animation)\b/ },
+  { key: "design", kind: "soon", blurb: "the work",
+    say: /\b(design|work|portfolio)\b/ },
+  { key: "code", kind: "soon", blurb: "this, and the rest",
+    say: /\b(code|coding|software|github)\b/ },
+  { key: "about", kind: "text", blurb: "who is doing this",
+    say: /\b(about|who|bio|contact)\b/,
+    lines: ["Colin Willow.", "", "Three-D artist and animator.",
+            "Everything here was modelled,", "rigged and animated by hand.", "",
+            "Glorb builds it out of particles", "because that seemed better than", "a list of links.", "",
+            "colinwillowtree@gmail.com"] }
+];
+
+const PG = { cols: 2, gap: 12, edge: 16, top: 122, bot: 92 };
+const pages = { on: 0, at: 0, i: -1, open: 0, openAt: 0, from: null, hit: -1, shots: [] };
+
+function pageRect(k) {
+  const cw = (W - PG.edge * 2 - PG.gap * (PG.cols - 1)) / PG.cols;
+  const rows = Math.ceil(PAGES.length / PG.cols);
+  const view = H - PG.top - PG.bot;
+  const ch = Math.min(cw * 1.12, (view - PG.gap * (rows - 1)) / rows);
+  const tall = ch * rows + PG.gap * (rows - 1);
+  const top = PG.top + Math.max(0, (view - tall) / 2);
+  const col = k % PG.cols, row = (k / PG.cols) | 0;
+  return { x: PG.edge + col * (cw + PG.gap), y: top + row * (ch + PG.gap), w: cw, h: ch };
+}
+
+/* Each card draws a little scene out of the same primitives the rest of the
+   program is made of -- dots, a line, an arc, the green and the violet. Not
+   screenshots: there are no pages to screenshot yet, and a grey rectangle
+   saying "coming soon" is worse than nothing. The one page that HAS its
+   content already shows it, because it can. */
+function cardArt(pg, x, y, w, h, t) {
+  const cx2 = x + w / 2, cy2 = y + h * 0.42, s = Math.min(w, h);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  if (pg.kind === "gallery" && pages.shots.length) {
+    // the real pictures, four of them, because this page already exists
+    const g = Math.min(4, pages.shots.length), cwv = w * 0.34, gp = w * 0.045;
+    for (let i = 0; i < g; i++) {
+      const px2 = cx2 + ((i % 2) - 1) * (cwv + gp) + gp / 2;
+      const py2 = cy2 + (((i / 2) | 0) - 1) * (cwv + gp) + gp / 2;
+      drawCover(pages.shots[i], px2, py2, cwv, cwv, 0.92);
+    }
+  } else if (pg.kind === "figure") {
+    /* A standing figure, not a cloud in the rough shape of one. The first
+       version sampled a width function over the whole height and got a blob
+       with a ring floating above it -- a silhouette needs its parts stated:
+       shoulders, a taper, two legs, and a head that is filled rather than
+       outlined. */
+    const dot = (px2, py2, rr) => { ctx.beginPath(); ctx.arc(px2, py2, rr, 0, TAU); ctx.fill(); };
+    ctx.fillStyle = "#8B2FD6";
+    for (let i = 0; i < 160; i++) {
+      // stops above the label: the first version ran to 0.88 of the card and the
+      // feet stood in the middle of the word CHARACTERS
+      const v = hash(i * 3 + 2), yy = 0.28 + v * 0.48;
+      let u = hash(i * 3 + 1) * 2 - 1, wid;
+      if (yy < 0.36) wid = 0.175;                          // shoulders and arms
+      else if (yy < 0.54) wid = 0.175 - (yy - 0.36) * 0.32;  // the taper to the waist
+      else { wid = 0.125; u = (u < 0 ? -1 : 1) * (0.32 + 0.68 * Math.abs(u)); }   // two legs
+      dot(cx2 + u * wid * s, y + yy * h, 1.4 + 1.3 * hash(i + 9));
+    }
+    ctx.fillStyle = "#B6E08A";
+    for (let i = 0; i < 46; i++) {
+      // sqrt, or a disc of random polar samples piles up in the middle
+      const a = hash(i + 31) * TAU, rr = s * 0.058 * Math.sqrt(hash(i + 41));
+      dot(cx2 + Math.cos(a) * rr, y + h * 0.205 + Math.sin(a) * rr * 1.2, 1.5);
+    }
+  } else if (pg.kind === "soon" && pg.key === "motion") {
+    /* A strip of film, with the sprockets creeping. Horizontal bars read as
+       CODE two cards away, and two cards that look alike is worse than one
+       card that is dull. */
+    ctx.fillStyle = "#6B2FB5";
+    const step = h * 0.62 / 6, roll = ((t * 14) % step);
+    for (let i = -1; i < 8; i++) {
+      const yy = y + h * 0.13 + i * step + roll;
+      if (yy < y + h * 0.08 || yy > y + h * 0.80) continue;
+      ctx.fillRect(x + w * 0.155, yy, w * 0.055, h * 0.026);
+      ctx.fillRect(x + w * 0.79, yy, w * 0.055, h * 0.026);
+    }
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = "#3E5C2A";
+    ctx.strokeRect(x + w * 0.27, y + h * 0.14, w * 0.46, h * 0.26);
+    ctx.strokeStyle = "#B6E08A";
+    ctx.strokeRect(x + w * 0.27, y + h * 0.46, w * 0.46, h * 0.26);
+    ctx.fillStyle = "#B6E08A";
+    const px3 = x + w * 0.44, py3 = y + h * 0.53, ts = s * 0.075;
+    ctx.beginPath();
+    ctx.moveTo(px3, py3); ctx.lineTo(px3 + ts, py3 + ts * 0.62); ctx.lineTo(px3, py3 + ts * 1.24);
+    ctx.closePath(); ctx.fill();
+  } else if (pg.kind === "soon" && pg.key === "design") {
+    // arcs opening out of a point
+    ctx.lineWidth = 1.4;
+    for (let i = 1; i <= 5; i++) {
+      ctx.strokeStyle = i % 2 ? "#8B2FD6" : "#4E7A34";
+      ctx.beginPath();
+      ctx.arc(x + w * 0.22, y + h * 0.72, i * s * 0.115, -Math.PI / 2, 0);
+      ctx.stroke();
+    }
+  } else if (pg.kind === "soon" && pg.key === "code") {
+    // lines of it, indented the way it actually is
+    const ind = [0, 1, 2, 2, 1, 2, 3, 1, 0];
+    for (let i = 0; i < ind.length; i++) {
+      ctx.fillStyle = i % 3 === 1 ? "#4E7A34" : "#6B2FB5";
+      const lw = w * (0.20 + 0.34 * hash(i + 21));
+      ctx.fillRect(x + w * 0.14 + ind[i] * w * 0.07, y + h * 0.20 + i * s * 0.062, lw, 2.5);
+    }
+  } else {
+    // about: the orb itself, small
+    ctx.fillStyle = "#8B2FD6";
+    for (let i = 0; i < 70; i++) {
+      const a = (i / 70) * TAU, rr = s * (0.19 + 0.05 * hash(i + 3));
+      ctx.beginPath();
+      ctx.arc(cx2 + Math.cos(a) * rr, cy2 + Math.sin(a) * rr, 1.6 + 1.2 * hash(i + 7), 0, TAU);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#B6E08A";
+    for (let i = 0; i < 20; i++) {
+      const a = (i / 20) * TAU, rr = s * 0.045 * hash(i + 11);
+      ctx.beginPath();
+      ctx.arc(cx2 + Math.cos(a) * rr, cy2 + Math.sin(a) * rr, 1.3, 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function pageCard(pg, r, e, lit) {
+  const rad = 12;
+  ctx.save();
+  ctx.globalAlpha = e;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(r.x, r.y, r.w, r.h, rad);
+  else ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = "rgba(16,18,14,0.90)";
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = lit ? "#B6E08A" : "#2F3A28";
+  ctx.stroke();
+  cardArt(pg, r.x, r.y, r.w, r.h, performance.now() / 1000);
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.font = "600 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillStyle = lit ? "#EAFBD2" : "#B6E08A";
+  ctx.fillText(pg.key.toUpperCase().split("").join(" "), r.x + 14, r.y + r.h - 26);
+  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.fillStyle = "#5A6B4E";
+  ctx.fillText(pg.blurb, r.x + 14, r.y + r.h - 12);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+async function showPages() {
+  pages.on = 1; pages.at = performance.now(); pages.i = -1; pages.open = 0; pages.hit = -1;
+  clearPhoto();
+  setFormation({ points: edgePoints(), label: "pages", fs: EDGE_FS, wide: 1 }, 3600);
+  caption(null, "pages · tap one, or say its name");
+  // the pictures page shows the pictures, so it needs a few of them
+  if (!pages.shots.length) {
+    const list = (await listImages()).filter((n2) => n2 !== "glorb").slice(0, 4);
+    const got = [];
+    for (const nm of list) { const im = await fetchImage(nm); if (im) got.push(im); }
+    pages.shots = got;
+  }
+  return true;
+}
+function pagesClose() { pages.on = 0; pages.open = 0; pages.i = -1; }
+
+/* Opening is a move, the same one a photograph makes: the card grows into the
+   screen and then hands over to whatever the page actually is. The grow is
+   short, because it is a transition and not the content. */
+function pageOpen(k) {
+  const pg = PAGES[k];
+  if (!pg) return false;
+  pages.i = k; pages.from = pageRect(k); pages.open = 1; pages.openAt = performance.now();
+  stirred();
+  setTimeout(() => {
+    if (!pages.on || pages.i !== k) return;
+    if (pg.kind === "gallery") { pagesClose(); showGallery(0); }
+    else if (pg.kind === "figure") { pagesClose(); showFigure(pg.src); }
+    else caption(null, pg.key + " · " + pg.blurb);
+  }, 340);
+  return true;
+}
+function pageHit(x, y) {
+  for (let k = 0; k < PAGES.length; k++) {
+    const r = pageRect(k);
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return k;
+  }
+  return -1;
+}
+// said out loud rather than touched
+function pageSaid(flat) {
+  for (let k = 0; k < PAGES.length; k++) if (PAGES[k].say.test(flat)) return k;
+  return -1;
+}
+
+function drawPages() {
+  if (!pages.on) return;
+  const now3 = performance.now();
+  if (pages.open) {
+    /* The one that was tapped, on its way to filling the screen. Text pages
+       stop here and draw themselves; the other kinds have handed over by now
+       and this is the last frame of the handover. */
+    const pg = PAGES[pages.i];
+    const raw = Math.min(1, (now3 - pages.openAt) / 380);
+    const e = 1 - Math.pow(1 - raw, 3);
+    const a = pages.from;
+    // clear of the little one, which floats at MINI_TOP and was being cut in
+    // half by the top edge of the panel
+    const b2 = { x: W * 0.06, y: PG.top - 6, w: W * 0.88, h: H - PG.top - PG.bot + 40 };
+    const L = (p1, p2) => p1 + (p2 - p1) * e;
+    const r = { x: L(a.x, b2.x), y: L(a.y, b2.y), w: L(a.w, b2.w), h: L(a.h, b2.h) };
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(r.x, r.y, r.w, r.h, 12); else ctx.rect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = "rgba(16,18,14,0.94)";
+    ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = "#3C4B32"; ctx.stroke();
+    ctx.clip();
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    ctx.globalAlpha = Math.max(0, (e - 0.45) / 0.55);
+    ctx.font = "600 15px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.fillStyle = "#EAFBD2";
+    ctx.fillText(pg.key.toUpperCase().split("").join(" "), r.x + 22, r.y + 46);
+    ctx.font = "12.5px ui-monospace, SFMono-Regular, Menlo, monospace";
+    const lines = pg.lines || ["Not built yet.", "", pg.blurb + ".", "",
+                              "It will be here. Everything else", "on this page was also not here", "a week ago."];
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillStyle = i === 0 ? "#B6E08A" : "#7E9070";
+      ctx.fillText(lines[i], r.x + 22, r.y + 84 + i * 21);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    return;
+  }
+  for (let k = 0; k < PAGES.length; k++) {
+    /* Left column from the left, right column from the right. Literally: with
+       two columns "the left ones" and "the right ones" are a real thing on the
+       screen, which is what makes this read differently from the picture grid,
+       where whole rows fold in alternately. */
+    const col = k % PG.cols, row = (k / PG.cols) | 0;
+    const age = (now3 - pages.at - row * 80) / 400;
+    if (age <= 0) continue;
+    const e = age >= 1 ? 1 : 1 - Math.pow(1 - age, 3);
+    const r = pageRect(k);
+    r.x += (1 - e) * (W + PG.edge) * (col === 0 ? -1 : 1);
+    pageCard(PAGES[k], r, e, k === pages.hit);
+  }
+}
+
 /* Where a picture is when it is open, and where it came from. Opening one is a
    move, not a cut: it grows out of the tile that was tapped and shrinks back
    into it, so the grid and the picture are obviously the same object seen at two
@@ -2255,7 +2573,7 @@ const mini = { t: 0, x: 0, y: 0, r: 0 };
 /* Not while the menu is up: the menu's own hub IS the orb, reacting, and a
    second smaller one above it says there are two of him. */
 function miniWant() {
-  return !menuOn && (gallery.on || (form3d && formWant) || photo.t > 0.5) ? 1 : 0;
+  return !menuOn && (pages.on || gallery.on || (form3d && formWant) || photo.t > 0.5) ? 1 : 0;
 }
 function shadeAt(size) {
   let j = ((size - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
@@ -3884,6 +4202,9 @@ function faceGlyph() {
    of a firework, they want the explosion, so those hand off to a shell. */
 const TRIGGERS = {
   hologram:{seq:true}, holo:{holo:true}, projection:{seq:true},
+  /* "menu" still works and still means this -- it is what everyone says -- but
+     what it opens is the site now, not six satellites on spokes. */
+  menu:{pages:true}, pages:{pages:true}, site:{pages:true}, home_page:{pages:true},
   colin:{figure:"colin_dance"}, dance:{figure:"colin_dance"},
   dancing:{figure:"colin_dance"}, figure:{figure:true}, character:{figure:true},
   images:{gallery:true}, gallery:{gallery:true}, pictures:{gallery:true},
@@ -3944,6 +4265,16 @@ const TRIGGERS = {
    Edit this list and the menu changes. Six because six fits round a circle at a
    readable size; the geometry is built from MENU.length, so it will take more,
    it will just get tighter. */
+/* RETIRED. Nothing reaches this any more -- `menu` in TRIGGERS and on the
+   brain's show tool both open the site now. Six labelled satellites on spokes
+   was a diagram of a menu rather than a place, and next to a wall of real
+   photographs it was plainly the part that had not been designed yet.
+
+   Kept, not deleted, because the satellite drawing is the nicest piece of
+   formation code in here -- every node is a small orb with its own ring, core
+   and gap -- and it will be worth something again the moment there is a reason
+   for a hub with things hanging off it. `setFormation({ menu: true, hub: true })`
+   still builds it. */
 const MENU = [
   { label: "head",      act: { model: "test_head" } },
   { label: "knot",      act: { model: "knot" } },
@@ -4030,6 +4361,7 @@ function goHome(why) {
      formation -- updateFigure owns the ending and clears it when it is done. */
   if (rig.on && !rig.out) { figStop(); if (why) caption(null, why); stirred(); return true; }
   gallery.on = false; gallery.shots = []; gallery.drag = null; clearPhoto();
+  pagesClose();
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
   formWant = 0; formUntil = 0; solidWant = 0;
@@ -4415,6 +4747,13 @@ function heardSentence(heard) {
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
+  /* With the site on screen, its own page names outrank the brain. "About" is a
+     preposition most of the time and a page exactly when there is a card
+     labelled ABOUT in front of you. */
+  if (pages.on && !pages.open && brief) {
+    const kp = pageSaid(flat);
+    if (kp >= 0) { pageOpen(kp); caption(heard, ""); return "page"; }
+  }
   if (formWant && (menuOn || form3d)) { caption(heard, ""); return "owned"; }
   if (echoMode === 1) { caption(heard, ""); return "echo"; }   // no brain, no wait
   ask(heard);
@@ -4456,7 +4795,7 @@ function feedWords(finalText, interimText) {
        see how long the sentence is; a word cannot. */
     if (trig && trig.home) continue;
     if (trig && (trig.solid || trig.model || trig.image || trig.holo || trig.seq ||
-                 trig.gallery || trig.figure)) {
+                 trig.gallery || trig.figure || trig.pages)) {
       setFormation(trig, 10); localTook = 1; continue;
     }
     /* Pictures, only if asked for. TRIGGERS is full of ordinary words -- think,
@@ -4483,11 +4822,17 @@ function setFormation(spec, seconds) {
   if (spec && spec.home) return goHome("");
   const owned = (form3d || menuOn) && formWant;
   if (owned && !(spec && (spec.points || spec.solid || spec.model || spec.holo ||
-                          spec.seq || spec.gallery || spec.figure))) return false;
+                          spec.seq || spec.gallery || spec.figure || spec.pages))) return false;
 
   // one entry point, so /show and the brain's show tool reach all of it
   if (spec && spec.show) return fireShow(spec.show);
   if (spec && spec.shell) return fireShell(spec.shell);
+  if (spec && spec.pages) { showPages(); return true; }
+  /* The menu, as it was, is retired -- see MENU below. Anything still asking
+     for one gets the site instead, which is what a menu was trying to be.
+     `{ menu: true, hub: true }` still builds the satellites, for whenever
+     there is a reason for a hub with things hanging off it again. */
+  if (spec && spec.menu && !spec.hub) { showPages(); return true; }
   if (spec && spec.gallery) { showGallery(0); return true; }
   if (spec && spec.figure) { showFigure(spec.figure === true ? "" : spec.figure); return true; }
   if (spec && spec.seq) { showSequence(spec.seq === true ? "" : spec.seq); return true; }
@@ -4664,6 +5009,7 @@ const onMove = (e) => {
   const t = e.touches ? e.touches[0] : e; mx = t.clientX; my = t.clientY;
   stirred();
   if (menuOn) menuHit = menuNear(mx, my);
+  if (pages.on && !pages.open) pages.hit = pageHit(mx, my);
 };
 /* Down highlights, up picks -- so a thumb can slide between them and land
    somewhere deliberate, rather than firing whatever it touched first. */
@@ -4674,6 +5020,13 @@ const onPick = (e) => {
      is the thing a thumb goes to -- and until it existed the only way out of a
      knot was to say so out loud. */
   if (miniHit(t.clientX, t.clientY)) { e.preventDefault(); goHome(""); return; }
+  if (pages.on) {
+    // an open page closes back to the grid; the grid opens what you touched
+    if (pages.open) { e.preventDefault(); pages.open = 0; pages.i = -1; pages.at = performance.now() - 900; return; }
+    const kp = pageHit(t.clientX, t.clientY);
+    if (kp >= 0) { e.preventDefault(); pageOpen(kp); }
+    return;
+  }
   if (menuOn) {
     const k = menuNear(t.clientX, t.clientY);
     if (k >= 0) { e.preventDefault(); menuPick(k); }
@@ -5817,6 +6170,7 @@ function loop() {
     }
   }
 
+  drawPages();
   drawGallery(dt);
   drawMini(now, k);
 

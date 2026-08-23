@@ -1063,7 +1063,77 @@ already standing near its new slot.
 
 ---
 
-## Menu
+## Pages
+
+The menu is retired. Six labelled satellites on spokes was a *diagram* of a menu
+rather than a place, and next to a wall of real photographs it was plainly the
+part that had not been designed yet.
+
+What replaces it is the site itself: six cards, two columns, and **the left
+column arrives from the left and the right column from the right** — literally,
+which is the difference between this and the picture grid, where whole rows fold
+in alternately. With two columns, "the left ones" and "the right ones" are a real
+thing on the screen.
+
+| page | what it is |
+|---|---|
+| `images` | the photograph gallery, which already exists |
+| `characters` | Colin, rigged and dancing, which already exists |
+| `motion` | not built |
+| `design` | not built |
+| `code` | not built |
+| `about` | a text page |
+
+A page is a `kind` and whatever that kind needs, and adding one is a line in the
+`PAGES` array. `gallery` and `figure` point at features that already exist;
+`text` and `soon` draw themselves.
+
+**The cards draw little scenes** out of the same primitives the rest of the
+program is made of — dots, a line, an arc, the green and the violet. Not
+screenshots: there are no pages to screenshot yet, and a grey rectangle saying
+*coming soon* is worse than nothing. The one page whose content already exists
+shows four of the real photographs, because it can.
+
+Two of them had to be redrawn after looking at them. The characters card sampled
+a width function down a silhouette and got a cloud with a ring floating above it
+— a figure needs its parts stated: shoulders, a taper, two legs, and a head that
+is *filled* rather than outlined. And motion was horizontal bars, which read as
+`code` two cards away; two cards that look alike is worse than one card that is
+dull. It is a strip of film with the sprockets creeping now.
+
+Tap a card and it grows into the page. Say its name and the same thing happens —
+while the grid is up, its own page names outrank the brain, because *about* is a
+preposition most of the time and a page exactly when there is a card labelled
+ABOUT in front of you.
+
+The satellite code is **kept, not deleted**. It is the nicest piece of formation
+code in here — every node is a small orb with its own ring, core and gap — and it
+will be worth something again the moment there is a reason for a hub with things
+hanging off it. `setFormation({ menu: true, hub: true })` still builds it.
+
+### Hello
+
+The microphone button used to be a red circle with a microphone in it: the
+browser's idea of what this is rather than ours, a warning colour on a screen
+that has no warning colours anywhere else, for the one thing you are meant to
+press. It says **talk to glorb** now, in the same violet and green as everything
+else.
+
+And pressing it is the first moment there is a voice to speak with and a
+microphone to hear the answer — which makes it the only moment worth spending an
+introduction on. Two beats: a greeting, and then, once the greeting has finished
+playing, what to do about it. An assistant that says hello and then waits is a
+thing you have to guess at.
+
+The greeting is time-aware, because "good evening" at eight in the morning is
+worse than no greeting at all, and it is the cheapest possible way to say that
+something is actually paying attention. `remark` already knows how long its own
+line takes — from the audio, or from the estimate when there is no voice — so the
+follow-up lands when the first one stops rather than on a guess.
+
+---
+
+## Menu (retired)
 
 Say **`menu`**. The orb stays as a cluster in the middle, six satellites come
 out on arms, and each one is a thing you can ask for — touch it, or say its

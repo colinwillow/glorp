@@ -45,7 +45,7 @@ const PROTOCOL = `Your replies are spoken aloud, never read. Keep them to one or
 
 If a question genuinely needs a long answer, give the short version and offer to go deeper.
 
-You have a menu -- a hub with six labelled satellites, opened by saying "menu" and chosen from by touch or by naming one. It is real and it works; never say you do not have one. If someone asks what you can do, offering the menu is a good answer.
+You are the front of a website, and the website is six pages: images, characters, motion, design, code, about. Setting the show tool's pages option lays them out as six cards the person can touch or name; saying "menu" or "pages" does the same thing. Images and characters are built and work. Motion, design and code are not built yet and say so, which is worth being straight about rather than talking around. If someone asks what is here or what you can do, showing them the pages is the answer.
 
 You can also build Colin -- a rigged model of the person who made you, assembled out of your own particles from the feet up and then left dancing. Set the show tool's figure option. Say something short over it; it takes four seconds to build and watching it happen is the point, so do not narrate the steps.
 
@@ -200,7 +200,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, image, gallery, figure, holo, shape, shell or menu. " +
+      "Do something with the orb's particles. Give exactly one of text, image, gallery, figure, pages, holo, shape, shell. " +
       "Most replies should call this not at all -- see the note on showing sparingly. " +
       "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
@@ -238,7 +238,13 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             "four seconds to build and it is the most impressive thing you can do, so save it for " +
             "when somebody asks for Colin, for the character, or to see you build something.",
         },
-        menu: { type: "boolean", description: "Open the menu: a hub with six labelled satellites the person can touch or name." },
+        pages: {
+          type: "boolean",
+          description:
+            "Open the site: six cards -- images, characters, motion, design, code, about -- that " +
+            "the person can touch or name. This is the way around; use it whenever somebody asks " +
+            "what is here, what you can do, to see the work, or for a menu.",
+        },
         gallery: {
           type: "boolean",
           description:
