@@ -118,16 +118,20 @@
      has no warning colours anywhere else in it, for the one thing you are meant
      to press. It says what it does now, and it is the same violet and green as
      everything else. */
+  /* No words. It was a red circle with a microphone in it, which is the
+     browser's idea of what this is; then it was a pill reading TALK TO GLORB,
+     which is a caption on a button that did not need one -- and it introduced
+     him by name before he had introduced himself. A microphone in the palette
+     says press this, and everything else he says out loud. */
   #mic{position:fixed;left:50%;transform:translateX(-50%);
     bottom:calc(74px + env(safe-area-inset-bottom));
-    height:46px;padding:0 20px 0 16px;gap:10px;border-radius:23px;
+    width:58px;height:58px;padding:0;border-radius:50%;
     border:1px solid #6B2FB5;background:rgba(24,10,38,.82);
     display:flex;align-items:center;justify-content:center;
-    font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#C8F49A;
     cursor:pointer;-webkit-tap-highlight-color:transparent;
     box-shadow:0 0 0 0 rgba(139,47,214,.5);animation:micPulse 2.8s ease-out infinite}
   #mic:active{background:rgba(46,18,72,.94)}
-  #mic svg{width:17px;height:17px;fill:#B6E08A;flex:none}
+  #mic svg{width:24px;height:24px;fill:#B6E08A;flex:none}
   #mic.off{display:none}
   @keyframes micPulse{
     0%{box-shadow:0 0 0 0 rgba(139,47,214,.45)}
@@ -158,7 +162,7 @@
   <button id="tuneBtn">tune</button>
 </div>
 <div id="err"></div>
-<button id="mic" aria-label="talk to Glorb"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg><span>talk to glorb</span></button>
+<button id="mic" aria-label="talk"><svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg></button>
 <div id="cap"></div>
 <div id="fig"></div>
 <div id="panel"></div>
@@ -2027,8 +2031,18 @@ const gallery = {
 /* Where the little one sits. Everything else at the top of the screen has to
    clear it, which is why GRID.top moved down: a gallery whose first row runs
    under the orb is two things fighting for one strip of screen. */
-const MINI_TOP = 84;
-const GRID = { cols: 3, gap: 10, edge: 12, top: 126, bot: 74 };
+/* His band. Everything at the top of the screen clears it -- which it has to,
+   because he swells with the room and a fixed 22px radius is not what is
+   actually on the screen when somebody talks. Orb, perch and the loudest swell
+   fit between about 60 and 135; content starts below that. */
+const MINI_TOP = 96;
+/* How much of the bottom is spoken for. The talk button is a primary control
+   sitting in the middle of the bottom edge, and it is only there until somebody
+   presses it -- so the grids give it room while it exists and take the room
+   back afterwards, rather than permanently reserving a strip for a button that
+   is usually gone. */
+function uiBottom() { return micBig && micBig.classList.contains("off") ? 78 : 150; }
+const GRID = { cols: 3, gap: 10, edge: 12, top: 168 };
 
 function tileRect(k) {
   const cw = (W - GRID.edge * 2 - GRID.gap * (GRID.cols - 1)) / GRID.cols;
@@ -2036,7 +2050,7 @@ function tileRect(k) {
   /* Centred when it is shorter than the space it has. Six square tiles in three
      columns cannot fill a phone however they are arranged, and top-aligning
      them leaves a void underneath that reads as a loading failure. */
-  const view = H - GRID.top - GRID.bot;
+  const view = H - GRID.top - uiBottom();
   const tall = gridHeight(gallery.shots.length);
   const top = GRID.top + (tall < view ? (view - tall) / 2 : 0);
   return { x: GRID.edge + col * (cw + GRID.gap),
@@ -2047,7 +2061,7 @@ function gridHeight(n) {
   return Math.ceil(n / GRID.cols) * (cw + GRID.gap) - GRID.gap;
 }
 function scrollMax() {
-  return Math.max(0, gridHeight(gallery.shots.length) - (H - GRID.top - GRID.bot));
+  return Math.max(0, gridHeight(gallery.shots.length) - (H - GRID.top - uiBottom()));
 }
 
 /* Cover, not contain. A grid of pictures with different aspects and letterboxes
@@ -2161,13 +2175,13 @@ const PAGES = [
             "colinwillowtree@gmail.com"] }
 ];
 
-const PG = { cols: 2, gap: 12, edge: 16, top: 122, bot: 92 };
+const PG = { cols: 2, gap: 12, edge: 16, top: 168 };
 const pages = { on: 0, at: 0, i: -1, open: 0, openAt: 0, from: null, hit: -1, shots: [] };
 
 function pageRect(k) {
   const cw = (W - PG.edge * 2 - PG.gap * (PG.cols - 1)) / PG.cols;
   const rows = Math.ceil(PAGES.length / PG.cols);
-  const view = H - PG.top - PG.bot;
+  const view = H - PG.top - uiBottom();
   const ch = Math.min(cw * 1.12, (view - PG.gap * (rows - 1)) / rows);
   const tall = ch * rows + PG.gap * (rows - 1);
   const top = PG.top + Math.max(0, (view - tall) / 2);
@@ -2180,13 +2194,20 @@ function pageRect(k) {
    screenshots: there are no pages to screenshot yet, and a grey rectangle
    saying "coming soon" is worse than nothing. The one page that HAS its
    content already shows it, because it can. */
-function cardArt(pg, x, y, w, h, t) {
-  const cx2 = x + w / 2, cy2 = y + h * 0.42, s = Math.min(w, h);
+function cardArt(pg, x, y0, w, h0, t) {
+  /* Everything below draws inside an art BOX rather than inside the card, and
+     the box is the card minus the strip the label sits in. Sized off the width
+     alone, the pictures on the images card ran straight through the word IMAGES
+     the moment the cards got shorter -- which they do whenever the talk button
+     is on screen, so it depended on whether the microphone had been enabled. */
+  const LAB = 46;
+  const y = y0 + 8, h = Math.max(20, h0 - LAB);
+  const cx2 = x + w / 2, cy2 = y + h * 0.46, s = Math.min(w * 0.92, h);
   ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.beginPath(); ctx.rect(x, y0, w, h0); ctx.clip();
   if (pg.kind === "gallery" && pages.shots.length) {
     // the real pictures, four of them, because this page already exists
-    const g = Math.min(4, pages.shots.length), cwv = w * 0.34, gp = w * 0.045;
+    const g = Math.min(4, pages.shots.length), cwv = s * 0.42, gp = s * 0.05;
     for (let i = 0; i < g; i++) {
       const px2 = cx2 + ((i % 2) - 1) * (cwv + gp) + gp / 2;
       const py2 = cy2 + (((i / 2) | 0) - 1) * (cwv + gp) + gp / 2;
@@ -2357,7 +2378,7 @@ function drawPages() {
     const a = pages.from;
     // clear of the little one, which floats at MINI_TOP and was being cut in
     // half by the top edge of the panel
-    const b2 = { x: W * 0.06, y: PG.top - 6, w: W * 0.88, h: H - PG.top - PG.bot + 40 };
+    const b2 = { x: W * 0.06, y: PG.top - 6, w: W * 0.88, h: H - PG.top - uiBottom() + 40 };
     const L = (p1, p2) => p1 + (p2 - p1) * e;
     const r = { x: L(a.x, b2.x), y: L(a.y, b2.y), w: L(a.w, b2.w), h: L(a.h, b2.h) };
     ctx.save();
@@ -2404,7 +2425,7 @@ function drawPages() {
    sizes. A cross-fade would say they are two different pictures. */
 function fullRect(k) {
   const sh = gallery.shots[k].img;
-  const availW = W * 0.94, availH = H - GRID.top - GRID.bot;
+  const availW = W * 0.94, availH = H - GRID.top - uiBottom();
   const sc = Math.min(availW / sh.width, availH / sh.height);
   const w = sh.width * sc, h = sh.height * sc;
   return { x: cx - w / 2, y: cy - h / 2, w, h };
@@ -2569,7 +2590,58 @@ const SOLIDS = {
    And it is the way home. Tapping it leaves whatever is up, so the answer to
    "nothing makes it go away" is a thing you can see and put your thumb on. */
 const MINI_N = 130, MINI_SHELL = 92;
-const mini = { t: 0, x: 0, y: 0, r: 0 };
+const mini = { t: 0, x: 0, y: 0, r: 0, ax: 0, ay: 0, set: 0 };
+
+/* Somewhere to sit.
+
+   A small orb floating loose over a page has nothing to do with the page: it
+   drifts across the readouts, it lands on the top of a card, it collides with
+   whatever the border line is doing. So he gets a perch -- a small disc he rests
+   on, which belongs to the page rather than to him, and which MOVES. Where it
+   goes is a property of what is on screen, so putting him somewhere else for a
+   given page is one line in miniSpot.
+
+   The disc is a flat ellipse with a rim of marks turning around it. That is the
+   whole 3D of it: an ellipse alone is an oval, and an ellipse with something
+   travelling around its edge is a disc seen at an angle. */
+function miniSpot() {
+  /* An open page owns the top of the screen -- its title is up there -- so he
+     steps down out of it rather than hovering over the heading. */
+  if (pages.on && pages.open) return [W / 2, H - 205];
+  return [W / 2, MINI_TOP];
+}
+function drawPerch(x, y, R, e, t) {
+  const rx = R * 1.95, ry = R * 0.46, cy2 = y + R * 1.12;
+  ctx.save();
+  ctx.globalAlpha = e;
+  // the edge of the disc, just under its face, which is what gives it thickness
+  ctx.fillStyle = "rgba(28,12,44,0.92)";
+  ctx.beginPath(); ctx.ellipse(x, cy2 + ry * 0.42, rx, ry, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = "rgba(14,16,12,0.96)";
+  ctx.beginPath(); ctx.ellipse(x, cy2, rx, ry, 0, 0, TAU); ctx.fill();
+  ctx.lineWidth = 1; ctx.strokeStyle = "#5B2799"; ctx.stroke();
+  /* Marks around the rim, turning. Brighter on the near half, because that is
+     the half that would be facing you -- and it is the only cue in here saying
+     the ellipse is a circle lying down. */
+  for (let i = 0; i < 20; i++) {
+    const a = (i / 20) * TAU + t * 0.30;
+    const s2 = Math.sin(a);
+    ctx.globalAlpha = e * (0.18 + 0.72 * (0.5 + 0.5 * s2));
+    ctx.fillStyle = s2 > 0 ? "#8FE05A" : "#7B3FC4";
+    ctx.beginPath();
+    ctx.arc(x + Math.cos(a) * rx * 0.84, cy2 + s2 * ry * 0.84, 1.4, 0, TAU);
+    ctx.fill();
+  }
+  // and where he touches it
+  ctx.globalAlpha = e;
+  const g = ctx.createRadialGradient(x, cy2, 0, x, cy2, rx * 0.8);
+  g.addColorStop(0, "rgba(139,47,214,0.40)");
+  g.addColorStop(1, "rgba(139,47,214,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.ellipse(x, cy2, rx * 0.8, ry * 1.0, 0, 0, TAU); ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
 /* Not while the menu is up: the menu's own hub IS the orb, reacting, and a
    second smaller one above it says there are two of him. */
 function miniWant() {
@@ -2585,8 +2657,16 @@ function drawMini(now, k) {
   if (mini.t < 0.006) return;
   const e = mini.t < 1 ? 1 - Math.pow(1 - mini.t, 3) : 1;
   const R = Math.min(W, H) * 0.052 * (0.4 + 0.6 * e);
-  mini.x = W / 2; mini.y = MINI_TOP; mini.r = R;
+  /* Eased toward the perch rather than placed at it, so a page that wants him
+     somewhere else gets him walking there instead of cutting. Snapped on the
+     first frame, or he flies in from the top-left corner the first time. */
+  const sp = miniSpot();
+  if (!mini.set) { mini.ax = sp[0]; mini.ay = sp[1]; mini.set = 1; }
+  mini.ax += (sp[0] - mini.ax) * 0.075;
+  mini.ay += (sp[1] - mini.ay) * 0.075;
+  mini.x = mini.ax; mini.y = mini.ay; mini.r = R;
   const X = mini.x, Y = mini.y;
+  drawPerch(X, Y, R, e, now / 1000);
   /* A shell and a core, with a dark gap between them -- because that is what
      the big one actually IS. The first attempt drew a ring of dots shaded by
      distance and got a bright green hoop with purple flecks in it, which is
@@ -4048,6 +4128,7 @@ function figStop() {
   return true;
 }
 function figClear() {
+  mini.set = 0;
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
   gl.ready = 0;
   figChooser(0);
@@ -4362,6 +4443,7 @@ function goHome(why) {
   if (rig.on && !rig.out) { figStop(); if (why) caption(null, why); stirred(); return true; }
   gallery.on = false; gallery.shots = []; gallery.drag = null; clearPhoto();
   pagesClose();
+  mini.set = 0;
   clearTimeout(answerAt);
   menuOn = false; menuHit = -1;
   formWant = 0; formUntil = 0; solidWant = 0;
@@ -5101,17 +5183,37 @@ const onUp = (e) => {
   // down is back to the grid, not out of the gallery: out is home
   else if (dy > far && dy > Math.abs(dx)) { e.preventDefault(); galleryClose(); }
 };
-["pointerdown", "touchstart"].forEach(ev =>
-  canvas.addEventListener(ev, onDown, { passive: true }));
-["pointermove", "touchmove"].forEach(ev =>
-  canvas.addEventListener(ev, onDrag, { passive: true }));
-["pointerup", "touchend"].forEach(ev => canvas.addEventListener(ev, onUp));
+/* Pointer events OR touch events, never both.
+
+   A tap on a phone fires pointerup AND touchend, in that order, for one finger
+   coming off the glass. Every handler here was registered on both, so every
+   handler ran twice per tap -- which is invisible for anything idempotent and
+   fatal for anything that toggles. Tapping a page card opened it on pointerup
+   and then closed it again on touchend, 
+   and it looked exactly like the tap
+   "selecting" the card without opening it.
+
+   It survived the rigs because Playwright's mouse.click sends pointer events
+   and no touch events at all, so the second call never happened. A phone was
+   the only place this existed.
+
+   Pointer events cover mouse, touch and pen, and every browser this runs in has
+   had them for years; the touch list is the fallback for anything that somehow
+   does not. */
+const EV_DOWN = window.PointerEvent ? ["pointerdown"] : ["touchstart"];
+const EV_MOVE = window.PointerEvent ? ["pointermove"] : ["touchmove"];
+const EV_UP   = window.PointerEvent ? ["pointerup"] : ["touchend"];
+const EV_OUT  = window.PointerEvent ? ["pointerup", "pointercancel", "pointerleave"]
+                                    : ["touchend", "touchcancel"];
+EV_DOWN.forEach(ev => canvas.addEventListener(ev, onDown, { passive: true }));
+EV_MOVE.forEach(ev => canvas.addEventListener(ev, onDrag, { passive: true }));
+EV_UP.forEach(ev => canvas.addEventListener(ev, onUp));
 
 const onLeave = () => { mx = my = -9999; };
-["pointermove","touchstart","touchmove"].forEach(ev =>
+EV_MOVE.concat(EV_DOWN).forEach(ev =>
   canvas.addEventListener(ev, onMove, { passive:true }));
-["pointerup", "touchend"].forEach(ev => canvas.addEventListener(ev, onPick));
-["pointerup","pointercancel","pointerleave","touchend","touchcancel"].forEach(ev =>
+EV_UP.forEach(ev => canvas.addEventListener(ev, onPick));
+EV_OUT.forEach(ev =>
   canvas.addEventListener(ev, onLeave));
 
 let frame = 0, lastT = performance.now(), acc = 0, frames = 0;

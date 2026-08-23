@@ -884,6 +884,63 @@ they are still the outermost thing.
 
 ---
 
+### One tap, two handlers
+
+A page card highlighted when you touched it and then did not open. It opened
+fine under the test rig, every time.
+
+A tap on a phone fires `pointerup` **and** `touchend`, in that order, for one
+finger coming off the glass. Every handler here was registered on both, so every
+handler ran twice per tap — invisible for anything idempotent, fatal for anything
+that toggles. The card opened on `pointerup` and closed again on `touchend`,
+about a millisecond later, which looks exactly like a tap that selects without
+opening.
+
+It survived the rigs because Playwright's `mouse.click` sends pointer events and
+no touch events at all, so the second call never happened. **A phone was the only
+place this existed.** There is a rig with `hasTouch: true` and
+`touchscreen.tap()` now, and it reproduces it immediately.
+
+Pointer events cover mouse, touch and pen; the touch list is a fallback for
+anything that somehow lacks them. One or the other, never both.
+
+---
+
+### Somewhere to sit
+
+A small orb floating loose over a page has nothing to do with the page. It
+drifts across the readouts, it lands on the top of a card, it collides with
+whatever the border line is doing — and it looked like an element that had been
+put down rather than placed.
+
+So he gets a **perch**: a small disc he rests on, which belongs to the page
+rather than to him, and which moves. Where it goes is a property of what is on
+screen, so putting him somewhere else for a given page is one line in
+`miniSpot`. Currently: the top of the screen everywhere, and the **bottom** when
+a page is open, because an open page's title is at the top and a floating orb
+over a heading is exactly the collision being complained about. He eases between
+them rather than cutting.
+
+The disc is a flat ellipse with a rim of marks turning around it. That is the
+whole 3D of it: an ellipse alone is an oval, and an ellipse with something
+travelling around its edge is a circle lying down. The near half of the marks is
+brighter, which is the only other cue it needs.
+
+Everything at the top of the screen clears his band now — and the band is sized
+for the loudest swell, not for the resting radius, because he grows with the
+room.
+
+`uiBottom()` is the same idea at the other end. The talk button is a primary
+control sitting in the middle of the bottom edge and it is only there until
+somebody presses it, so the grids give it room while it exists and take the room
+back afterwards rather than permanently reserving a strip for a button that is
+usually gone. The images card's photographs ran straight through the word IMAGES
+until the card art was measured against the space it actually had — which
+depended on whether the microphone had been enabled, and so appeared and
+disappeared for no visible reason.
+
+---
+
 ### The little one
 
 Something else owns the field -- a hologram, a knot, a gallery of photographs --
@@ -1113,11 +1170,14 @@ hanging off it. `setFormation({ menu: true, hub: true })` still builds it.
 
 ### Hello
 
-The microphone button used to be a red circle with a microphone in it: the
-browser's idea of what this is rather than ours, a warning colour on a screen
-that has no warning colours anywhere else, for the one thing you are meant to
-press. It says **talk to glorb** now, in the same violet and green as everything
-else.
+The microphone button was a red circle with a microphone in it: the browser's
+idea of what this is rather than ours, a warning colour on a screen that has no
+warning colours anywhere else, for the one thing you are meant to press.
+
+Then it was a pill reading TALK TO GLORB, which is a caption on a button that
+did not need one — and it introduced him by name before he had introduced
+himself. It is a microphone in the palette now, and nothing else. Everything it
+would have said, he says out loud a second later.
 
 And pressing it is the first moment there is a voice to speak with and a
 microphone to hear the answer — which makes it the only moment worth spending an
