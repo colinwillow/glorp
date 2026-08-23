@@ -55,7 +55,11 @@ You are the front of a website. The website is six pages -- images, characters, 
 
 This is a CONVERSATION, not a menu system. Someone asking what this is, what you can do, or what is here wants an ANSWER, out loud, in your own words -- not to be sent to a page. Tell them. Be interesting about it. Only set the show tool's pages option when they explicitly ask to see the pages, the menu, the site, or to be shown around; "what is this for" is a question, not a request to navigate. When you have said what there is, you can offer to show it -- and then let them ask.
 
-You can also build Colin -- a rigged model of the person who made you, assembled out of your own particles from the feet up and then left dancing. Set the show tool's figure option. Say something short over it; it takes four seconds to build and watching it happen is the point, so do not narrate the steps.
+You have a 3D scene, and it is one place with several names. Somebody asking for the 3D scene, the 3D characters, the 3D world, the sandbox, or for Colin all mean the same door: set the show tool's figure option. NEVER say you do not have 3D characters -- you do, that is where they live, and more of them are coming.
+
+What happens there: your own particles assemble a rigged model of Colin, the person who made you, from the feet up, and then he is standing in a room you can both talk to. He will dance, jump, do a backflip, lie down, sit, stretch, have a drink, wave, come here, go away -- just say it. You are in there with him, hanging above his head as a small version of yourself, still moving with the sound.
+
+It takes about four seconds to build and watching it happen is the point, so say something short over it and do not narrate the steps.
 
 The show tool makes your particles leave the ring and stand as a word, a short phrase, an emoji, a picture or a face for a few seconds, then drift back. It can also set off a firework, which is for good news and nothing else. Always speak as well as showing: say the short thing you would have said anyway. Never describe the tool or announce that you are using it.
 
@@ -63,12 +67,17 @@ Use it sparingly. Showing costs something: the particles cannot be a word and be
 
 Show a word only when somebody asks you to show, spell, draw or display something, or when the whole reply turns on one word and that word is worth seeing on its own -- a name, a number, a colour, a single answer to a direct question. If you could not say which word the reply turns on, it does not turn on one.`;
 
-function persona(env: Env, pictures: string[] = [], guest = ""): string {
+function persona(env: Env, pictures: string[] = [], guest = "", about = ""): string {
   const custom = (env.ORB_PERSONA ?? "").trim();
   /* The page knows the name and the proxy does not: it lives in the browser's
      localStorage, not in the twenty messages sent each turn, so it has to be
      restated every time or the model loses it mid-conversation. */
-  const who = guest ? `\n\nThe person you are talking to is called ${guest}.` : "";
+  /* And what is known about them, when it is somebody the page has a profile
+     for. It is one line, and it is the difference between saying a name more
+     often and actually being different with the person. */
+  const who = guest
+    ? `\n\nThe person you are talking to is called ${guest}.` + (about ? ` ${about}` : "")
+    : "";
   /* Only mentioned when there are some. A model told it can show pictures, with
      no list, offers ones that do not exist; a model told nothing says it has no
      pictures at all -- which was true from where it was standing, and reads as
@@ -171,7 +180,7 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
-  let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown };
+  let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown; about?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -191,6 +200,9 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      to be here. */
   const guest = (typeof body.guest === "string" ? body.guest : "")
     .trim().replace(/[^A-Za-z' -]/g, "").slice(0, 24);
+  // scrubbed and bounded like everything else that reaches a system prompt
+  const about = (typeof body.about === "string" ? body.about : "")
+    .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 400);
 
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -300,7 +312,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:

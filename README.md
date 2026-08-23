@@ -2655,72 +2655,76 @@ Two knock-ons the new framing forced:
   allowance was set when he filled under a quarter of the frame; at 41% the same
   number walks him out of the top of the picture.
 
-### The source machine
+### The small one is the field now
 
-The room has a centrepiece: **the perch, at room scale**, standing in the middle
-of the floor behind him — and **the orb lives over it**.
+The machine is gone — plinth, then turntable, both out. What stands above Colin's
+head is **him**: about 400 of the ring's own particles, split off and held as a
+ball at the top of the frame.
 
-The first version was a plinth with three prongs and it read as a flying saucer.
-The app already owned the right shape: `drawPerch`, the turntable the mini orb
-sits on. It draws an ellipse in 2D because that is what a flat disc looks like at
-a shallow angle, so in three it is simply the disc and the perspective comes
-free — dark face, purple rim, twenty marks turning at `t * 0.30`, a glow where he
-touches it, and a shaft of light standing up to the ball so the two read as one
-object rather than two things at the same address.
+That matters more than it sounds, and it is the fix for "the little version
+doesn't turn into the big version". There were two small orbs in this program:
 
-The one detail worth porting carefully is the marks' colour. In 2D it keys off
-`sin(angle)` — near green, far purple — which IS the depth in a hand-drawn
-ellipse, and it is the only cue saying the ellipse is a circle lying down. In
-three the depth is real, so it is read per frame from **camera** space, not world
-z: the stage is pitched by a third of a radian, so world z is not what is nearer
-the lens. Checked by projecting all twenty marks, 19 land on the correct side and
-the 20th sits exactly on the seam.
+- `drawMini` — a **drawing**. Forty procedural dots on a perch, painted in 2D.
+- the split-off arc — **the field**, real particles that can fly back into the
+  big orb because they never stopped being part of it.
 
-(The rig that checked it was wrong first, and in an instructive way: it compared
-each mark to the portal's *origin*, which is on the floor, while the marks ride
-0.09 above it — so the boundary marks were misclassified by construction.
-Comparing against the ring's own centre is the same measurement done in the same
-place.)
+They cannot become each other, so they must never be the same object in two
+places. Gated on `world.on` alone, the drawing faded in over the top of the real
+one every time the room let go, rose to its perch and vanished — which is exactly
+what "it moves up and then disappears" looks like. It is now off for the whole
+life of a figure (`if (rig.on) return 0`), and in the room the only small orb is
+the one made of particles.
 
- When the particles assemble him, the last arc of
-the ring (`PORTAL.share`, 9% — 278 of 3,085) does not trace him at all: once the
-dot wipe passes his waist it lifts off and becomes a small breathing ball of
-dust hovering over the machine. That is where Glorb is while the room is up.
-The ball swirls (spherical fibonacci with time in the azimuth, radius jittered
-by `hash` so it is dust, not a beach ball), swells with `drive.scale`, and the
-machine's emissive parts pulse with the same number — the room's VU meter.
+**Reactive, not breathing.** It swelled by 45% of the level and nothing else,
+which at conversational volume is a ball moving very slightly. The big orb gets
+its character from three separate responses, so this one now takes all three off
+the same `drive` struct — scale, the ellipse/jaw deformation that reads as a
+mouth, and turbulence that roughens the surface so it boils rather than inflates.
+Target width across the audio range:
 
-The ball is shaded by its **own surface**, not by depth. The whole ball sits at
-one depth, so depth shading painted it a single flat purple; keyed off each
-dot's normal against the view instead, the dot facing the camera is the core
-and the limb is the rim — a miniature of the home orb, green heart in a purple
-shell, which is exactly who is supposed to be standing over that machine.
+| level | width | height |
+|---|---|---|
+| silent | 114 | 120 |
+| 0.35 | 153 | 196 |
+| 0.9 | 240 | 326 |
 
-Three rules keep the split from leaking:
+111% swing, against roughly nothing before. The first attempt used the big orb's
+full coefficients and reached **568 × 1050 px on an 860-tall screen**, which is
+not a small orb; they are scaled to about half.
 
-- **GPU only.** The 2D fallback fills triangles between particle slots, and a
-  triangle with one corner hijacked to the orb is a shard stretched across the
-  room. The GL path never fills from the slots; without GL, `rig.orbFrom = 1e9`
-  and nobody splits off.
-- **The edge pass skips the arc** — an edge into a hijacked slot is a line from
-  his shoulder to a ball across the room.
-- **The rim-fade exemption.** Figure particles hand over to the texture and
-  disappear; the orb's dots are not announcing anything — they ARE the thing —
-  so they stay, and breathe.
+Two things that cost a measurement each:
 
-The deconstruct needs nothing extra: the orb slots carry `figH = 0.52`, so when
-the wipes run back down the ball dissolves into the ring at the same moment the
-arc originally left it. (`gstray` now shows 63 particles "far from centre" in
-the room — all 63 are the ball, standing where it is supposed to stand; body
-strays are still zero.)
+- **`drive.turb` does not exist** — the field is `drive.turbulence`. The
+  undefined made every orb coordinate `NaN`, and NaN positions do not throw,
+  do not warn, and draw nothing. The particles simply were not there.
+- **A target off the top of the screen does not put the orb off the top.** The
+  field walls its particles into an ellipse inside the viewport, so an
+  unreachable target piles all 400 against the wall in a flat smear that does
+  not move when you change the number — which is why `ORB.y` looked like it was
+  being ignored. Measured against the screen instead of reasoned about: 1.9
+  puts the target at y −220, 1.35 at 27, 1.15 at 110.
 
-The built machine is a placeholder with a socket: drop a real model in at
-`models/portal.glb` and it replaces the primitives at load, scaled to the same
-height and re-centred on its own bounding box, no code change. Two walking
-rules keep it solid: a tap inside its footprint slides to its rim — and a tap
-dead on its centre has no direction to slide along (scaling a zero-length
-offset moves nothing, which is how the first version let him walk into the
-plinth), so that case takes the direction from where HE stands.
+### One place, several names
+
+"Can I see the 3D characters" got "I don't have 3D characters". It does — that is
+where they live, and more are coming. The scene answers to all of it now: 3D
+scene, 3D characters, 3D world, 3D sandbox, sandbox, Colin.
+
+The catch is that `heardSentence` replaces every non-letter with a space before
+anything looks at it, so **"3d scene" arrives as "d scene"** and "3D" cannot be
+found in it at all. The scene test runs against a second normalisation that keeps
+digits. Nine phrasings route; five decoys — "what is 3D", "I like 3D movies",
+"tell me about three dimensional space" — still go to the brain, because the
+existing deliberate-request gate already requires a short phrase or an actual
+verb.
+
+### Profiles
+
+`PROFILES` is keyed by lower-case first name. `is` is one line of fact that
+travels to the brain with the name, so it can be *different* with somebody it
+knows rather than just saying their name more often; `greet` replaces the generic
+lines for that person. Adding people is copying the shape — nothing else needs
+touching.
 
 ### Nobody baked the root motion
 

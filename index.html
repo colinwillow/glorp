@@ -675,7 +675,9 @@ async function ask(text) {
          localStorage, not in the twenty messages the proxy is sent -- so it has
          to travel with every turn or the model forgets it mid-conversation. */
       body: JSON.stringify({ messages: brain.history, images: imageList || [],
-                             guest: guest.name || "" })
+                             guest: guest.name || "",
+                             // one line of who they are, when it is somebody it knows
+                             about: (profileOf(guest.name) || {}).is || "" })
     });
     if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
 
@@ -1020,6 +1022,23 @@ async function remark(lines) {
    move there is for making a service feel like an audience with somebody, and
    it costs one question. */
 const guest = { name: stored("orbGuest") || "", asked: 0 };
+/* Who it already knows. Keyed by lower-case first name; `is` is one line of
+   fact that travels to the brain with the name, so the model can be different
+   with somebody it knows rather than just saying their name more often. `greet`
+   replaces the generic MET lines for that person -- {} is the name.
+
+   Add people by copying the shape. Nothing else needs touching. */
+const PROFILES = {
+  colin: {
+    is: "Colin made you -- the field, the voice, the room, all of it. He is the " +
+        "one person here who knows how you work, so do not explain yourself to " +
+        "him; talk shop, be direct, and say when something is his own fault.",
+    greet: ["Oh -- it's you. Right, what are we breaking today?",
+            "{}. Of course it is. Go on then.",
+            "Ah, the management. What are we doing, {}?"]
+  }
+};
+const profileOf = (n) => PROFILES[String(n || "").toLowerCase()] || null;
 function setGuest(n) {
   guest.name = n;
   try { localStorage.setItem("orbGuest", n); } catch (e) {}
@@ -3160,7 +3179,17 @@ function miniWant() {
      there while the field is busy being something else -- but in the sandbox
      the field IS him, standing on a floor, and a second small one hovering over
      his head is the same "two of him" this function was written to avoid. */
-  if (world.on > 0.25) return 0;
+  /* Not during a figure at all, not just once the room has settled.
+
+     The little one drawn here is exactly that -- a drawing, forty procedural
+     dots, not the field. In the room the small orb IS the field: a few hundred
+     real particles split off the ring, which is why they can fly back into the
+     big one when you leave. The two cannot become each other, so they must
+     never be the same object in two places: gated on world.on alone, the
+     drawing faded in over the top of the real one every time the room let go,
+     rose to its perch and vanished, which is exactly what "it doesn't turn into
+     the little version" looks like. */
+  if (rig.on) return 0;
   return !menuOn && !dock.on && ((form3d && formWant) || photo.t > 0.5) ? 1 : 0;
 }
 function shadeAt(size) {
@@ -4444,32 +4473,6 @@ function glLoad(buf, src, R) {
       // under root, not stage: the pool is his, and it walks when he does
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
-      if (!gl.portal) {
-        gl.portal = makePortal(T);
-        gl.stage.add(gl.portal);
-        /* One look for a custom machine. 404 means the built one stays --
-           which is the normal case until a real model lands in models/. */
-        fetch("models/portal.glb")
-          .then((r) => (r.ok ? r.arrayBuffer() : null))
-          .then((pb) => {
-            if (!pb) return;
-            new window.GLTFLoader().parse(pb, "", (pg) => {
-              const box = new T.Box3().setFromObject(pg.scene);
-              const sz = new T.Vector3(); box.getSize(sz);
-              const k2 = 1 / (sz.y || 1);
-              pg.scene.scale.setScalar(k2);
-              pg.scene.position.set(-(box.min.x + box.max.x) / 2 * k2,
-                                    -box.min.y * k2,
-                                    -(box.min.z + box.max.z) / 2 * k2);
-              gl.stage.remove(gl.portal);
-              gl.portal = new T.Group();
-              gl.portal.add(pg.scene);
-              gl.stage.add(gl.portal);
-              console.log("orb portal: custom model loaded");
-            }, () => {});
-          })
-          .catch(() => {});
-      }
       let mesh = null;
       g.scene.traverse((o) => { if (o.isSkinnedMesh && !mesh) mesh = o; });
       if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
@@ -4606,45 +4609,6 @@ function glFrame(K, FOC) {
     gl.ground.position.y = f.lo[1] - f.c[1];
     gl.ground.scale.setScalar(figH1() * WALK.floor);
     gl.ground.material.opacity = world.on * 0.9 * gFade;
-  }
-  if (gl.portal) {
-    const H1p = figH1();
-    /* Not at 0.01. The room's arrival is what pulls the camera back, and until
-       it has, everything is still framed as a portrait -- so a disc sitting
-       three heights behind him projects straight through his waist and he
-       stands in a hoop for the whole build. It waits until the pull-back is
-       properly under way and then grows in over the rest of it. */
-    const pOn = Math.max(0, Math.min(1, (world.on - 0.35) / 0.5));
-    gl.portal.visible = pOn > 0.01;
-    gl.portal.position.set(PORTAL.x * H1p, f.lo[1] - f.c[1], PORTAL.z * H1p);
-    // arrives by growing out of the floor with the room, not by popping
-    gl.portal.scale.setScalar(H1p * PORTAL.r * (0.55 + 0.45 * pOn));
-    const u = gl.portal.userData;
-    if (u && u.dots) {
-      const tp = performance.now() / 1000;
-      u.marks.rotation.y = tp * 0.30;             // drawPerch's t * 0.30
-      /* Near green, far purple -- the cue that says the circle is lying down.
-         drawPerch keys it off the sine of the mark's angle because in 2D that
-         IS its depth; here the depth is real, so read it off the world matrix
-         and the cue survives the camera moving. */
-      u.marks.updateMatrixWorld(true);
-      /* CAMERA depth, not world z. The stage is pitched by a third of a radian,
-         so world z is not what is nearer the lens: measured, that put four of
-         the twenty marks on the wrong side of the split. */
-      const mi = gl.cam.matrixWorldInverse.elements;
-      const camZ = (e) => e[12]*mi[2] + e[13]*mi[6] + e[14]*mi[10] + mi[14];
-      const pz = camZ(gl.portal.matrixWorld.elements);
-      const span = gl.portal.scale.x * 0.84;
-      for (const d of u.dots) {
-        // > 0 means nearer the lens than the disc's own centre
-        const near = 0.5 + 0.5 * Math.max(-1, Math.min(1, (camZ(d.matrixWorld.elements) - pz) / span));
-        d.material.color.setHex(near > 0.5 ? 0x8FE05A : 0x7B3FC4);
-        d.material.opacity = 0.18 + 0.72 * near;
-      }
-      u.glow.material.opacity = 0.65 + drive.scale * 1.5;   // the room's VU meter
-      u.beam.material.opacity = 0.07 + drive.scale * 0.22;
-      u.beam.scale.y = 1 + drive.scale * 0.20;
-    }
   }
   if (gl.pool) {
     gl.pool.visible = world.on > 0.01;
@@ -4833,16 +4797,27 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    standing behind him projects as a ring around his head -- which is a halo,
    not a machine. Off to one side it is unambiguously a separate object standing
    next to him, and it survives the camera going flat. */
-/* hover is in units of r, not in heights: the shaft of light is part of the
-   disc and scales with it, so a hover fixed in heights leaves the ball floating
-   above the top of its own beam the moment the disc is resized. */
-const PORTAL = { x: -0.86, z: -2.7, r: 0.62, hover: 1.12, orbR: 0.19, share: 0.10 };
-/* back: how much the world shrinks, which IS the camera retreating -- it sits
-   FOC pixels away, so a smaller world is a further one measured in the world's
-   own units. down: radians of downward tilt added to the resting 0.05.
-   The floor is the thing in tension with both: a lattice seen from near eye
-   level is not a surface, it is a stack of horizontal rules, so anything that
-   flattens the camera has to take the floor with it -- see groundFade. */
+/* The small one, in the room. Not a machine any more -- the plinth and then
+   the turntable both came out; what is left is him, a ball of the field's own
+   particles hanging above and behind Colin at the top of the frame.
+
+   y is in his heights above the floor, so it tracks the figure rather than the
+   viewport. share is the fraction of the ring that splits off to be it: about
+   340 particles out of 3,085, which is few enough not to matter and enough to
+   read as the same object as the big one.
+
+   react is what makes it his: the big orb swells, deforms and roughens with the
+   voice, and until now this one only breathed a little. See the block in the
+   formation writer. */
+/* y is in his heights above the floor, and it is the one number here that has
+   to be checked against the screen rather than reasoned about. The field walls
+   its particles into an ellipse a bit inside the viewport, so a target placed
+   off the top does not put the orb off the top -- it piles every particle
+   against the wall in a flat smear that does not move when you change the
+   number, which is exactly what 1.92 was doing. Measured: 1.9 puts the target
+   at screen y -220, 1.35 at 27, 1.15 at 110. */
+const ORB = { y: 1.32, r: 0.175, share: 0.13, react: 1.15 };
+
 const ROOM = { back: -0.04, down: 0.09 };
 // his height in the working space, measured at load
 function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
@@ -4879,70 +4854,6 @@ function makePool(T) {
    frame code can scale it in his heights and a dropped-in GLB inherits the
    same footing. The rings hang off spinner groups because a torus spinning
    about its own axis is invisible -- the tilt is what makes the motion show. */
-function makePortal(T) {
-  const g = new T.Group();
-  /* The turntable the little one perches on, at room scale. drawPerch draws it
-     in 2D as an ellipse because that is a flat disc seen at a shallow angle --
-     so in three it is simply the disc, and the perspective comes free.
-
-     The first version of this was a plinth with three prongs and it read as a
-     flying saucer. This is the shape the app already owns. */
-  const face = new T.Mesh(new T.CylinderGeometry(1, 1, 0.055, 64),
-    new T.MeshStandardMaterial({ color: 0x0E100C, metalness: 0.35, roughness: 0.65 }));
-  face.position.y = 0.055; g.add(face);
-  // the edge under the face, which is the thing that gives it thickness
-  const edge = new T.Mesh(new T.CylinderGeometry(0.985, 0.93, 0.075, 64),
-    new T.MeshStandardMaterial({ color: 0x1C0C2C, metalness: 0.5, roughness: 0.5 }));
-  edge.position.y = 0.012; g.add(edge);
-  // the purple line drawPerch strokes around the rim
-  const rim = new T.Mesh(new T.TorusGeometry(1.0, 0.008, 8, 96),
-    new T.MeshBasicMaterial({ color: 0x8B4FE0, fog: false }));
-  rim.rotation.x = Math.PI / 2; rim.position.y = 0.083; g.add(rim);
-
-  /* Twenty marks around the rim, turning. In 2D their colour keys off which
-     half of the ellipse they are on -- near green, far purple -- which is the
-     only cue saying the ellipse is a circle lying down. Here they are real
-     points in a real circle, so the same cue is applied per frame from each
-     one's actual depth rather than from its angle. */
-  const marks = new T.Group();
-  marks.position.y = 0.09;
-  const dots = [];
-  for (let i = 0; i < 20; i++) {
-    const a = (i / 20) * TAU;
-    const d = new T.Mesh(new T.SphereGeometry(0.022, 10, 10),
-      new T.MeshBasicMaterial({ color: 0x7B3FC4, transparent: true, fog: false }));
-    d.position.set(Math.cos(a) * 0.84, 0, Math.sin(a) * 0.84);
-    marks.add(d); dots.push(d);
-  }
-  g.add(marks);
-
-  // and the glow on the face, where he touches it
-  const c = document.createElement("canvas");
-  c.width = c.height = 128;
-  const x = c.getContext("2d");
-  const rg = x.createRadialGradient(64, 64, 0, 64, 64, 64);
-  rg.addColorStop(0.0, "rgba(139,47,214,0.62)");
-  rg.addColorStop(0.55, "rgba(139,47,214,0.18)");
-  rg.addColorStop(1.0, "rgba(139,47,214,0)");
-  x.fillStyle = rg; x.fillRect(0, 0, 128, 128);
-  const glow = new T.Mesh(new T.PlaneGeometry(1.75, 1.75),
-    new T.MeshBasicMaterial({ map: new T.CanvasTexture(c), transparent: true,
-                              depthWrite: false, blending: T.AdditiveBlending, fog: false }));
-  glow.rotation.x = -Math.PI / 2; glow.position.y = 0.092;
-  g.add(glow);
-
-  // a shaft of light standing where the orb sits, so the disc and the ball read
-  // as one object rather than two things at the same address
-  const beam = new T.Mesh(new T.CylinderGeometry(0.055, 0.30, 1.0, 20, 1, true),
-    new T.MeshBasicMaterial({ color: 0x8B4FE0, transparent: true, opacity: 0.10,
-                              side: T.DoubleSide, depthWrite: false,
-                              blending: T.AdditiveBlending, fog: false }));
-  beam.position.y = 0.6; g.add(beam);
-
-  g.userData = { marks, dots, glow, beam };
-  return g;
-}
-
 function makeGround(T) {
   /* A lattice, not a plane. The same language as the hologram's floor and the
      one thing that makes a horizontal surface read as a surface at all when
@@ -5080,23 +4991,6 @@ function walkTo(x, z, run) {
      framing he fills over 40% standing still, so the same allowance walks him
      straight out of the top of the picture. */
   world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 0.9, z));
-  // and not through the machine: a target inside its footprint slides to its
-  // rim. A tap dead on the centre has no direction to slide along -- scaling a
-  // zero-length offset moves nothing, which is how the first version let him
-  // walk straight into the plinth -- so that case takes the direction from
-  // where HE is: he walks up to the near side of it and stops.
-  const pdx = world.tx - PORTAL.x * H1, pdz = world.tz - PORTAL.z * H1;
-  const pd = Math.hypot(pdx, pdz), pr = H1 * 0.75;
-  if (pd < pr) {
-    let ux = pdx / pd, uz = pdz / pd;
-    if (!(pd > 0.001)) {
-      const ddx = world.x - PORTAL.x * H1, ddz = world.z - PORTAL.z * H1;
-      const dd = Math.hypot(ddx, ddz) || 1;
-      ux = ddx / dd; uz = ddz / dd;
-    }
-    world.tx = PORTAL.x * H1 + ux * pr;
-    world.tz = PORTAL.z * H1 + uz * pr;
-  }
   world.walking = 1; world.run = run ? 1 : 0; world.turning = 0;
   world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
   playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
@@ -5629,13 +5523,36 @@ function updateFigure(dt, now) {
      corner hijacked to the orb is a shard stretched across the room. (The GL
      path never fills from the slots, and the edge pass skips the arc.) */
   // and the ball waits for its machine, or it hovers over an empty floor
-  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * PORTAL.share) : 0;
+  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * ORB.share) : 0;
   rig.orbFrom = orbN ? n - orbN : 1e9;
   if (orbN) {
     const H1o = figH1();
-    const rr = PORTAL.orbR * H1o * (1 + drive.scale * 0.45);
-    const ocx = PORTAL.x * H1o, ocz = PORTAL.z * H1o;
-    const ocy = (f.lo[1] - f.c[1]) + PORTAL.hover * PORTAL.r * H1o;
+    /* The same three things the big orb does, at a tenth the particle count.
+
+       It used to swell by 45% of the level and nothing else, which at a
+       conversational volume is a ball breathing very slightly -- technically
+       reactive, and not worth looking at. The big one gets its character from
+       three separate responses, so this one gets all three:
+
+         scale       the whole ball grows with loudness
+         ellipse     it stretches wide or tall with the spectral centroid,
+                     which is the deformation that reads as a mouth
+         turbulence  the surface roughens, so it boils rather than inflating
+
+       All three are read straight off `drive`, the same struct the field reads,
+       so the two of them are always doing the same thing at the same moment --
+       which is the point of him being made of the same particles. */
+    const lvl = Math.min(1, drive.scale * ORB.react);
+    // 0.75, not the big orb's full swell: measured at 1.35 the target reached
+    // 568 x 1050 px on an 860-tall screen, which is not a small orb any more
+    const rr = ORB.r * H1o * (1 + lvl * 0.75);
+    const gt2 = Math.min(1, drive.scale * 3);
+    const ecc2 = (drive.hue - 0.5) * 2 * cfg.ellipse * gt2;
+    const oex = Math.max(0.45, 1 + ecc2 * 0.30);
+    const oey = Math.max(0.45, 1 - ecc2 * 0.30) * (1 + drive.scale * cfg.jaw * 0.45);
+    const rough = drive.turbulence * ORB.r * H1o * 0.55;
+    const ocx = 0, ocz = 0;
+    const ocy = (f.lo[1] - f.c[1]) + ORB.y * H1o;
     const t2 = performance.now() / 1000;
     for (let i = rig.orbFrom; i < n; i++) {
       const j = i - rig.orbFrom;
@@ -5646,10 +5563,16 @@ function updateFigure(dt, now) {
       const rj = Math.sqrt(Math.max(0, 1 - gy * gy));
       const th = j * 2.39996323 + t2 * 0.55;
       const nx2 = Math.cos(th) * rj, nz2 = Math.sin(th) * rj;
-      const rk = rr * (0.55 + 0.45 * hash(i + 7));
-      formX[i] = (ocx + nx2 * rk) * f.k;
-      formY[i] = -(ocy + gy * rk) * f.k;
-      formZ[i] = -(ocz + nz2 * rk) * f.k;
+      /* Biased to the surface. Spread evenly through the volume, a few hundred
+         dots in a ball read as confetti -- the big orb is a SHELL with a bright
+         core, and that is what makes it an object rather than a scatter. */
+      const rk = rr * (0.78 + 0.22 * hash(i + 7));
+      // per-particle, on its own slow cycle, so the surface boils instead of
+      // every dot jumping the same way at once
+      const bump = rough * Math.sin(t2 * 5.5 + hash(i + 23) * TAU);
+      formX[i] = (ocx + nx2 * (rk + bump) * oex) * f.k;
+      formY[i] = -(ocy + gy * (rk + bump) * oey) * f.k;
+      formZ[i] = -(ocz + nz2 * (rk + bump) * oex) * f.k;
       fnx[i] = nx2; fny[i] = -gy; fnz[i] = -nz2;
       // splits off once the dot wipe passes his waist, mid-build
       figH[i] = 0.52;
@@ -6303,6 +6226,15 @@ function heardSentence(heard) {
      with a verb in it. "pictures" goes. "show me the pictures" goes. "I like
      your pictures" does not, and neither does "what is this for". */
   const ASKED_FOR = /\b(show|shows?|open|opens?|go|take|bring|pull|see|view|display|let'?s|lets|give)\b/;
+  /* The 3D scene has more names than "Colin". It is the sandbox, the 3D scene,
+     the 3D characters, the 3D world -- and it is where every character will
+     live, so anything asking for that place goes to the same door.
+
+     Matched against a SECOND normalisation that keeps digits: `flat` has had
+     every non-letter replaced with a space, so "3d scene" arrives as "d scene"
+     and "3D" is unfindable in it. */
+  const flatN = heard.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const SCENE_SAID = /\b(3\s?d|three\s?d|threed)\b|\bsandbox\b/;
   const deliberate = flat.split(" ").length <= 2 || ASKED_FOR.test(flat);
   /* An introduction outranks everything, because in the beat after being asked
      "who are you" a bare name is exactly the kind of one-word utterance the
@@ -6314,8 +6246,10 @@ function heardSentence(heard) {
       const first = !guest.name;
       setGuest(nm); guest.asked = 0;
       caption(heard, "");
-      remark(first ? fill(MET, nm)
-                   : ["{} it is, then.".replace("{}", nm), "Noted — {}.".replace("{}", nm)]);
+      const prof = profileOf(nm);
+      remark(prof ? fill(prof.greet, nm)
+                  : first ? fill(MET, nm)
+                  : ["{} it is, then.".replace("{}", nm), "Noted — {}.".replace("{}", nm)]);
       return "name";
     }
     // asked once, not twice: whatever that was, it was not a name, and pressing
@@ -6340,6 +6274,11 @@ function heardSentence(heard) {
   if (world.on > 0.5 && sandboxSay(flat)) { caption(heard, ""); return "act"; }
   /* The places, now that the whole sentence is here to judge. */
   if (deliberate) {
+    // the 3D place, before the single-word table -- "show me the 3d characters"
+    // has no single word in it that means this
+    if (SCENE_SAID.test(flatN) && !rig.on) {
+      setFormation({ figure: "colin_slim" }, 10); caption(heard, ""); return "place";
+    }
     for (const w of flat.split(" ")) {
       const tg = TRIGGERS[w];
       if (tg && (tg.solid || tg.model || tg.image || tg.holo || tg.seq ||
