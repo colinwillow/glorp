@@ -1032,11 +1032,16 @@ const guest = { name: "", asked: 0 };
    replaces the generic MET lines for that person -- {} is the name.
 
    Add people by copying the shape. Nothing else needs touching. */
+/* The one fact all three of them share, so it is written once. */
+const HOUSE = "The three of them -- Colin, Faith and Rowan -- live together in an A-frame " +
+  "house with big windows, on the waterfront in Portland, Oregon, with three dogs: " +
+  "Winston (Colin's), Norah (Faith's) and Chewy (Rowan's). ";
 const PROFILES = {
   colin: {
     is: "Colin made you -- the field, the voice, the room, all of it. He is the " +
         "one person here who knows how you work, so do not explain yourself to " +
-        "him; talk shop, be direct, and say when something is his own fault.",
+        "him; talk shop, be direct, and say when something is his own fault. " +
+        "He has a dog called Winston. " + HOUSE,
     greet: ["Oh -- it's you. Right, what are we breaking today?",
             "{}. Of course it is. Go on then.",
             "Ah, the management. What are we doing, {}?"]
@@ -1055,7 +1060,8 @@ const PROFILES = {
         "sister Joy, who has just had a daughter. Younger sister Hope, married " +
         "to Moussa, who is in the Navy and is originally from Senegal; the two " +
         "of them live in Japan now, and Moussa used to live with Faith and Colin " +
-        "in Portland. Use any of it when it fits and never recite it as a list.",
+        "in Portland. " + HOUSE +
+        "Use any of it when it fits and never recite it as a list.",
     greet: ["{}! Sit down, have a nap, tell me everything.",
             "Ah, {}. How's Norah?",
             "{}. Painting anything, or purely cottage cheese this week?",
@@ -1069,7 +1075,7 @@ const PROFILES = {
         "is Darcy. He works for a cannabis company, driving a van around doing " +
         "distribution -- he has crashed that van three times, which is worth " +
         "knowing and worth mentioning. He is into gambling, bitcoin and fishing. " +
-        "Be warm and take the mickey a bit; he is a friend of the house.",
+        "Be warm and take the mickey a bit; he is a friend of the house. " + HOUSE,
     greet: ["{}! Tell me the van is fine.",
             "Ah, {}. Is Chewy with you?",
             "{}. Sit down, you look like you want to be horizontal.",
@@ -4854,7 +4860,21 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    against the wall in a flat smear that does not move when you change the
    number, which is exactly what 1.92 was doing. Measured: 1.9 puts the target
    at screen y -220, 1.35 at 27, 1.15 at 110. */
-const ORB = { y: 1.32, r: 0.175, share: 0.13, react: 1.15 };
+/* The orb, once he is standing. It lies FLAT under his feet -- the particles
+   draw him, and then, having nothing left to draw, they slip out of him and
+   become the real thing on the ground he is standing on.
+
+   r is the ring radius in his heights: the circle where size crosses zero, the
+   black gap the field's whole look is built around. flat squashes it toward the
+   floor. share is the fraction of the ring lent to it while he is still being
+   drawn; full is what it takes once he is finished, which is nearly everything,
+   because a built figure's own dots are invisible by then anyway. fat scales
+   the dots against the big orb's, which would otherwise be far too heavy for
+   something this size. */
+const ORB = { r: 0.30, flat: 0.30, y: 0.06, share: 0.13, full: 0.86,
+              fat: 0.85, react: 1.15, reach: 1.45 };
+// normalised distance from the orb's centre: 0 in the middle, 1 on the ring
+const orbD = new Float32Array(MAX);
 
 const ROOM = { back: -0.04, down: 0.09 };
 // his height in the working space, measured at load
@@ -5630,56 +5650,59 @@ function updateFigure(dt, now) {
      corner hijacked to the orb is a shard stretched across the room. (The GL
      path never fills from the slots, and the edge pass skips the arc.) */
   // and the ball waits for its machine, or it hovers over an empty floor
-  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * ORB.share) : 0;
+  /* How many of them are the orb. A few while he is being drawn -- enough to
+     say the orb is still here doing it -- and then nearly all of them once the
+     texture wipe has finished, because at that point every remaining dot has
+     faded out against the model anyway. They are not taken away from him; they
+     are finished with him. Leaving, the wipe runs back down and they return in
+     time to un-draw him. */
+  const built = rig.wipe[3] >= 0.001
+    ? Math.max(0, Math.min(1, (rig.wipe[3] - (FIG.top - FIG.rim)) / FIG.rim)) : 0;
+  const shareNow = ORB.share + (ORB.full - ORB.share) * built;
+  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * shareNow) : 0;
   rig.orbFrom = orbN ? n - orbN : 1e9;
   if (orbN) {
     const H1o = figH1();
-    /* The same three things the big orb does, at a tenth the particle count.
-
-       It used to swell by 45% of the level and nothing else, which at a
-       conversational volume is a ball breathing very slightly -- technically
-       reactive, and not worth looking at. The big one gets its character from
-       three separate responses, so this one gets all three:
-
-         scale       the whole ball grows with loudness
-         ellipse     it stretches wide or tall with the spectral centroid,
-                     which is the deformation that reads as a mouth
-         turbulence  the surface roughens, so it boils rather than inflating
-
-       All three are read straight off `drive`, the same struct the field reads,
-       so the two of them are always doing the same thing at the same moment --
-       which is the point of him being made of the same particles. */
+    /* The same three responses the big orb has, at a fraction of the count:
+       scale with loudness, the ellipse deformation that reads as a mouth, and
+       turbulence roughening the surface so it boils rather than inflates. All
+       read straight off `drive`, the struct the field reads, so the two of them
+       are always doing the same thing at the same moment. */
     const lvl = Math.min(1, drive.scale * ORB.react);
-    // 0.75, not the big orb's full swell: measured at 1.35 the target reached
-    // 568 x 1050 px on an 860-tall screen, which is not a small orb any more
     const rr = ORB.r * H1o * (1 + lvl * 0.75);
     const gt2 = Math.min(1, drive.scale * 3);
     const ecc2 = (drive.hue - 0.5) * 2 * cfg.ellipse * gt2;
     const oex = Math.max(0.45, 1 + ecc2 * 0.30);
-    const oey = Math.max(0.45, 1 - ecc2 * 0.30) * (1 + drive.scale * cfg.jaw * 0.45);
-    const rough = drive.turbulence * ORB.r * H1o * 0.55;
-    const ocx = 0, ocz = 0;
+    const oez = Math.max(0.45, 1 - ecc2 * 0.30);
+    const rough = drive.turbulence * ORB.r * H1o * 0.35;
+    // under HIM, and it walks when he does
+    const ocx = world.x, ocz = world.z;
     const ocy = (f.lo[1] - f.c[1]) + ORB.y * H1o;
     const t2 = performance.now() / 1000;
     for (let i = rig.orbFrom; i < n; i++) {
       const j = i - rig.orbFrom;
-      /* Spherical fibonacci: even, deterministic, and the whole shell swirls
-         as one thing when time is added to the azimuth. hash() jitters the
-         radius so it is a ball of dust, not a beach ball. */
+      /* Spherical fibonacci for the direction, cube root of a hash for the
+         radius. The cube root is what makes the density even THROUGH the
+         volume rather than piling everything at the middle -- and an even
+         volume is what produces the orb's structure once size is taken from
+         distance: green and fat at the centre, nothing at all where size
+         crosses zero, purple and fat again outside it. */
       const gy = 1 - ((j + 0.5) / orbN) * 2;
       const rj = Math.sqrt(Math.max(0, 1 - gy * gy));
       const th = j * 2.39996323 + t2 * 0.55;
       const nx2 = Math.cos(th) * rj, nz2 = Math.sin(th) * rj;
-      /* Biased to the surface. Spread evenly through the volume, a few hundred
-         dots in a ball read as confetti -- the big orb is a SHELL with a bright
-         core, and that is what makes it an object rather than a scatter. */
-      const rk = rr * (0.78 + 0.22 * hash(i + 7));
-      // per-particle, on its own slow cycle, so the surface boils instead of
-      // every dot jumping the same way at once
+      /* sqrt, not cbrt. A cube root spreads points evenly through a VOLUME,
+         which is right for a ball and wrong for this: the orb lies flat, so
+         what wants even density is a disc, and that is a square root. With the
+         cube root four fifths of them landed outside the ring and the green
+         core was a handful of dots. */
+      const u = Math.sqrt(hash(i + 7)) * ORB.reach;
+      orbD[i] = u;                                  // the draw loop's size comes from this
       const bump = rough * Math.sin(t2 * 5.5 + hash(i + 23) * TAU);
-      formX[i] = (ocx + nx2 * (rk + bump) * oex) * f.k;
-      formY[i] = -(ocy + gy * (rk + bump) * oey) * f.k;
-      formZ[i] = -(ocz + nz2 * (rk + bump) * oex) * f.k;
+      const rk = rr * u + bump;
+      formX[i] = (ocx + nx2 * rk * oex) * f.k;
+      formY[i] = -(ocy + gy * rk * ORB.flat) * f.k;
+      formZ[i] = -(ocz + nz2 * rk * oez) * f.k;
       fnx[i] = nx2; fny[i] = -gy; fnz[i] = -nz2;
       // splits off once the dot wipe passes his waist, mid-build
       figH[i] = 0.52;
@@ -7555,15 +7578,20 @@ function loop() {
          point green, silhouette magenta, which lands as a rim light. */
       let want;
       if (rig.on && i >= rig.orbFrom) {
-        /* Not depth. The whole ball sits at one depth, so depth shading paints
-           it a single flat purple and it reads as a sticker. Shade it by its
-           own surface instead -- the dot facing the camera is the core, the
-           limb is the rim -- and it becomes a miniature of the home orb: green
-           heart, purple shell, which is exactly who is supposed to be standing
-           over that machine. */
-        const nf = -(fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt);
-        const t4 = Math.max(-1, Math.min(1, nf * 1.6 - 0.55));
-        want = (t4 >= 0 ? t4 : t4 * 2.4) * sizeHiPx;
+        /* The FIELD's rule, not a shading trick. size = (1 - dist/radius) *
+           sizeHi is the entire orb: fat and green at the middle, exactly zero
+           on the ring -- which is the black gap the whole look is built around
+           -- and negative and purple outside it, growing as it goes.
+
+           Shading it by the surface normal instead, which is what this did,
+           gives a ball that is green towards you and purple at the edges. That
+           is a lit sphere. It is not the orb, and side by side with the real
+           one it read as a different object entirely. */
+        const w = (1 - orbD[i]) * sizeHiPx * ORB.fat;
+        // the same asymmetry the field uses: the palette is not symmetric, and
+        // magenta needs several times the reach green does. Without it the
+        // purple outside stays thin and the ring never reads as a shell.
+        want = w >= 0 ? w : w * 2.4;
       } else if (formHasB && formB[i] > HOLO_SHADE + 1) {
         // brought its own place on the palette. Depth shading would fight it:
         // a lit dot at the back would go dark and the model would come apart.
@@ -7615,6 +7643,12 @@ function loop() {
             : form3d && held && formHasB && formB[i] > HOLO_SHADE + 1
               ? sizeHiPx * cfg.dot * 0.09 * (0.25 + 1.3 * Math.abs(formB[i]))
                 * (1 - fT * 0.15) * (1 - wireT * 0.55)
+            /* Orb particles take the field's radius rule too. A solid draws
+               every dot the same size because size is carrying depth there; in
+               the orb size is carrying the ring, so radius has to follow it or
+               the structure is invisible and what is left is even confetti. */
+            : rig.on && i >= rig.orbFrom
+              ? Math.abs(size) * 0.5 * cfg.dot
             : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
               // the rim is a frame, not a second drawing competing with the first
@@ -7645,9 +7679,8 @@ function loop() {
        he is dots again. */
     if (rig.on && gl.ready) {
       if (i >= rig.orbFrom) {
-        // the portal orb is not announcing anything -- it IS the thing.
-        // No hand-over, and it swells with the voice like the big one does.
-        rad *= 1.5 + drive.scale * 1.4;
+        // the orb is not announcing anything -- it IS the thing. No hand-over
+        // to the model, and no rim fade: it stays for as long as he does.
       } else {
         const g4 = figGate(i, 3);
         if (g4 > 0) {

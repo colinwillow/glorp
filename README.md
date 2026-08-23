@@ -2701,54 +2701,43 @@ Two knock-ons the new framing forced:
   allowance was set when he filled under a quarter of the frame; at 41% the same
   number walks him out of the top of the picture.
 
-### The small one is the field now
+### The orb is the ground he stands on
 
-The machine is gone — plinth, then turntable, both out. What stands above Colin's
-head is **him**: about 400 of the ring's own particles, split off and held as a
-ball at the top of the frame.
+The machine is gone and so is the ball above his head. The particles draw him,
+and then — having nothing left to draw — they slip out of him and become the
+real orb, lying flat under his feet.
 
-That matters more than it sounds, and it is the fix for "the little version
-doesn't turn into the big version". There were two small orbs in this program:
+**It is nearly all of them.** `share` starts at 13% while he is being built and
+ramps to 86% once the texture wipe finishes, because by that point every
+remaining dot has faded out against the model anyway (see the rim fade). They are
+not taken away from him; they are finished with him. Leaving, the wipe runs back
+down and they return in time to un-draw him — verified, the handover frame still
+moves a particle 1.22 px against 1.15 either side.
 
-- `drawMini` — a **drawing**. Forty procedural dots on a perch, painted in 2D.
-- the split-off arc — **the field**, real particles that can fly back into the
-  big orb because they never stopped being part of it.
+**Why it did not look like the orb.** Side by side with the real one it read as a
+different object, and it was: it took its colour from the surface normal and its
+radius from a constant. That is a lit sphere — green towards you, purple at the
+edges — with evenly sized dots. The real orb is one rule:
 
-They cannot become each other, so they must never be the same object in two
-places. Gated on `world.on` alone, the drawing faded in over the top of the real
-one every time the room let go, rose to its perch and vanished — which is exactly
-what "it moves up and then disappears" looks like. It is now off for the whole
-life of a figure (`if (rig.on) return 0`), and in the room the only small orb is
-the one made of particles.
+```js
+size = (1 - dist / radius) * sizeHi        // and radius follows |size|
+```
 
-**Reactive, not breathing.** It swelled by 45% of the level and nothing else,
-which at conversational volume is a ball moving very slightly. The big orb gets
-its character from three separate responses, so this one now takes all three off
-the same `drive` struct — scale, the ellipse/jaw deformation that reads as a
-mouth, and turbulence that roughens the surface so it boils rather than inflates.
-Target width across the audio range:
+Fat and green at the middle, exactly **zero** on the ring — which is the black
+gap the whole look is built around — and negative and purple outside it, growing
+as it goes. The orb particles use that rule now, off their own centre, and take
+the field's radius formula with it. Two details had to come along or the
+structure stays invisible:
 
-| level | width | height |
-|---|---|---|
-| silent | 114 | 120 |
-| 0.35 | 153 | 196 |
-| 0.9 | 240 | 326 |
+- **The palette asymmetry.** The field stretches the negative half 2.4×, because
+  magenta needs several times the reach green does. Without it the purple outside
+  stays thin and the ring never reads as a shell.
+- **Square root, not cube root.** A cube root spreads points evenly through a
+  *volume*, which is right for a ball and wrong for this — the orb lies flat, so
+  what wants even density is a disc. With the cube root four fifths of them
+  landed outside the ring and the green core was a handful of dots.
 
-111% swing, against roughly nothing before. The first attempt used the big orb's
-full coefficients and reached **568 × 1050 px on an 860-tall screen**, which is
-not a small orb; they are scaled to about half.
-
-Two things that cost a measurement each:
-
-- **`drive.turb` does not exist** — the field is `drive.turbulence`. The
-  undefined made every orb coordinate `NaN`, and NaN positions do not throw,
-  do not warn, and draw nothing. The particles simply were not there.
-- **A target off the top of the screen does not put the orb off the top.** The
-  field walls its particles into an ellipse inside the viewport, so an
-  unreachable target piles all 400 against the wall in a flat smear that does
-  not move when you change the number — which is why `ORB.y` looked like it was
-  being ignored. Measured against the screen instead of reasoned about: 1.9
-  puts the target at y −220, 1.35 at 27, 1.15 at 110.
+It sits under **him**, not under the origin, so it travels when he walks.
 
 ### One place, several names
 
