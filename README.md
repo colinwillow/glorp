@@ -2427,6 +2427,52 @@ The particles are still *there* the whole time — holding the formation, chasin
 the skeleton, ready to be drawn the instant the front comes back down. They are
 just not on screen, which is the difference between a transition and a costume.
 
+### The source machine
+
+The room has a centrepiece now: a freestanding machine — a tiered plinth, three
+prongs leaning in over a glowing throat, two tilted rings precessing above it —
+and **the orb lives over it**. When the particles assemble him, the last arc of
+the ring (`PORTAL.share`, 9% — 278 of 3,085) does not trace him at all: once the
+dot wipe passes his waist it lifts off and becomes a small breathing ball of
+dust hovering over the machine. That is where Glorb is while the room is up.
+The ball swirls (spherical fibonacci with time in the azimuth, radius jittered
+by `hash` so it is dust, not a beach ball), swells with `drive.scale`, and the
+machine's emissive parts pulse with the same number — the room's VU meter.
+
+The ball is shaded by its **own surface**, not by depth. The whole ball sits at
+one depth, so depth shading painted it a single flat purple; keyed off each
+dot's normal against the view instead, the dot facing the camera is the core
+and the limb is the rim — a miniature of the home orb, green heart in a purple
+shell, which is exactly who is supposed to be standing over that machine.
+
+Three rules keep the split from leaking:
+
+- **GPU only.** The 2D fallback fills triangles between particle slots, and a
+  triangle with one corner hijacked to the orb is a shard stretched across the
+  room. The GL path never fills from the slots; without GL, `rig.orbFrom = 1e9`
+  and nobody splits off.
+- **The edge pass skips the arc** — an edge into a hijacked slot is a line from
+  his shoulder to a ball across the room.
+- **The rim-fade exemption.** Figure particles hand over to the texture and
+  disappear; the orb's dots are not announcing anything — they ARE the thing —
+  so they stay, and breathe.
+
+The deconstruct needs nothing extra: the orb slots carry `figH = 0.52`, so when
+the wipes run back down the ball dissolves into the ring at the same moment the
+arc originally left it. (`gstray` now shows 63 particles "far from centre" in
+the room — all 63 are the ball, standing where it is supposed to stand; body
+strays are still zero.)
+
+The built machine is a placeholder with a socket: drop a real model in at
+`models/portal.glb` and it replaces the primitives at load, scaled to the same
+height and re-centred on its own bounding box, no code change. Two walking
+rules keep it solid: a tap inside its footprint slides to its rim — and a tap
+dead on its centre has no direction to slide along (scaling a zero-length
+offset moves nothing, which is how the first version let him walk into the
+plinth), so that case takes the direction from where HE stands. Torus trivia
+that cost a screenshot: a ring spinning about its own axis is invisible — the
+rings hang tilted off spinner groups, so the precession is what shows.
+
 ### One of him
 
 The mini orb on its perch is the way back from anything, and in a hologram or a

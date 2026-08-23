@@ -4303,6 +4303,32 @@ function glLoad(buf, src, R) {
       // under root, not stage: the pool is his, and it walks when he does
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
+      if (!gl.portal) {
+        gl.portal = makePortal(T);
+        gl.stage.add(gl.portal);
+        /* One look for a custom machine. 404 means the built one stays --
+           which is the normal case until a real model lands in models/. */
+        fetch("models/portal.glb")
+          .then((r) => (r.ok ? r.arrayBuffer() : null))
+          .then((pb) => {
+            if (!pb) return;
+            new window.GLTFLoader().parse(pb, "", (pg) => {
+              const box = new T.Box3().setFromObject(pg.scene);
+              const sz = new T.Vector3(); box.getSize(sz);
+              const k2 = 1 / (sz.y || 1);
+              pg.scene.scale.setScalar(k2);
+              pg.scene.position.set(-(box.min.x + box.max.x) / 2 * k2,
+                                    -box.min.y * k2,
+                                    -(box.min.z + box.max.z) / 2 * k2);
+              gl.stage.remove(gl.portal);
+              gl.portal = new T.Group();
+              gl.portal.add(pg.scene);
+              gl.stage.add(gl.portal);
+              console.log("orb portal: custom model loaded");
+            }, () => {});
+          })
+          .catch(() => {});
+      }
       let mesh = null;
       g.scene.traverse((o) => { if (o.isSkinnedMesh && !mesh) mesh = o; });
       if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
@@ -4426,6 +4452,23 @@ function glFrame(K, FOC) {
     gl.ground.scale.setScalar(figH1() * WALK.floor);
     gl.ground.material.opacity = world.on * 0.9;
   }
+  if (gl.portal) {
+    const H1p = figH1();
+    gl.portal.visible = world.on > 0.01;
+    gl.portal.position.set(PORTAL.x * H1p, f.lo[1] - f.c[1], PORTAL.z * H1p);
+    // arrives by growing out of the floor with the room, not by popping
+    gl.portal.scale.setScalar(H1p * PORTAL.r * (0.55 + 0.45 * world.on));
+    const u = gl.portal.userData;
+    if (u && u.spin1) {
+      const tp = performance.now() / 1000;
+      u.spin1.rotation.y = tp * 0.6;
+      u.spin2.rotation.y = -tp * 0.9;
+      u.spin1.position.y = 0.68 + Math.sin(tp * 1.3) * 0.02;
+      u.spin2.position.y = 0.80 + Math.sin(tp * 1.7 + 1) * 0.03;
+      // the machine hears what he hears -- the glow is the room's VU meter
+      for (const m of u.glow) m.emissiveIntensity = 0.9 + drive.scale * 2.8;
+    }
+  }
   if (gl.pool) {
     gl.pool.visible = world.on > 0.01;
     /* Under HIM, not under the root. A clip is free to walk him away from the
@@ -4513,6 +4556,17 @@ const world = {
    ground. Measured with the two line families coloured apart: at 11 not one
    lengthwise line reached the frame; at 8 the whole lattice converges. */
 const WALK = { speed: 0.78, runSpeed: 1.75, turn: 5.0, arrive: 0.10, floor: 8 };
+/* The source machine. It stands in the middle of the room, he is built in
+   front of it, and the orb lives above it: when the particles assemble him,
+   the last arc of the ring does not trace him at all -- it lifts off and
+   becomes a small breathing ball of dots hovering over the machine. That is
+   where Glorb is while the room is up.
+
+   x/z/r/hover/orbR are in HIS heights, like everything else in the room.
+   share is the fraction of the ring that splits off. Drop a custom model in
+   at models/portal.glb and it replaces the built one, scaled to the same
+   height, no code change. */
+const PORTAL = { x: -0.95, z: -1.8, r: 0.85, hover: 1.02, orbR: 0.20, share: 0.09 };
 // his height in the working space, measured at load
 function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
 
@@ -4540,6 +4594,50 @@ function makePool(T) {
   m.rotation.x = -Math.PI / 2;      // flat on the floor
   m.frustumCulled = false;
   return m;
+}
+
+/* The machine itself, built from primitives so it exists today: a tiered
+   plinth, three prongs leaning in over a glowing throat, and two tilted rings
+   precessing above it. Normalised to height 1 with its base at y = 0, so the
+   frame code can scale it in his heights and a dropped-in GLB inherits the
+   same footing. The rings hang off spinner groups because a torus spinning
+   about its own axis is invisible -- the tilt is what makes the motion show. */
+function makePortal(T) {
+  const g = new T.Group();
+  const dark  = new T.MeshStandardMaterial({ color: 0x17131f, metalness: 0.75, roughness: 0.35 });
+  const dark2 = new T.MeshStandardMaterial({ color: 0x241b33, metalness: 0.6,  roughness: 0.45 });
+  const glowP = new T.MeshStandardMaterial({ color: 0x2a1140, emissive: 0xA855F7,
+                                             emissiveIntensity: 1.1, metalness: 0.2, roughness: 0.5 });
+  const glowG = new T.MeshStandardMaterial({ color: 0x0d2012, emissive: 0x6BE05A,
+                                             emissiveIntensity: 1.3, metalness: 0.2, roughness: 0.5 });
+  const base = new T.Mesh(new T.CylinderGeometry(0.34, 0.46, 0.12, 10), dark);
+  base.position.y = 0.06; g.add(base);
+  const neck = new T.Mesh(new T.CylinderGeometry(0.20, 0.31, 0.10, 10), dark2);
+  neck.position.y = 0.17; g.add(neck);
+  const throat = new T.Mesh(new T.CylinderGeometry(0.10, 0.14, 0.06, 10), glowG);
+  throat.position.y = 0.25; g.add(throat);
+  for (let k = 0; k < 3; k++) {
+    const a = (k / 3) * TAU;
+    const arm = new T.Group();
+    const rod = new T.Mesh(new T.CylinderGeometry(0.022, 0.05, 0.52, 6), dark);
+    rod.position.y = 0.26; arm.add(rod);
+    const tip = new T.Mesh(new T.SphereGeometry(0.02, 8, 8), glowP);
+    tip.position.y = 0.54; arm.add(tip);
+    arm.position.set(Math.cos(a) * 0.30, 0.16, Math.sin(a) * 0.30);
+    // tipped in toward the axis, so the three of them cage the space the orb sits in
+    arm.rotation.set(-0.40 * Math.sin(a), 0, 0.40 * Math.cos(a));
+    g.add(arm);
+  }
+  const spin1 = new T.Group(), spin2 = new T.Group();
+  const ring  = new T.Mesh(new T.TorusGeometry(0.22, 0.013, 8, 40), glowP);
+  const ring2 = new T.Mesh(new T.TorusGeometry(0.15, 0.009, 8, 32), glowP.clone());
+  ring.rotation.x = Math.PI / 2 + 0.22;
+  ring2.rotation.x = Math.PI / 2 - 0.30;
+  spin1.add(ring); spin1.position.y = 0.68;
+  spin2.add(ring2); spin2.position.y = 0.80;
+  g.add(spin1); g.add(spin2);
+  g.userData = { spin1, spin2, glow: [glowP, glowG, ring2.material] };
+  return g;
 }
 
 function makeGround(T) {
@@ -4678,6 +4776,23 @@ function walkTo(x, z, run) {
   // (see groundAt) the bottom third of the screen is a real place, and 1.0 put
   // a hard stop in the middle of it that read as him refusing to come closer
   world.tz = Math.max(-H1 * Math.min(4.5, edge), Math.min(H1 * 1.5, z));
+  // and not through the machine: a target inside its footprint slides to its
+  // rim. A tap dead on the centre has no direction to slide along -- scaling a
+  // zero-length offset moves nothing, which is how the first version let him
+  // walk straight into the plinth -- so that case takes the direction from
+  // where HE is: he walks up to the near side of it and stops.
+  const pdx = world.tx - PORTAL.x * H1, pdz = world.tz - PORTAL.z * H1;
+  const pd = Math.hypot(pdx, pdz), pr = H1 * 0.75;
+  if (pd < pr) {
+    let ux = pdx / pd, uz = pdz / pd;
+    if (!(pd > 0.001)) {
+      const ddx = world.x - PORTAL.x * H1, ddz = world.z - PORTAL.z * H1;
+      const dd = Math.hypot(ddx, ddz) || 1;
+      ux = ddx / dd; uz = ddz / dd;
+    }
+    world.tx = PORTAL.x * H1 + ux * pr;
+    world.tz = PORTAL.z * H1 + uz * pr;
+  }
   world.walking = 1; world.run = run ? 1 : 0;
   world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
   playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
@@ -4822,7 +4937,9 @@ function worldReset() {
 const figH = new Float32Array(MAX);
 const rig = {
   on: 0, R: null, src: "", ord: null, t: 0, at: 0, out: 0,
-  wipe: [0, 0, 0, 0], stage: -1, hold: 0, holdName: "", speed: 1
+  wipe: [0, 0, 0, 0], stage: -1, hold: 0, holdName: "", speed: 1,
+  // first particle slot of the portal orb's arc; 1e9 = nobody split off
+  orbFrom: 1e9
 };
 /* Seconds each wipe takes to climb the body, and when each one starts. The
    overlap is the whole effect: at 1.5s in, the feet are a surface, the knees
@@ -5144,6 +5261,37 @@ function updateFigure(dt, now) {
     fnx[i] = nx * cw + nz * sw;
     fny[i] = -N[v + 1];
     fnz[i] = -(-nx * sw + nz * cw);
+  }
+  /* The split. The last arc of the ring does not trace him: it lifts off and
+     becomes the orb, hovering over the source machine. GPU only -- the 2D
+     fallback fills triangles between particle slots, and a triangle with one
+     corner hijacked to the orb is a shard stretched across the room. (The GL
+     path never fills from the slots, and the edge pass skips the arc.) */
+  const orbN = gl.ready ? Math.round(n * PORTAL.share) : 0;
+  rig.orbFrom = orbN ? n - orbN : 1e9;
+  if (orbN) {
+    const H1o = figH1();
+    const rr = PORTAL.orbR * H1o * (1 + drive.scale * 0.45);
+    const ocx = PORTAL.x * H1o, ocz = PORTAL.z * H1o;
+    const ocy = (f.lo[1] - f.c[1]) + PORTAL.hover * H1o;
+    const t2 = performance.now() / 1000;
+    for (let i = rig.orbFrom; i < n; i++) {
+      const j = i - rig.orbFrom;
+      /* Spherical fibonacci: even, deterministic, and the whole shell swirls
+         as one thing when time is added to the azimuth. hash() jitters the
+         radius so it is a ball of dust, not a beach ball. */
+      const gy = 1 - ((j + 0.5) / orbN) * 2;
+      const rj = Math.sqrt(Math.max(0, 1 - gy * gy));
+      const th = j * 2.39996323 + t2 * 0.55;
+      const nx2 = Math.cos(th) * rj, nz2 = Math.sin(th) * rj;
+      const rk = rr * (0.55 + 0.45 * hash(i + 7));
+      formX[i] = (ocx + nx2 * rk) * f.k;
+      formY[i] = -(ocy + gy * rk) * f.k;
+      formZ[i] = -(ocz + nz2 * rk) * f.k;
+      fnx[i] = nx2; fny[i] = -gy; fnz[i] = -nz2;
+      // splits off once the dot wipe passes his waist, mid-build
+      figH[i] = 0.52;
+    }
   }
   // the surface only exists once its own wipe has started climbing
   solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
@@ -6953,7 +7101,17 @@ function loop() {
          whole thing green. Re-centre on the visible range instead -- nearest
          point green, silhouette magenta, which lands as a rim light. */
       let want;
-      if (formHasB && formB[i] > HOLO_SHADE + 1) {
+      if (rig.on && i >= rig.orbFrom) {
+        /* Not depth. The whole ball sits at one depth, so depth shading paints
+           it a single flat purple and it reads as a sticker. Shade it by its
+           own surface instead -- the dot facing the camera is the core, the
+           limb is the rim -- and it becomes a miniature of the home orb: green
+           heart, purple shell, which is exactly who is supposed to be standing
+           over that machine. */
+        const nf = -(fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt);
+        const t4 = Math.max(-1, Math.min(1, nf * 1.6 - 0.55));
+        want = (t4 >= 0 ? t4 : t4 * 2.4) * sizeHiPx;
+      } else if (formHasB && formB[i] > HOLO_SHADE + 1) {
         // brought its own place on the palette. Depth shading would fight it:
         // a lit dot at the back would go dark and the model would come apart.
         want = formB[i] * sizeHiPx;
@@ -7033,14 +7191,20 @@ function loop() {
        rim comes back up out of it, then the surface goes, then the lines, then
        he is dots again. */
     if (rig.on && gl.ready) {
-      const g4 = figGate(i, 3);
-      if (g4 > 0) {
-        const nzv2 = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
-        const edge = 1 - Math.min(1, Math.abs(nzv2) / 0.34);
-        // 1 while the front is still climbing, 0 once it has finished
-        const rimK = 1 - Math.max(0, Math.min(1,
-          (rig.wipe[3] - (FIG.top - FIG.rim)) / FIG.rim));
-        rad *= 1 - g4 * (1 - edge * 0.85 * rimK);
+      if (i >= rig.orbFrom) {
+        // the portal orb is not announcing anything -- it IS the thing.
+        // No hand-over, and it swells with the voice like the big one does.
+        rad *= 1.5 + drive.scale * 1.4;
+      } else {
+        const g4 = figGate(i, 3);
+        if (g4 > 0) {
+          const nzv2 = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
+          const edge = 1 - Math.min(1, Math.abs(nzv2) / 0.34);
+          // 1 while the front is still climbing, 0 once it has finished
+          const rimK = 1 - Math.max(0, Math.min(1,
+            (rig.wipe[3] - (FIG.top - FIG.rim)) / FIG.rim));
+          rad *= 1 - g4 * (1 - edge * 0.85 * rimK);
+        }
       }
     }
     // stars twinkle. Without this a shell is a smooth cloud, which is the one
@@ -7321,6 +7485,9 @@ function loop() {
         const a = formE[e], c = formE[e + 1];
         if (a >= n || c >= n || !visA[a] || !visA[c]) continue;
         if (rig.on) {
+          // the orb's arc holds no mesh vertices any more; an edge into it is
+          // a line from his shoulder to a ball across the room
+          if (a >= rig.orbFrom || c >= rig.orbFrom) continue;
           if (figGate3(a, c, undefined, 1) <= 0) continue;
           /* And nothing the surface has already closed over. A wireframe under
              an opaque fill is 9,310 line segments producing a barely visible
