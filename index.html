@@ -999,7 +999,7 @@ const VIS_OF = {
    syllable you can hear; a consonant is mostly the move into it. */
 const VIS_HOLD = { AI: 2.2, E: 2.0, O: 2.2, U: 2.0, WQ: 1.6, L: 1.2,
                    FV: 1.2, MBP: 1.0, etc: 1.0, rest: 1.6 };
-const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: null };
+const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: null, marked: 0 };
 
 function visLoad() {
   if (vis.el) return;
@@ -1023,7 +1023,7 @@ function visShow(n) {
   if (next) next.classList.add("on");
   vis.shape = n;
   const lab = document.getElementById("visLab");
-  if (lab) lab.textContent = n;
+  if (lab) lab.textContent = n + (vis.marked ? "  \u00b7 marks" : "  \u00b7 guessed");
 }
 
 /* text -> a sequence of shapes with weights, then stretched onto the clip. */
@@ -1049,7 +1049,53 @@ function visBuild(text, durSec) {
   for (const s2 of seq) { s2.t0 = acc; acc += s2.w * k; s2.t1 = acc; }
   vis.seq = seq;
   vis.dur = acc;
-  vis.at0 = performance.now();
+  vis.marked = 0;
+}
+
+/* The real thing: a start and an end for every character, from the engine that
+   said them.
+
+   Two problems this fixes that guessing could not. Silent letters get a
+   near-zero span -- the "gh" in "through" is not spoken and the timings say so
+   -- and letters that share one sound get spans that abut, so "ough" collapses
+   into one hold instead of four flickers. Both fall out of MERGING: same shape
+   running on is one shape, and anything left under MIN_HOLD is absorbed into
+   its neighbour rather than shown for two frames.
+
+   That last rule is most of why the guessed version looked bad. A letter is not
+   a sound: "through" is seven letters and three sounds, so an even spread gave
+   fourteen shapes a second, which is faster than a mouth moves and reads as
+   flicker rather than speech. */
+const VIS_MIN_HOLD = 0.055;      // seconds; under this a shape cannot be seen
+function visFromMarks(a) {
+  const ch = a.characters || [];
+  const t0 = a.character_start_times_seconds || [];
+  const t1 = a.character_end_times_seconds || [];
+  if (!ch.length || ch.length !== t0.length) { vis.seq = null; return; }
+  const seq = [];
+  for (let i = 0; i < ch.length; i++) {
+    const c = String(ch[i]).toLowerCase();
+    const sh = (c >= "a" && c <= "z") ? (VIS_OF[c] || "etc")
+             : /[.,;:!?]/.test(c) ? "rest"
+             : c === " " ? "rest" : null;
+    if (!sh) continue;
+    const s0 = +t0[i], s1 = +(t1[i] != null ? t1[i] : t0[i]);
+    if (!(s1 >= s0)) continue;
+    const last = seq[seq.length - 1];
+    if (last && last.sh === sh) last.t1 = s1;      // one sound, however spelt
+    else seq.push({ sh, t0: s0, t1: s1 });
+  }
+  // absorb anything too brief to register, rather than flashing it
+  const out = [];
+  for (const e of seq) {
+    const prev = out[out.length - 1];
+    if (e.t1 - e.t0 < VIS_MIN_HOLD && prev) { prev.t1 = e.t1; continue; }
+    out.push(e);
+  }
+  vis.seq = out.length ? out : null;
+  vis.dur = out.length ? out[out.length - 1].t1 : 0;
+  vis.marked = 1;
+  // at0 is set when the clip actually starts, not here
 }
 
 function visFrame() {
@@ -1905,7 +1951,9 @@ async function playReply(text) {
     const res = await fetch(new URL("/speak", brain.url), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text, voice: brain.voice || undefined })
+      // marks only while the mouth test is up: they cost a third more bytes
+      body: JSON.stringify({ text, voice: brain.voice || undefined,
+                             marks: vis.on ? 1 : undefined })
     });
     if (!res.ok) {
       // 501 just means no voice key is set; anything else is worth showing
@@ -1916,7 +1964,8 @@ async function playReply(text) {
     // fails deep inside decodeAudioData as "Unable to decode audio data",
     // which says nothing about what actually came back.
     const ctype = res.headers.get("content-type") || "";
-    if (!/audio|octet-stream/i.test(ctype)) {
+    const marked = /json/i.test(ctype);
+    if (!marked && !/audio|octet-stream/i.test(ctype)) {
       caption(null, "voice: expected audio, got " + (ctype || "no content-type"));
       return false;
     }
@@ -1926,14 +1975,24 @@ async function playReply(text) {
        the tap was already asleep by the time the first sentence tried to play,
        and the sentence failed. Resuming is free when it is already running. */
     if (ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
-    const audio = await ttsCtx.decodeAudioData(await res.arrayBuffer());
+    /* Two shapes of reply now. With marks it is JSON -- base64 audio and a
+       start and end time for every character -- so the bytes have to be
+       unpacked before they can be decoded. */
+    let marks = null, raw;
+    if (marked) {
+      const j = await res.json();
+      const bin = atob(j.audio_base64 || "");
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      raw = u8.buffer;
+      marks = j.normalized_alignment || j.alignment || null;
+    } else raw = await res.arrayBuffer();
+    const audio = await ttsCtx.decodeAudioData(raw);
     if (ttsSrc) { try { ttsSrc.stop(); } catch (e) {} }
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
-    /* The one moment both halves are known: the words, and exactly how long
-       saying them is going to take. */
-    if (vis.on) visBuild(text, audio.duration);
+    if (vis.on) { if (marks) visFromMarks(marks); else visBuild(text, audio.duration); }
     /* Only the clip that is actually playing gets to say the talking has
        stopped. Interrupting one -- which happens whenever a second line starts
        before the first has finished -- fires the OLD source's onended, and that
@@ -1968,6 +2027,14 @@ async function playReply(text) {
     bargeN = bargeBase = bargeLast = 0;
     bargeFrom = performance.now() + BARGE.grace;
     if (cfg.barge >= 1) { if (sttPaused) resumeSTT(); } else pauseSTT();
+    /* THE CLOCK STARTS HERE, not when the timeline was built.
+
+       vis.at0 used to be stamped inside visBuild, which runs as soon as the
+       audio is decoded -- and decoding, wiring the graph and the gain ramp all
+       happen before the first sample is heard. Every mouth was running that
+       much ahead of the voice, constantly, which is exactly the lag it looked
+       like it had. */
+    vis.at0 = performance.now();
     ttsSrc.start();
     mark("audio");
     reportTiming();

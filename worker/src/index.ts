@@ -231,7 +231,7 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   if (!env.ELEVENLABS_API_KEY) {
     return new Response("No ELEVENLABS_API_KEY on this Worker.", { status: 501, headers });
   }
-  let body: { text?: string; voice?: string };
+  let body: { text?: string; voice?: string; marks?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -245,12 +245,27 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   const voice = (body.voice || env.ELEVEN_VOICE_ID || DEFAULT_VOICE).trim();
   const model = (env.ELEVEN_MODEL_ID ?? DEFAULT_TTS_MODEL).trim();
 
-  const res = await fetch(`${ELEVEN_BASE}/text-to-speech/${encodeURIComponent(voice)}`, {
+  /* WITH TIMESTAMPS when the page asks for them.
+
+     Same synthesis, different envelope: this variant answers with JSON --
+     audio_base64 plus an `alignment` giving a start and end time in seconds
+     for every character it spoke. That is the difference between a mouth that
+     moves while somebody talks and a mouth that says the words: guessing
+     letter timings from a duration cannot know that the "ough" in "through" is
+     one sound and takes 90ms, and this does.
+
+     Opt-in per request rather than always on, because the base64 costs a third
+     more bytes and only one screen in this app has any use for it. */
+  const wantMarks = !!body.marks;
+  const path = wantMarks
+    ? `${ELEVEN_BASE}/text-to-speech/${encodeURIComponent(voice)}/with-timestamps`
+    : `${ELEVEN_BASE}/text-to-speech/${encodeURIComponent(voice)}`;
+  const res = await fetch(path, {
     method: "POST",
     headers: {
       "xi-api-key": env.ELEVENLABS_API_KEY.trim(),
       "content-type": "application/json",
-      accept: "audio/mpeg",
+      accept: wantMarks ? "application/json" : "audio/mpeg",
     },
     body: JSON.stringify({ text, model_id: model }),
   });
@@ -264,7 +279,9 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   }
 
   return new Response(res.body, {
-    headers: { ...headers, "content-type": "audio/mpeg", "cache-control": "no-store" },
+    headers: { ...headers,
+      "content-type": wantMarks ? "application/json" : "audio/mpeg",
+      "cache-control": "no-store" },
   });
 }
 
