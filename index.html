@@ -688,7 +688,11 @@ async function ask(text) {
       body: JSON.stringify({ messages: brain.history, images: imageList || [],
                              guest: guest.name || "",
                              // one line of who they are, when it is somebody it knows
-                             about: (profileOf(guest.name) || {}).is || "" })
+                             about: (profileOf(guest.name) || {}).is || "",
+                             /* and everything it has been told since. Sent every turn
+                                for the same reason the name is: the twenty messages the
+                                proxy holds are a conversation, not a memory. */
+                             memory: memOf(guest.name) })
     });
     if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 120));
 
@@ -718,6 +722,7 @@ async function ask(text) {
            how long the reply takes to say, and therefore where in it the word
            falls. A firework and a mesh are events in their own right and keep
            firing on arrival. */
+        if (ctl.remember) memAdd(guest.name, ctl.remember);
         if (ctl.show) {
           shown = true;
           if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery ||
@@ -1328,6 +1333,61 @@ const PROFILES = {
 };
 const profileOf = (n) => PROFILES[String(n || "").toLowerCase()] || null;
 function setGuest(n) { guest.name = n; }
+
+/* ---------------- what it has been told ----------------
+
+   A profile above is what it was BORN knowing. This is what it has since been
+   told, and the two are deliberately different things: a profile is fixed and
+   written by hand, a memory is something a person said once and may have
+   changed their mind about since.
+
+   Kept here, in the browser, as well as on the worker. That is not a fallback
+   waiting to be removed -- it is what makes this work the moment it deploys,
+   with no database to create and no dashboard to visit, and it is what keeps
+   it working if the shared shelf is ever unbound. Every turn sends what this
+   browser knows and gets back anything new, and the worker merges its own copy
+   in on the way past, so the two converge without either being in charge.
+
+   The NAME is still not remembered, and that is on purpose -- it asks every
+   time. Who is in the room is a different question from what they told you,
+   and guessing it wrong is the difference between a greeting that lands and
+   one that greets the wrong person. */
+const MEM_KEY = "glorb.memory.v1";
+const MEM_MAX = 120;
+function memAll() {
+  try { return JSON.parse(localStorage.getItem(MEM_KEY) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function memOf(name) {
+  const k = String(name || "").toLowerCase().trim();
+  if (!k) return [];
+  const a = memAll()[k];
+  return Array.isArray(a) ? a.filter((m) => m && typeof m.s === "string") : [];
+}
+function memAdd(name, facts) {
+  const k = String(name || "").toLowerCase().trim();
+  if (!k || !facts || !facts.length) return;
+  try {
+    const all = memAll();
+    const have = Array.isArray(all[k]) ? all[k] : [];
+    const seen = new Set(have.map((m) => String(m.s).toLowerCase()));
+    for (const f of facts) {
+      const t = String(f || "").trim().slice(0, 400);
+      if (!t || seen.has(t.toLowerCase())) continue;   // said twice, known once
+      seen.add(t.toLowerCase());
+      have.push({ s: t, t: Date.now() });
+    }
+    all[k] = have.slice(-MEM_MAX);
+    localStorage.setItem(MEM_KEY, JSON.stringify(all));
+  } catch (e) { /* a full or disabled store is not worth a broken reply */ }
+}
+function memForget(name) {
+  try {
+    const all = memAll();
+    if (name) delete all[String(name).toLowerCase().trim()];
+    localStorage.setItem(MEM_KEY, name ? JSON.stringify(all) : "{}");
+  } catch (e) {}
+}
 
 // out. Said the moment there is a voice to say it with.
 const WAKING = [

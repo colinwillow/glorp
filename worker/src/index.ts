@@ -16,6 +16,68 @@ export interface Env {
   /** Which model answers. Dashboard variable for the same reason: it is the
    *  one knob worth trying against your own ear, and it wants no deploy. */
   ORB_MODEL?: string;
+  /** Optional KV namespace: the shared memory.
+   *
+   *  Optional on purpose. Without it the orb still remembers, in the browser
+   *  that heard the thing -- so it works the moment this deploys, with no
+   *  dashboard step and no risk to a deploy that is also how the live brain
+   *  ships. Bind it and the memory moves to one place instead: every device,
+   *  and everyone, reading and writing the same shelf. See wrangler.toml. */
+  ORB_MEM?: KVNamespace;
+}
+
+/* What it has been told, and how much of it comes back.
+ *
+ * A cap in entries and a cap in characters, because both run out for different
+ * reasons: the shelf grows forever if nothing drops off it, and the system
+ * prompt is paid for on every single turn. Oldest out first -- what somebody
+ * said last week about their dog is worth less than what they said today. */
+const MEM_MAX = 120;
+const MEM_CHARS = 4000;
+type Memo = { s: string; t: number };
+
+const memKey = (who: string) => "mem:" + who.toLowerCase().trim();
+
+async function memRead(env: Env, who: string): Promise<Memo[]> {
+  if (!env.ORB_MEM || !who) return [];
+  try {
+    const raw = await env.ORB_MEM.get(memKey(who));
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter((m) => m && typeof m.s === "string") : [];
+  } catch { return []; }
+}
+
+async function memWrite(env: Env, who: string, facts: string[]): Promise<void> {
+  if (!env.ORB_MEM || !who || !facts.length) return;
+  try {
+    const have = await memRead(env, who);
+    const seen = new Set(have.map((m) => m.s.toLowerCase()));
+    for (const f of facts) {
+      const s = f.trim().slice(0, 400);
+      // said twice is still known once
+      if (!s || seen.has(s.toLowerCase())) continue;
+      seen.add(s.toLowerCase());
+      have.push({ s, t: Date.now() });
+    }
+    await env.ORB_MEM.put(memKey(who), JSON.stringify(have.slice(-MEM_MAX)));
+  } catch (e) {
+    console.error("orb-brain memory write failed", (e as { message?: string })?.message);
+  }
+}
+
+/* Newest last, oldest dropped, to a character budget. Ordered oldest-first so
+   the most recent thing is nearest the end of the prompt, which is where a
+   model attends hardest. */
+function memText(list: Memo[]): string {
+  const out: string[] = [];
+  let n = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const line = "- " + list[i].s;
+    if (n + line.length > MEM_CHARS) break;
+    out.unshift(line);
+    n += line.length + 1;
+  }
+  return out.join("\n");
 }
 
 /* Two halves, and the split is the point.
@@ -67,7 +129,7 @@ Use it sparingly. Showing costs something: the particles cannot be a word and be
 
 Show a word only when somebody asks you to show, spell, draw or display something, or when the whole reply turns on one word and that word is worth seeing on its own -- a name, a number, a colour, a single answer to a direct question. If you could not say which word the reply turns on, it does not turn on one.`;
 
-function persona(env: Env, pictures: string[] = [], guest = "", about = ""): string {
+function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = ""): string {
   const custom = (env.ORB_PERSONA ?? "").trim();
   /* The page knows the name and the proxy does not: it lives in the browser's
      localStorage, not in the twenty messages sent each turn, so it has to be
@@ -77,6 +139,17 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = ""): str
      often and actually being different with the person. */
   const who = guest
     ? `\n\nThe person you are talking to is called ${guest}.` + (about ? ` ${about}` : "")
+    : "";
+  /* What it has actually been told, as opposed to what it was born knowing.
+     Kept separate from the profile above and labelled as remembered, because
+     the two are different kinds of thing and get treated differently: a
+     profile is fixed and true, a memory is something a person said once and
+     may since have changed their mind about. */
+  const recall = memory
+    ? `\n\nYou remember these things from talking to ${guest || "this person"} before. ` +
+      `Use them the way a person uses memory -- naturally, when they are relevant, without ` +
+      `announcing that you are remembering and without reciting the list. If one of them ` +
+      `contradicts what they say now, what they say now wins.\n${memory}`
     : "";
   /* Only mentioned when there are some. A model told it can show pictures, with
      no list, offers ones that do not exist; a model told nothing says it has no
@@ -94,8 +167,25 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = ""): str
       "waiting in the dark very patiently, that looking at them is the interesting part. One " +
       "sentence. Never announce the gallery or explain how to use it; the screen does that."
     : "";
-  return (custom || PERSONA) + who + "\n\n" + PROTOCOL + gallery;
+  return (custom || PERSONA) + who + recall + "\n\n" + PROTOCOL + gallery + REMEMBERING;
 }
+
+/* When to write something down.
+
+   The hard part is not storing things, it is not storing everything. A model
+   given a memory tool and no guidance uses it on every turn, and a shelf full
+   of "asked what time it is" is worse than an empty one -- it costs prompt on
+   every future turn and buries the three things that mattered. So: durable
+   facts about a person, said by that person, that would still be true and
+   still be worth knowing in a month. Not the conversation, not the weather,
+   not what it just did. */
+const REMEMBERING = `
+
+You can remember things. When somebody tells you something about themselves that would still be true and still worth knowing in a month -- their dog's name, what they do, where they live, something they love or hate, something that happened to them -- call the remember tool with it, in one short sentence, in your own words. Do it in the same turn as your reply; the person should not notice you doing it.
+
+Remember sparingly and only what a friend would. Most turns need no memory at all. Do not record questions, small talk, what you were just asked to do, or anything you inferred rather than were told. Never say that you are remembering something, and never read your memory back as a list unless somebody asks you outright what you know about them.
+
+If somebody corrects something you have remembered, remember the correction -- the newer one wins.`;
 
 /* Said when Claude answers with a tool call and no words at all. It used to be
    one fixed line, which meant a perfectly good "show me a face" came back as
@@ -180,7 +270,8 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
-  let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown; about?: unknown };
+  let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown;
+              about?: unknown; memory?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -206,6 +297,28 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      him; a family tree runs well past a thousand. */
   const about = (typeof body.about === "string" ? body.about : "")
     .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 2000);
+  /* Memory arrives from two places and they are merged. The page keeps its own
+     copy so this works with nothing bound; a KV namespace, if there is one,
+     keeps the copy that every device and every person shares. Whichever exists
+     is used, and when both do the shared one is added to the local one and
+     duplicates are dropped -- the same fact learned on a phone and on a laptop
+     is one fact. */
+  const sent: Memo[] = Array.isArray((body as { memory?: unknown }).memory)
+    ? ((body as { memory: unknown[] }).memory)
+        .filter((m): m is Memo => !!m && typeof (m as Memo).s === "string")
+        .map((m) => ({ s: String(m.s).replace(/[^\x20-\x7E]/g, " ").slice(0, 400),
+                       t: Number(m.t) || 0 }))
+        .slice(-MEM_MAX)
+    : [];
+  const shared = await memRead(env, guest);
+  const seenMem = new Set<string>();
+  const merged: Memo[] = [];
+  for (const m of sent.concat(shared).sort((a, b) => a.t - b.t)) {
+    const k = m.s.toLowerCase();
+    if (!m.s || seenMem.has(k)) continue;
+    seenMem.add(k); merged.push(m);
+  }
+  const memory = memText(merged);
 
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -226,6 +339,35 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   console.log("orb-brain: key length", apiKey.length, "prefix ok", apiKey.startsWith("sk-ant-"));
 
   const client = new Anthropic({ apiKey });
+  /* A second tool, and a much quieter one. The show tool changes what is on
+     the screen; this one changes what is true next time. Separate rather than
+     an option on show, because they are used at completely different rates --
+     showing is rare and deliberate, remembering is rarer still and invisible
+     -- and because a model that has to choose between them on one call tends
+     to do neither. */
+  const rememberTool = {
+    name: "remember",
+    description:
+      "Write one durable fact about the person you are talking to onto your long-term memory, " +
+      "so you still know it in a month. One short sentence, in your own words, that would make " +
+      "sense read back on its own with no conversation around it. Only things they told you " +
+      "about themselves that would still be true and still be worth knowing later -- a name, a " +
+      "relationship, a job, a place, something they love or hate, something that happened to " +
+      "them. Never questions, small talk, what you were just asked to do, or anything you " +
+      "worked out rather than were told. Most turns should not call this at all. " +
+      "Call it in the same turn as your spoken reply and never mention that you did.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fact: {
+          type: "string",
+          description: "The thing to remember, as one short standalone sentence.",
+        },
+      },
+      required: ["fact"],
+    },
+  } as const;
+
   /* One turn, not an agent loop. Claude can emit text and a show call in the
      same response, so the text streams for speech and the call rides out on
      the end -- no second round trip, no added latency. Deliberately never
@@ -300,7 +442,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
         },
       },
     },
-  }];
+  }, rememberTool as unknown as Anthropic.Tool];
 
   /* Everything a voice reply asks of a model is short: forty words, one
      optional tool call, no reasoning anyone will read. That is Haiku's shape,
@@ -315,7 +457,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:
@@ -380,13 +522,26 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           }
           // Control frame after a NUL, which cannot occur in the spoken text --
           // so the page can split them without a parser and never speak this.
-          const frame: { show?: unknown; ms?: Record<string, number>; via?: string;
-                         legs?: Record<string, number> } = {};
+          const frame: { show?: unknown; remember?: string[]; ms?: Record<string, number>;
+                         via?: string; legs?: Record<string, number> } = {};
+          const learned: string[] = [];
           for (const block of final.content) {
             if (block.type === "tool_use" && block.name === "show") {
               frame.show = block.input;
               console.log("orb-brain show", JSON.stringify(block.input));
             }
+            if (block.type === "tool_use" && block.name === "remember") {
+              const f = String((block.input as { fact?: unknown })?.fact ?? "").trim();
+              if (f) { learned.push(f); console.log("orb-brain remember", f); }
+            }
+          }
+          /* Back to the page as well as onto the shelf. The page keeps its own
+             copy so that memory survives with nothing bound here, and so that
+             the next turn can send it back up -- which is what makes this work
+             on day one instead of after a dashboard visit. */
+          if (learned.length) {
+            frame.remember = learned;
+            await memWrite(env, guest, learned);
           }
           // A wordless turn means one of two things, and they deserve different
           // lines: it drew something and said nothing, or it produced nothing.

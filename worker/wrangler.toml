@@ -18,3 +18,24 @@ ALLOWED_ORIGIN = "https://colinwillow.github.io"
 # Default voice. The page can override it per request from the tune panel,
 # and GET /voices lists what this account actually has.
 ELEVEN_VOICE_ID = "wyWA56cQNU2KqUW4eCsI"
+
+# The shared memory. OPTIONAL, and commented out on purpose: a binding naming a
+# namespace that does not exist fails the deploy, and this Worker deploys from a
+# push to main -- so a wrong id here takes the brain down rather than leaving a
+# feature switched off.
+#
+# Without it the orb still remembers. Memory lives in the browser that heard the
+# thing, travels up with every turn and comes back written to. That works today
+# and needs nothing. What it does not do is cross devices or people: what you
+# tell it on your phone is not there on a laptop, and what somebody else tells
+# it is on theirs only.
+#
+# To make it one shelf that everyone reads and writes:
+#   npx wrangler kv namespace create ORB_MEM
+# then paste the id it prints below and uncomment all three lines. The browser
+# copy keeps working alongside it -- the Worker merges the two and drops
+# duplicates -- so nothing is lost by turning this on later rather than now.
+#
+# [[kv_namespaces]]
+# binding = "ORB_MEM"
+# id = "paste-the-id-here"
