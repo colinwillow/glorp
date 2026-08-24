@@ -944,6 +944,11 @@ const MUSIC_RANGE = 18;
    five here before any of this existed, a well-behaved master ran a mean band
    around 0.45 and looked right; Heat Waves ran 0.16 and looked dead. */
 const MUSIC_SPEC = 0.42;
+/* The narrowest centroid spread that still earns a full equalisation, in RAW
+   centroid units -- which for music run about 0.05 to 0.35, so a song with any
+   life in it clears this easily and a drone does not. A song that moves less
+   than this in timbre is a song whose colour should not move much either. */
+const MUSIC_HUE_SPAN = 0.035;
 /* The music visualiser's own instrument. `low` and `mid` are band indices, and
    the band mapping is quadratic, so band 9 is about 430Hz and band 26 about
    3.6kHz -- kick and bass below the first, snare and voice between them, hats
@@ -1047,6 +1052,16 @@ const music = {
      every bar. A window has no rate at all -- it is simply right, ten seconds
      late, and ten seconds is one chorus. */
   hist: new Float32Array(600), histAt: 0, histN: 0, sortBuf: new Float32Array(600),
+  /* And the same trick again on the thing that drives COLOUR. Eight seconds of
+     spectral centroid, and the palette is mapped across the range that song
+     actually uses rather than across the range a centroid could theoretically
+     take. Your reading of it was right: Heat Waves settles into a narrow
+     oscillation once it gets going, so a fixed mapping gives it a sliver of the
+     wheel, while Icecream Paint Job swings wide and gets the pink now and then.
+     Measured against the same range it moves in, the steady song travels as far
+     as the wild one. */
+  cHist: new Float32Array(480), cAt: 0, cN: 0, cSort: new Float32Array(480),
+  cLo: 0.2, cHi: 0.6,
   hit: new Float32Array(BANDS),
   eHist: new Float32Array(60), eAt: 0, lastBeat: 0, ivs: [], bpm: 0, bpmSaid: 0,
   // the tempo the dance is currently stretched to, so a change can be noticed
@@ -1211,6 +1226,7 @@ async function musicPlay(which) {
   music.ivs.length = 0; music.lastBeat = 0; music.bpmApplied = -1;
   // a new record is a new reference, or the last one's loud parts set the bar
   music.refDb = -14; music.specRef = 0.42; music.histAt = 0; music.histN = 0;
+  music.cAt = 0; music.cN = 0; music.cLo = 0.2; music.cHi = 0.6;
   return music.title;
 }
 function musicStop() {
@@ -1329,11 +1345,70 @@ function analyseMusic() {
     if (diff > 0) flux += diff;
     music.prev[i] = val;
   }
-  let centroid = cd > 0.001 ? cn / cd / N : 0;
-  centroid = (centroid - 0.03) / 0.20;
+  /* The RAW centroid, kept before the stretch below touches it.
+
+     That stretch -- (c - 0.03) / 0.20 -- is tuned for a speaking voice, and
+     music lives far brighter than speech: measured across these five, it clamps
+     at 1 and stays there. Icecream Paint Job spent 100% of a two and a half
+     minute sample in the top fifth of the palette, Yoga Pants 76%. The colour
+     was not rarely reaching the interesting end, it was PINNED there, and the
+     rare moments you were seeing were the dips out of it.
+
+     Equalising the clamped value cannot fix that -- a constant has no ranks --
+     so the history below is kept on the raw number. */
+  const rawC = cd > 0.001 ? cn / cd / N : 0;
+  let centroid = (rawC - 0.03) / 0.20;
   if (centroid < 0) centroid = 0; else if (centroid > 1) centroid = 1;
   const g = Math.min(1, Math.max(0, (music.scale - cfg.gateFloor) / 0.12));
-  music.hue += (centroid * g - music.hue) * 0.06;
+
+  /* The centroid, stretched across the span this song is actually using.
+     Percentiles rather than min and max, so one cymbal does not define the top
+     of the range for the next eight seconds. */
+  music.cHist[music.cAt % music.cHist.length] = rawC;
+  music.cAt++;
+  if (music.cN < music.cHist.length) music.cN++;
+  if ((music.cAt & 15) === 0) {
+    const nC = music.cN, cb = music.cSort.subarray(0, nC);
+    cb.set(music.cHist.subarray(0, nC));
+    cb.sort();
+    music.cLo = cb[Math.floor(nC * 0.10)];
+    music.cHi = cb[Math.min(nC - 1, Math.floor(nC * 0.90))];
+  }
+  /* RANK, not range. Stretching the centroid across the span the song uses was
+     the obvious version of your idea and measured, it does almost nothing:
+     Heat Waves 0.84 of the wheel before and 0.78 after. Normalising a range
+     preserves the SHAPE of the distribution, and the shape is the problem --
+     the centroid sits near one end most of the time and visits the other end
+     briefly, so the palette sits on purple and reaches the pink for a moment.
+     Which is exactly what you described.
+
+     So the value is replaced by its position in its own recent history: what
+     fraction of the last eight seconds was below where it is now. That output
+     is uniform by construction, so the colour spends as long at one end as the
+     other and the striking part stops being a rarity. It is the same idea as
+     equalising a photograph that is all shadow.
+
+     Binary search of the sorted window, which is already being built. */
+  let cEq = 0.5;
+  if (music.cN > 8) {
+    const cb = music.cSort, nC2 = music.cN;
+    let lo2 = 0, hi2 = nC2;
+    while (lo2 < hi2) { const m2 = (lo2 + hi2) >> 1; if (cb[m2] < rawC) lo2 = m2 + 1; else hi2 = m2; }
+    cEq = lo2 / nC2;
+  }
+  /* THE SAFETY ARGUMENT. Equalising a song whose timbre barely moves would
+     stretch its own jitter across the whole wheel, which is precisely the
+     flickering you did not want. So it only equalises to the extent that there
+     is a real spread to equalise: at zero spread the raw value is used and the
+     colour sits still, which is the right answer for a song that sits still.
+
+     And note this changes WHERE the colour goes, never how fast: the result
+     still goes through the same 0.06 smoothing it always did. */
+  const spread = music.cHi - music.cLo;
+  let mix = spread / MUSIC_HUE_SPAN;
+  if (mix > 1) mix = 1;
+  const cN2 = centroid + (cEq - centroid) * mix;
+  music.hue += (cN2 * g - music.hue) * 0.06;
   music.turbulence += (Math.min(1, zcr * 26) * g - music.turbulence) * 0.16;
   music.impulse = Math.max(music.impulse * 0.86, Math.min(1, flux * 0.05) * g);
 
@@ -2699,7 +2774,20 @@ function seedNear(cnt, spawnR) {
 /* The meter along the bottom, and its echo along the top.
    h is how tall a full-scale band draws; top is how much of that the upper row
    gets; fall is how fast a peak cap sinks, in full-scale units a second. */
-const BARS = { h: 56, top: 0.5, gap: 1.6, fall: 0.75, alpha: 0.55, peakA: 0.9, dim: 0.5,
+/* MIRRORED, from the middle outwards, and no top row.
+
+   Left-heavy was not a bug in the meter, it is what a spectrum looks like: the
+   bass is where the energy is and the bands are spaced to give it most of the
+   width. Tilting the display helped and could not fix it, because the right
+   hand end is genuinely empty on most music. Mirroring makes the emptiness
+   symmetrical, which reads as a shape rather than as a meter that ran out --
+   low frequencies meeting in the centre, air at both edges.
+
+   The top row is gone. It was sitting under the clock, the camera housing and
+   the wifi icon, and a meter you have to look around is worse than no meter.
+
+   Thinner too, and closer to a line, which is where it started. */
+const BARS = { h: 34, gap: 0.9, fall: 0.75, alpha: 0.5, peakA: 0.85,
   /* A TILT, for the display only. The bands are spaced so the low end gets most
      of them -- which is right for driving the ring, where the bass is where the
      shape is -- and it means the right-hand half of a meter drawn straight off
@@ -9249,7 +9337,7 @@ function loop() {
 
   if (showBars) {
     if (!barPeak) barPeak = new Float32Array(BANDS);
-    const bw = W / BANDS, bwid = Math.max(1, bw - BARS.gap);
+    const half = W / 2, bw = half / BANDS, bwid = Math.max(1, bw - BARS.gap);
     // seconds, clamped, so a stalled frame does not drop every peak at once
     const dts = Math.min(0.1, dt / 1000);
     for (let b = 0; b < BANDS; b++) {
@@ -9276,21 +9364,18 @@ function loop() {
       let li = (((v * sizeHiPx) - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
       if (li < 0) li = 0; else if (li > LUT_N - 1) li = LUT_N - 1;
       const col = lut[li];
-      const x = b * bw + (bw - bwid) / 2;
       const hB = v * BARS.h, pB = barPeak[b] * BARS.h;
+      const off = b * bw + (bw - bwid) / 2;
+      // right of centre, and its mirror image left of it
+      const xR = half + off, xL = half - off - bwid;
 
       ctx.globalAlpha = BARS.alpha;
       ctx.fillStyle = col;
-      if (hB > 0.6) barRect(x, H - hB, bwid, hB);
-      if (pB > 1.5) { ctx.globalAlpha = BARS.peakA; barRect(x, H - pB - 2, bwid, 2); }
-
-      // and the same again off the top edge, shorter and quieter -- an echo of
-      // the bottom row rather than a second one competing with it
-      const hT = hB * BARS.top, pT = pB * BARS.top;
-      ctx.globalAlpha = BARS.alpha * BARS.dim;
-      ctx.fillStyle = col;
-      if (hT > 0.6) barRect(x, 0, bwid, hT);
-      if (pT > 1.5) { ctx.globalAlpha = BARS.peakA * BARS.dim; barRect(x, pT, bwid, 2); }
+      if (hB > 0.6) { barRect(xR, H - hB, bwid, hB); barRect(xL, H - hB, bwid, hB); }
+      if (pB > 1.5) {
+        ctx.globalAlpha = BARS.peakA;
+        barRect(xR, H - pB - 2, bwid, 2); barRect(xL, H - pB - 2, bwid, 2);
+      }
     }
     ctx.globalAlpha = 1;
   }
