@@ -4871,11 +4871,47 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    because a built figure's own dots are invisible by then anyway. fat scales
    the dots against the big orb's, which would otherwise be far too heavy for
    something this size. */
-const ORB = { r: 0.30, flat: 0.42, y: 0.10, share: 0.13, full: 0.86,
-              fat: 0.85, react: 1.15, reach: 1.34, purple: 2.05 };
+/* FLAT, and facing the camera. This is the thing that took longest to see: the
+   big orb is not a ball. Every particle in the resting field has pz = 0 -- depth
+   only ever leaves zero while a 3D formation is holding -- so it is a disc in
+   the screen plane, a ring with a core inside it, and the core is visible
+   because there is no near half of a shell in front of it.
+
+   Built as a sphere, the core is behind the shell from every angle and what
+   shows is whatever the near side happens not to cover: patchy, off-centre, and
+   nothing like the original. Built as a disc it is the original, smaller.
+
+   Above and behind him, so he does not stand in front of the one part that
+   makes it read. z is heights behind, y is heights up from the floor. */
+/* The small orb is the BIG one, at a smaller size and somewhere else.
+
+   Every previous attempt authored its particles by hand -- a fibonacci spiral,
+   a radius distribution, a spectrum term, a turbulence bump -- and each one got
+   closer and still did not look like it, because the real orb's appearance is
+   not a formula anybody wrote. It emerges: a ring radius per particle with its
+   own frequency band, a bloom smearing targets across radii, a chirp along the
+   index, a membrane spring, a containment wall, and three thousand particles
+   chasing all of it through a capped force.
+
+   None of that can be approximated. It can be REUSED. The whole of the orb's
+   behaviour is the physics loop building a target from `cx, cy` and `ringR`,
+   so the small one is the same code with two substitutions: the centre becomes
+   the orb's own screen position, and ringR is multiplied by k. Everything else
+   -- spectrum, bloom, chirp, membrane, force cap, colour, dot size -- follows
+   for free, because it is literally the same lines.
+
+   k is its size against the big one. z and y place it behind and above him, in
+   his heights. */
+/* Both of these are measured against the screen rather than reasoned about.
+   k is a multiplier on the ring radius, so k of 0.30 with the perspective
+   divide on top came out as a 17px orb against the big one's 78. And y of 1.95
+   put its centre at screen y=13, where the field's containment wall squashed
+   the whole thing into a 30px vertical smear. */
+const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, share: 0.13, full: 0.55 };
+// where it is on screen this frame, and how big -- see the physics loop
+let orbCX = 0, orbCY = 0, orbK = 1;
 // normalised distance from the orb's centre: 0 in the middle, 1 on the ring
-const orbD = new Float32Array(MAX);
-// and its own painter's-order scratch, since it draws in a pass of its own
+// its own painter's-order scratch, since it draws in a pass of its own
 const ordOrb = new Int32Array(MAX), zbufOrb = new Float32Array(MAX);
 
 const ROOM = { back: -0.04, down: 0.09 };
@@ -5653,63 +5689,22 @@ function updateFigure(dt, now) {
      path never fills from the slots, and the edge pass skips the arc.) */
   // and the ball waits for its machine, or it hovers over an empty floor
   /* How many of them are the orb. A few while he is being drawn -- enough to
-     say the orb is still here doing it -- and then nearly all of them once the
+     say the orb is still here doing it -- and then most of them once the
      texture wipe has finished, because at that point every remaining dot has
      faded out against the model anyway. They are not taken away from him; they
      are finished with him. Leaving, the wipe runs back down and they return in
-     time to un-draw him. */
+     time to un-draw him.
+
+     No positions here any more. They are free particles with a moved centre;
+     the physics loop places them. */
   const built = rig.wipe[3] >= 0.001
     ? Math.max(0, Math.min(1, (rig.wipe[3] - (FIG.top - FIG.rim)) / FIG.rim)) : 0;
   const shareNow = ORB.share + (ORB.full - ORB.share) * built;
+  /* The same number, kept for the renderer. It is how far the orb has lifted
+     away from the field -- see the placement block. */
+  rig.built = built;
   const orbN = gl.ready && world.on > 0.30 ? Math.round(n * shareNow) : 0;
   rig.orbFrom = orbN ? n - orbN : 1e9;
-  if (orbN) {
-    const H1o = figH1();
-    /* The same three responses the big orb has, at a fraction of the count:
-       scale with loudness, the ellipse deformation that reads as a mouth, and
-       turbulence roughening the surface so it boils rather than inflates. All
-       read straight off `drive`, the struct the field reads, so the two of them
-       are always doing the same thing at the same moment. */
-    const lvl = Math.min(1, drive.scale * ORB.react);
-    const rr = ORB.r * H1o * (1 + lvl * 0.75);
-    const gt2 = Math.min(1, drive.scale * 3);
-    const ecc2 = (drive.hue - 0.5) * 2 * cfg.ellipse * gt2;
-    const oex = Math.max(0.45, 1 + ecc2 * 0.30);
-    const oez = Math.max(0.45, 1 - ecc2 * 0.30);
-    const rough = drive.turbulence * ORB.r * H1o * 0.35;
-    // under HIM, and it walks when he does
-    const ocx = world.x, ocz = world.z;
-    const ocy = (f.lo[1] - f.c[1]) + ORB.y * H1o;
-    const t2 = performance.now() / 1000;
-    for (let i = rig.orbFrom; i < n; i++) {
-      const j = i - rig.orbFrom;
-      /* Spherical fibonacci for the direction, cube root of a hash for the
-         radius. The cube root is what makes the density even THROUGH the
-         volume rather than piling everything at the middle -- and an even
-         volume is what produces the orb's structure once size is taken from
-         distance: green and fat at the centre, nothing at all where size
-         crosses zero, purple and fat again outside it. */
-      const gy = 1 - ((j + 0.5) / orbN) * 2;
-      const rj = Math.sqrt(Math.max(0, 1 - gy * gy));
-      const th = j * 2.39996323 + t2 * 0.55;
-      const nx2 = Math.cos(th) * rj, nz2 = Math.sin(th) * rj;
-      /* sqrt, not cbrt. A cube root spreads points evenly through a VOLUME,
-         which is right for a ball and wrong for this: the orb lies flat, so
-         what wants even density is a disc, and that is a square root. With the
-         cube root four fifths of them landed outside the ring and the green
-         core was a handful of dots. */
-      const u = Math.sqrt(hash(i + 7)) * ORB.reach;
-      orbD[i] = u;                                  // the draw loop's size comes from this
-      const bump = rough * Math.sin(t2 * 5.5 + hash(i + 23) * TAU);
-      const rk = rr * u + bump;
-      formX[i] = (ocx + nx2 * rk * oex) * f.k;
-      formY[i] = -(ocy + gy * rk * ORB.flat) * f.k;
-      formZ[i] = -(ocz + nz2 * rk * oez) * f.k;
-      fnx[i] = nx2; fny[i] = -gy; fnz[i] = -nz2;
-      // splits off once the dot wipe passes his waist, mid-build
-      figH[i] = 0.52;
-    }
-  }
   // the surface only exists once its own wipe has started climbing
   solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
   const st = rig.wipe[3] >= FIG.top ? 3 : rig.wipe[2] > 0 ? 2 : rig.wipe[1] > 0 ? 1 : 0;
@@ -7131,6 +7126,41 @@ function loop() {
      missing, and no other parameter moves those numbers more than a few
      percent. Additive on level, so a quiet room keeps whatever slack it was
      tuned with and only a voice pulls the field taut. */
+  /* Where the small orb is this frame, in screen pixels, and how big. Its
+     place is a world position -- behind and above him -- so it goes through the
+     same projection everything else does, and the perspective divide comes back
+     out as part of its scale, so it shrinks with distance like a real object. */
+  orbK = 0;
+  if (rig.on && rig.R && gl.ready && rig.orbFrom < 1e8) {
+    const fo = rig.R.fit, H1o = figH1();
+    const ow = [world.x, (fo.lo[1] - fo.c[1]) + ORB.y * H1o, world.z + ORB.z * H1o];
+    const kk = scale * formS;
+    const oxw = ow[0] * fo.k * kk, oyw = -ow[1] * fo.k * kk, ozw = -ow[2] * fo.k * kk;
+    const cyw3 = Math.cos(view.yaw), syw3 = Math.sin(view.yaw);
+    const pit3 = view.pitch * formT;
+    const cpt3 = Math.cos(pit3), spt3 = Math.sin(pit3);
+    const FOC3 = scale * 1.7;
+    const rx3 = oxw * cyw3 + ozw * syw3;
+    let rz3 = -oxw * syw3 + ozw * cyw3;
+    const ry3 = oyw * cpt3 - rz3 * spt3;
+    rz3 = oyw * spt3 + rz3 * cpt3;
+    const pp3 = FOC3 / Math.max(FOC3 * 0.25, FOC3 + rz3);
+    /* The orb LIFTS out of the field rather than appearing in place. At the
+       start of the build the block is the field -- same centre, same radius,
+       so its particles are indistinguishable from their neighbours -- and it
+       rises to its own place behind him as he finishes.
+
+       This is not a flourish. The block gains and loses particles as `built`
+       moves, and a particle handed across a boundary between two frames that
+       are hundreds of pixels apart does not travel: the containment wall finds
+       it far outside itself and projects it onto the ellipse, which is a
+       teleport. Measured at the deconstruct it was 235 px on one frame, in the
+       middle of the transition the whole thing is judged on. With the two
+       frames converging as the hand-off happens there is nowhere to jump to. */
+    const oH = rig.built || 0;
+    orbCX = cx + rx3 * pp3 * oH; orbCY = cy + ry3 * pp3 * oH;
+    orbK = 1 + (ORB.k * pp3 - 1) * oH;
+  }
   const membNow = cfg.membrane + drive.scale * cfg.membGain;
   const membFree = membNow * pull, memb = membFree * hold;
 
@@ -7146,14 +7176,29 @@ function loop() {
       // lump in the middle of the explosion.
       const isCore = !bs && pr[i] < cfg.core;
       const held = formOn[i] === 1;            // is this one holding the shape
-      const fT = held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
+      /* An orb particle is a FREE particle whose ring happens to be smaller and
+         somewhere else. fT of zero is what makes that true: no formation pull,
+         no formation force budget, no snap, and a z target of zero, which is
+         what keeps it flat in the screen plane exactly as the big one is. It
+         stays `held`, though, so it does not join the arch the free ones make
+         around a shape. */
+      const isOrb = orbK > 0 && i >= rig.orbFrom;
+      const fT = isOrb ? 0 : held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
+      /* Index IS angle in this field -- particle i sits at i/n of the way round
+         -- and the orb is a contiguous block of indices at the end. Taken as
+         given, it inherits an ARC of the ring rather than a ring, and its
+         spectrum is whichever bands that arc happens to cover. Measured: it
+         came out as a solid vertical lozenge 33px wide. Its own local fraction
+         puts it all the way round and gives it the whole spectrum. */
+      const lf = isOrb ? (i - rig.orbFrom) / (n - rig.orbFrom) : i / n;
       let ringR;
       if (isCore) {
         ringR = baseR * gScale * cfg.coreR;
       } else {
-        const band = (i * BANDS / n) | 0;
-        const sk = (i * SHAPE_N / n) | 0;
-        ringR = (baseR * gScale + drive.spectrum[band] * baseR * cfg.specGain) * shapeLut[sk];
+        const band = (lf * BANDS) | 0;
+        const sk = (lf * SHAPE_N) | 0;
+        ringR = (baseR * gScale + drive.spectrum[band < BANDS ? band : BANDS - 1] * baseR * cfg.specGain)
+                * shapeLut[sk < SHAPE_N ? sk : SHAPE_N - 1];
       }
       /* One multiplier for everything that scales the ring, because the
          membrane is a spring toward the ring surface and it has now quietly
@@ -7164,7 +7209,9 @@ function loop() {
       if (ringR > maxR) ringR = maxR;
       // bloom 1 = original (sine swings through zero, target crosses centre)
       // bloom 0 = stable ring. Anything below ~0.6 lets audio actually read.
+      // and its direction comes from that fraction too, or it is still an arc
       let ux = bx[i], uy = by[i];
+      if (isOrb) { const aa = lf * TAU; ux = Math.cos(aa); uy = Math.sin(aa); }
       /* The muse moves the target and nothing else, which is why none of them
          had to know about the shape, the membrane, the wall or the colour. */
       const mu = held ? muHeld : muAmt;
@@ -7237,8 +7284,10 @@ function loop() {
       const sq = 1 - bl + bl * (0.6 * Math.sin(frame / cfg.rateX * sw + jit) +
                                 0.4 * Math.sin(frame / cfg.rateY * sw * 1.7 + jit * 1.31));
       const sqx = sq, sqy = sq;
-      let tx = cx + ux * ringR * sqx * ex;
-      let ty = cy + uy * ringR * sqy * ey;
+      const oCx = isOrb ? orbCX : cx, oCy = isOrb ? orbCY : cy;
+      const oRk = isOrb ? orbK : 1;
+      let tx = oCx + ux * ringR * oRk * sqx * ex;
+      let ty = oCy + uy * ringR * oRk * sqy * ey;
       /* The free particles part rather than surround. A ring big enough to
          encircle a word has to be as wide as the word is long, which means a
          huge circle round a small piece of text -- so the top half arches over
@@ -7310,7 +7359,7 @@ function loop() {
          maxF -- and that cap is what produces momentum, overshoot and settling,
          which is the swarming. Lend a particle six times the force and it
          arrives instantly instead, in lockstep with every other one. */
-      const loose = rig.on && i >= rig.orbFrom ? 0 : 1;
+      const loose = isOrb ? 0 : 1;
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
       const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull;
@@ -7429,10 +7478,21 @@ function loop() {
       // Names are w-prefixed so they never collide with the membrane block's
       // rx/ry/rd if a transpiler flattens the block scopes.
       const bi = bnd[i];
-      const qx = (px[i] - cx) / (hx * bi), qy = (py[i] - cy) / (hy * bi);
+      /* The orb gets a wall of its own rather than an exemption. The field's
+         ellipse is centred on the FIELD, and the orb lives well above that
+         centre, so every one of its particles was outside it and being shoved
+         back toward the middle of the screen -- which flattened its top into an
+         arc. But no wall at all is just as wrong: the wall is what stops the
+         loudest particles sailing off, and without it the shell went to a few
+         enormous purple blobs a long way out. Same ellipse, moved onto the orb
+         and scaled with it. */
+      const wcx = isOrb ? orbCX : cx, wcy = isOrb ? orbCY : cy;
+      const wek = isOrb ? orbK : 1;
+      const wxh = hx * bi * wek, wyh = hy * bi * wek;
+      const qx = (px[i] - wcx) / wxh, qy = (py[i] - wcy) / wyh;
       const q = Math.sqrt(qx * qx + qy * qy);
-      if (walled && q > containNow) {
-        const wx = px[i] - cx, wy = py[i] - cy;
+      if ((walled || isOrb) && q > containNow) {
+        const wx = px[i] - wcx, wy = py[i] - wcy;
         const wd = Math.sqrt(wx * wx + wy * wy) || 0.0001;
         const wnx = wx / wd, wny = wy / wd;
         // quadratic ramp — barely there at the soft edge, firm at the wall
@@ -7443,7 +7503,7 @@ function loop() {
           // hard stop. Project back onto the ellipse and drop only the
           // outward velocity — tangential motion survives, so particles graze
           // along the wall instead of piling up dead against it.
-          px[i] = cx + (qx / q) * hx * bi; py[i] = cy + (qy / q) * hy * bi;
+          px[i] = wcx + (qx / q) * wxh; py[i] = wcy + (qy / q) * wyh;
           const vn = vx[i] * wnx + vy[i] * wny;
           if (vn > 0) { vx[i] -= wnx * vn; vy[i] -= wny * vn; }
         }
@@ -7507,13 +7567,21 @@ function loop() {
         oq[q] = ii;
       }
       oq.sort((a, b) => zbufOrb[b - rig.orbFrom] - zbufOrb[a - rig.orbFrom]);
+      const fRad0 = falloffPx * orbK;
       for (let q = 0; q < oq.length; q++) {
         const i = oq[q];
-        const w0 = (1 - orbD[i]) * sizeHiPx * ORB.fat;
-        const sz0 = w0 >= 0 ? w0 : w0 * ORB.purple;
-        let r0 = Math.abs(sz0) * 0.5 * cfg.dot;
+        const dx0 = px[i] - orbCX, dy0 = py[i] - orbCY;
+        const sz0 = (1 - Math.sqrt(dx0 * dx0 + dy0 * dy0) / fRad0) * sizeHiPx;
+        /* Dots do NOT scale with the orb. Scaling both, so that the small one
+           is a true uniform copy, is the obvious thing and it looks worse: at
+           0.57 the dots stop overlapping and the shell breaks into separate
+           circles with black between them. What makes the big orb read as a
+           cloud is dots fat enough to merge, so the small one keeps the same
+           absolute dot and runs a chunkier dot-to-whole ratio than the big one
+           on purpose. ORB.fat is the dial if that ever needs softening. */
+        let r0 = Math.abs(sz0) * 0.5 * cfg.dot * ORB.fat;
         if (r0 <= 0.2) continue;
-        const ox0 = px[i] - cx, oy0 = py[i] - cy, oz0 = pz[i];
+        const ox0 = px[i] - cx, oy0 = py[i] - cy, oz0 = 0;
         const rx0 = ox0 * cyw0 + oz0 * syw0;
         let rz0 = -ox0 * syw0 + oz0 * cyw0;
         const ry0 = oy0 * cpt0 - rz0 * spt0;
@@ -7607,7 +7675,15 @@ function loop() {
     // distance measured against the deformed boundary: 1.0 is exactly on it, so
     // size still crosses zero there and the colour split rides the new outline.
     // z joins the distance, which turns the negative-space ring into a shell.
-    const ndx = ox / (fRad * fex), ndy = oy / (fRad * fey), ndz = oz / fRad;
+    /* Measured from the orb's own centre and against its own ring when this is
+       one of its particles. That single substitution is the whole of its
+       colour and its dot size: the same crossing-zero-at-the-boundary rule the
+       field has always used, so it cannot help but look like the field. */
+    const isOrbD = orbK > 0 && i >= rig.orbFrom;
+    const dcx = isOrbD ? orbCX : cx, dcy = isOrbD ? orbCY : cy;
+    const dRad = isOrbD ? fRad * orbK : fRad;
+    const dox = isOrbD ? px[i] - orbCX : ox, doy = isOrbD ? py[i] - orbCY : oy;
+    const ndx = dox / (dRad * fex), ndy = doy / (dRad * fey), ndz = oz / dRad;
     let size = (1 - Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz)) * sizeHiPx;
 
     // rotate about the vertical, then the horizontal, then project
@@ -7624,7 +7700,7 @@ function loop() {
        A model converges on its own depth instead: near stars land on the
        positive end of the palette and far ones on the negative, so the colour
        split that separates the core from the ring becomes the shading. */
-    if (form3d && held) {
+    if (form3d && held && !isOrbD) {
       /* 0.88 leaves an eighth of the old size behind, and for a glyph that
          residue is the point -- it keeps the letters from looking printed. For
          a solid it is fatal: a particle 400px out starts at size -250, and an
@@ -7704,13 +7780,8 @@ function loop() {
             : form3d && held && formHasB && formB[i] > HOLO_SHADE + 1
               ? sizeHiPx * cfg.dot * 0.09 * (0.25 + 1.3 * Math.abs(formB[i]))
                 * (1 - fT * 0.15) * (1 - wireT * 0.55)
-            /* Orb particles take the field's radius rule too. A solid draws
-               every dot the same size because size is carrying depth there; in
-               the orb size is carrying the ring, so radius has to follow it or
-               the structure is invisible and what is left is even confetti. */
-            : rig.on && i >= rig.orbFrom
-              ? Math.abs(size) * 0.5 * cfg.dot
-            : form3d && held ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
+            : form3d && held && !isOrbD
+              ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
               // the rim is a frame, not a second drawing competing with the first
               * (held ? 1 : 1 - formT * 0.72);
