@@ -1019,7 +1019,7 @@ const DRIFT = {
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
   raw: new Float32Array(BANDS),
-  list: null, i: -1, playing: false, title: "", unlocked: 0,
+  list: null, i: -1, playing: false, title: "", unlocked: 0, skipped: 0,
   // why the last attempt produced no music, so the page can say which
   err: "",
   // 1 when the dance started it, so the dance can stop it again
@@ -1114,6 +1114,34 @@ function musicWire() {
     music.el.preload = "auto";
     music.el.crossOrigin = "anonymous";
     music.el.addEventListener("ended", () => { if (music.playing) musicPlay(music.i + 1); });
+    /* A FILE THE BROWSER CANNOT PLAY HAS TO SAY SO.
+
+       heat_waves.mp3 was a WebM containing an Opus stream with an mp3 name on
+       it -- a download saved under the wrong extension. Chromium plays WebM, so
+       every rig I wrote passed; Safari does not, so on the phone it produced
+       silence. And nothing anywhere said a word: play() does not reject on a
+       source it cannot decode, the failure arrives later as an `error` event on
+       the element, and `playing` is an intent flag that stays true regardless.
+       Three rounds of looking in the wrong place because the one component that
+       knew was not asked.
+
+       It skips on to the next track rather than sitting on a dead one, and
+       names the file, because "cannot play" is only useful when you know
+       which. */
+    music.el.addEventListener("error", () => {
+      const t = (music.list || [])[music.i];
+      const name = t ? (t.title || t.file) : "that track";
+      const code = music.el.error ? music.el.error.code : 0;
+      music.err = code === 4
+        ? name + ": this browser cannot play that file (wrong format for the name?)"
+        : name + ": could not load (error " + code + ")";
+      caption(null, music.err);
+      // one hop only -- a whole shelf of bad files should not spin
+      if (music.playing && (music.list || []).length > 1 && !music.skipped) {
+        music.skipped = 1;
+        musicPlay(music.i + 1).then(() => { music.skipped = 0; });
+      } else music.playing = false;
+    });
   }
   const an = ttsCtx.createAnalyser();
   an.fftSize = 2048; an.smoothingTimeConstant = 0.5;
@@ -1159,9 +1187,20 @@ async function musicPlay(which) {
     if (ttsCtx && ttsCtx.state === "suspended") await ttsCtx.resume();
     await music.el.play();
   } catch (e) {
-    music.err = music.unlocked
-      ? "the browser would not start it (" + (e && e.name || "blocked") + ")"
-      : "tap the mic once first — this browser needs a tap before it will play audio";
+    /* Two different refusals, and they were being reported as one. play()
+       rejects with NotAllowedError when the browser wants a gesture and with
+       NotSupportedError when it cannot decode the file at all -- and reading
+       the second as the first sends you looking for a permissions problem that
+       is not there. Which is exactly what happened with heat_waves.mp3. */
+    const nm = (e && e.name) || "";
+    const t = list[idx];
+    music.err = nm === "NotSupportedError" || nm === "NotSupportedError:"
+      ? (t.title || t.file) + ": this browser cannot play that file " +
+        "(wrong format for the name?)"
+      : !music.unlocked
+        ? "tap the mic once first — this browser needs a tap before it will play audio"
+        : "the browser would not start it (" + (nm || "blocked") + ")";
+    music.playing = false;
     return "";
   }
   music.playing = true;
