@@ -944,6 +944,106 @@ function analyseTts() {
   tts.impulse = Math.max(tts.impulse * 0.86, Math.min(1, flux * 0.05) * g);
 }
 
+/* ---------------- the boom box ----------------
+
+   One model, four meshes, one blend shape called `speakers` on each of them --
+   0 retracted, 1 pushed forward. No animation in the file, which is the right
+   way round: an animation would have its own clock and this wants somebody
+   else's.
+
+   It stands on the floor of the ROOM rather than being attached to him. gl.root
+   carries world.x and world.yaw, so anything parented there walks and turns
+   when he does, and a stereo that follows a man around the room is a joke
+   rather than a stereo. gl.stage is the room; the box goes there and stays
+   where it was put.
+
+   Driven by the ONSET in the bass, not the level. drive.hit is already the
+   per-band jump above each band's own smoothed self -- the thing that tells a
+   kick from a bass note held through the bar -- and the cones want the kick.
+   Fast up, slow down, which is what a speaker cone does. */
+const BOX = {
+  obj: null, loading: 0, on: 0, pump: 0,
+  /* All in his heights. The room is framed far tighter than it looks -- at his
+     depth the screen is only about half his height wide either side of him --
+     so a stereo an arm's length away is off the edge. Measured: side 0.92 put
+     its centre at 1.72 in clip space, well past the 1.0 that is the edge of the
+     picture. Standing it further BACK is what brings it in, because perspective
+     does the work: at side 0.38 and back 0.6 the whole thing sits inside 0.72
+     and it looks like it is in the room rather than pressed against the lens. */
+  height: 0.21, side: 0.38, back: -0.60,
+  gain: 1.8, fall: 5.5      // how hard the cones move, and how fast they relax
+};
+function boomBox() {
+  if (BOX.obj || BOX.loading || !gl.scene || !window.GLTFLoader) return BOX.obj;
+  BOX.loading = 1;
+  new window.GLTFLoader().load("models/boom_box.glb", (g) => {
+    BOX.obj = g.scene;
+    BOX.meshes = [];
+    BOX.obj.traverse((o) => {
+      if (o.isMesh && o.morphTargetInfluences && o.morphTargetInfluences.length) BOX.meshes.push(o);
+      if (o.isMesh) o.frustumCulled = false;
+    });
+    BOX.obj.visible = false;
+    gl.stage.add(BOX.obj);
+    /* A pool of its own. The box IS standing on the floor -- same plane as the
+       grid and the pool under him -- but it stands further back, where nothing
+       is drawn, so it reads as hovering. The floor here is mostly implied by
+       the light on it; a thing with no light under it is not on it. Same pool
+       the figure gets, smaller. */
+    BOX.pool = makePool(window.THREE);
+    gl.stage.add(BOX.pool);
+    BOX.loading = 0;
+  }, null, () => { BOX.loading = 0; });
+  return null;
+}
+
+/* Called every frame from the same place the floor and the pool are placed. */
+function boomBoxFrame(dt) {
+  const want = (world.seq && world.on > 0.5) ? 1 : 0;
+  if (want && !BOX.obj) boomBox();
+  BOX.on += (want - BOX.on) * (1 - Math.pow(1 - 0.06, dt / 16.67));
+  if (!BOX.obj) return;
+  if (BOX.on < 0.002) {
+    BOX.obj.visible = false;
+    if (BOX.pool) BOX.pool.visible = false;
+    return;
+  }
+  BOX.obj.visible = true;
+
+  const H1 = figH1() || 1, f = rig.R && rig.R.fit;
+  // its own model is 0.169 tall with its origin on its base, so this is just
+  // "how tall should it be" divided by "how tall is it"
+  const k = (H1 * BOX.height / 0.169) * (0.35 + 0.65 * BOX.on);
+  BOX.obj.scale.setScalar(k);
+  BOX.obj.position.set(H1 * BOX.side, f ? f.lo[1] - f.c[1] : 0, H1 * BOX.back);
+  // turned a little toward him rather than square to the camera
+  BOX.obj.rotation.set(0, -0.38, 0);
+
+  /* The cones. Mean onset across the bass bands, held with a fast decay so a
+     kick is a shape in time rather than one frame nobody sees. */
+  let lowHit = 0;
+  for (let b = 0; b < MUSIC_VIS.low; b++) lowHit += drive.hit[b];
+  lowHit = Math.min(1, lowHit / MUSIC_VIS.low * BOX.gain);
+  if (lowHit > BOX.pump) BOX.pump = lowHit;
+  else BOX.pump -= BOX.fall * (dt / 1000);
+  if (BOX.pump < 0) BOX.pump = 0;
+  const v = BOX.pump * BOX.on;
+  for (const m of BOX.meshes) m.morphTargetInfluences[0] = v;
+
+  if (BOX.pool) {
+    BOX.pool.visible = true;
+    BOX.pool.position.copy(BOX.obj.position);
+    /* Big enough to read as ground. At a third of his pool it was there in the
+       numbers and invisible on the screen, which left the box hovering -- and
+       it is not hovering: measured, its base sits within four units of the same
+       plane the pool under him is on. What was missing was anything to see it
+       against, this far back. */
+    BOX.pool.scale.setScalar(H1 * 0.62 * (0.6 + 0.4 * BOX.on));
+    // and it breathes with the cones, so the box looks like the source
+    BOX.pool.material.opacity = BOX.on * (0.55 + 0.35 * BOX.pump);
+  }
+}
+
 /* ---------------- music ----------------
 
    Files live in music/ and are listed in music/manifest.json, so adding a
@@ -5514,6 +5614,7 @@ function glFrame(K, FOC) {
   gl.root.position.set(world.x, world.y, world.z);
   gl.root.rotation.set(0, world.yaw, 0);
   if (gl.group) gl.group.position.set(-f.c[0], -f.c[1], -f.c[2]);
+  boomBoxFrame(gl.dt || 16.67);
   if (gl.ground) {
     /* A grid at a portrait angle is not a floor. Measured earlier: at 6 degrees
        the lengthwise lines have nothing on screen and what draws is a stack of
@@ -8116,6 +8217,8 @@ function loop() {
   const now = performance.now();
   let dt = now - lastT; lastT = now;
   if (dt > 250) dt = 250;
+  // the GL side is placed from a different function; it needs the same clock
+  gl.dt = dt;
 
   // states write drive before anything reads it
   updateState(dt);
