@@ -921,8 +921,13 @@ function analyseTts() {
    already gets resumed everywhere iOS suspends it, and a second context would
    be a second thing to keep alive for no benefit. */
 const MUSIC_DIR = "music/";
+/* How far below a track's own loudest moment counts as silence. Eighteen
+   decibels is about the dynamic range of a mastered pop record, so a chorus
+   lands at the top and a verse sits comfortably below it. */
+const MUSIC_RANGE = 18;
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
+  raw: new Float32Array(BANDS),
   list: null, i: -1, playing: false, title: "", unlocked: 0,
   // why the last attempt produced no music, so the page can say which
   err: "",
@@ -930,6 +935,27 @@ const music = {
   byDance: 0,
   scale: 0, spectrum: new Float32Array(BANDS), turbulence: 0, impulse: 0, hue: 0,
   // beat: a second of low-band energy history, and the intervals it has seen
+  /* Every master is different, and a visualiser with fixed numbers in it shows
+     some tracks and not others. Measured across these five, playing each one
+     through the real page: Yoga Pants drove the spectrum to 31 and the level to
+     0.70, Heat Waves to 10 and 0.49, Cosmic to 2.6 and 0.07 -- and Heat Waves
+     has the LOUDEST RMS of the five, so this is not about volume. It is a warm,
+     filtered mix with little at the top, and half the bands sit up there.
+
+     So the music path gets what the microphone path has always had and the
+     voice path never needed: a reference it follows. The voice is one rendered
+     speaker and can be measured against fixed numbers; five records cannot.
+     Each track is normalised against its OWN recent loudest moment, so every
+     one of them reaches the top of the range on its choruses. */
+  refDb: -14, specRef: 0.25,
+  /* Ten seconds of loudness history, and the reference is a high percentile of
+     it. A decaying maximum was the obvious thing and it does not work: it can
+     only fall at whatever rate you pick, so it is either too slow to reach a
+     quiet record (a decibel a second needs sixteen seconds to find Heat Waves,
+     which is fifteen seconds of a dead visualiser) or fast enough to pump on
+     every bar. A window has no rate at all -- it is simply right, ten seconds
+     late, and ten seconds is one chorus. */
+  hist: new Float32Array(600), histAt: 0, histN: 0, sortBuf: new Float32Array(600),
   eHist: new Float32Array(60), eAt: 0, lastBeat: 0, ivs: [], bpm: 0, bpmSaid: 0,
   // the tempo the dance is currently stretched to, so a change can be noticed
   bpmApplied: -1
@@ -1052,6 +1078,8 @@ async function musicPlay(which) {
   music.bpmSaid = +t.bpm || 0;
   music.bpm = music.bpmSaid;
   music.ivs.length = 0; music.lastBeat = 0; music.bpmApplied = -1;
+  // a new record is a new reference, or the last one's loud parts set the bar
+  music.refDb = -14; music.specRef = 0.25; music.histAt = 0; music.histN = 0;
   return music.title;
 }
 function musicStop() {
@@ -1084,18 +1112,51 @@ function analyseMusic() {
   const rms = Math.sqrt(sum / music.time.length);
   const zcr = zc / music.time.length;
   const db = 20 * Math.log10(rms + 1e-7);
-  let lvl = (db + 52) / 34;
+  music.hist[music.histAt % music.hist.length] = db;
+  music.histAt++;
+  if (music.histN < music.hist.length) music.histN++;
+  /* The 92nd percentile rather than the maximum: one cymbal crash should not
+     set the level the whole song is measured against. Recomputed every
+     sixteenth frame, which is four times a second and far more often than a
+     ten-second window can move. */
+  if ((music.histAt & 15) === 0) {
+    const nH = music.histN, buf = music.sortBuf.subarray(0, nH);
+    buf.set(music.hist.subarray(0, nH));
+    buf.sort();
+    music.refDb = buf[Math.min(nH - 1, Math.floor(nH * 0.92))];
+    if (music.refDb < -45) music.refDb = -45;
+  }
+  let lvl = (db - (music.refDb - MUSIC_RANGE)) / MUSIC_RANGE;
   if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
   music.scale += (lvl - music.scale) * (lvl > music.scale ? cfg.attack : cfg.release);
 
+  /* The same reference again, on the spectrum. A dull mix has to fill the ring
+     as much as a bright one -- what the ring is showing is the SHAPE of the
+     sound, and a shape drawn at a tenth of the size is not a quieter shape, it
+     is an invisible one. Two passes, because the ceiling has to be known before
+     anything is divided by it. */
   const N = music.freq.length;
+  let mxb = 0;
   for (let b = 0; b < BANDS; b++) {
     const lo = Math.floor(Math.pow(b / BANDS, 2) * N);
     const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / BANDS, 2) * N));
     let acc = 0;
     for (let i = lo; i < hi; i++) acc += music.freq[i];
-    music.spectrum[b] += (acc / (hi - lo) / 255 - music.spectrum[b]) * 0.35;
+    const v = acc / (hi - lo) / 255;
+    music.raw[b] = v;
+    if (v > mxb) mxb = v;
   }
+  /* The spectrum ceiling can chase harder than the level does. It is not
+     setting how loud anything looks, only how much of the ring the shape
+     fills, and a shape that takes a second to find its size is not something
+     anybody notices. */
+  if (mxb > music.specRef) music.specRef += (mxb - music.specRef) * 0.25;
+  else music.specRef -= 0.004;
+  if (music.specRef < 0.08) music.specRef = 0.08;
+  // bounded, so a near-silent passage is not amplified into snow
+  const sg = Math.min(4, 0.85 / music.specRef);
+  for (let b = 0; b < BANDS; b++)
+    music.spectrum[b] += (Math.min(1, music.raw[b] * sg) - music.spectrum[b]) * 0.35;
   let cn = 0, cd = 0, flux = 0;
   for (let i = 0; i < N; i++) {
     const val = music.freq[i] / 255;
