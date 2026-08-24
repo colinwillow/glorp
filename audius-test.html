@@ -145,18 +145,33 @@ function show(list) {
    So it tries the strict way first. If that will not load, it retries without
    and marks the result tainted, because sound with a dead analyser is the
    answer "this service cannot be visualised", not "it works". */
-let started = 0;
+let gen = 0;
 async function play(t) {
+  const mine = ++gen;                      // every tap supersedes the last
   const h = await getHost();
   const url = h + "/v1/tracks/" + t.id + "/stream?app_name=glorb-test";
-  started = Date.now();
   verdict("loading…", "");
   line("track " + t.id + " — " + (t.title || ""));
 
+  /* Ask the server what it thinks of this track before blaming the browser.
+     Now that we know the CORS headers are there, a one-byte range request is
+     readable -- so a gated or missing track can say 403 or 404 for itself
+     instead of arriving as an opaque "cannot play". */
+  try {
+    const probe = await fetch(url, { headers: { Range: "bytes=0-1" }, cache: "no-store" });
+    line("  stream " + probe.status + " " + (probe.headers.get("content-type") || "?"));
+    if (!probe.ok && probe.status !== 206) {
+      verdict("That track will not stream: HTTP " + probe.status
+        + ". Audius has gated and unavailable tracks; try another.", "warn");
+      return;
+    }
+  } catch (e) { line("  probe failed: " + e.name + " " + e.message); }
+  if (mine !== gen) { line("  superseded by a later tap"); return; }
+
   const attempt = (anon) => new Promise((res) => {
     let done = 0;
-    const finish = (ok) => { if (!done) { done = 1; cleanup(); res(ok); } };
-    const onPlay = () => finish(true), onErr = () => finish(false);
+    const finish = (r) => { if (!done) { done = 1; cleanup(); res(r); } };
+    const onPlay = () => finish("ok"), onErr = () => finish("err");
     const cleanup = () => {
       el.removeEventListener("playing", onPlay);
       el.removeEventListener("error", onErr);
@@ -166,12 +181,21 @@ async function play(t) {
     if (anon) el.crossOrigin = "anonymous"; else el.removeAttribute("crossorigin");
     el.src = url;
     el.load();
-    el.play().catch((e) => { line("play() rejected: " + e.name); finish(false); });
-    setTimeout(() => finish(false), 12000);
+    /* AbortError is not a failure. It is what play() gives you when a newer
+       load() interrupted it -- i.e. when you tapped something else. Treating
+       it as "this stream is broken" is what turned three quick taps into a
+       cascade of retries in the log, each one aborting the next. */
+    el.play().catch((e) => {
+      line("play() rejected: " + e.name);
+      finish(e.name === "AbortError" ? "abort" : "err");
+    });
+    setTimeout(() => finish("err"), 12000);
   });
 
   line("attempt 1: crossOrigin=anonymous (the one that lets the analyser see it)");
-  let ok = await attempt(true);
+  let r1 = await attempt(true);
+  if (mine !== gen || r1 === "abort") { line("  superseded by a later tap"); return; }
+  let ok = r1 === "ok";
   taint = false;
   if (!ok) {
     line("  failed — retrying without crossOrigin");
@@ -181,10 +205,16 @@ async function play(t) {
     el.pause(); el = new Audio(); el.preload = "auto"; el.playsInline = true;
     wired = false;
     line("attempt 2: no crossOrigin (sound may work, analyser may not)");
-    ok = await attempt(false);
+    const r2 = await attempt(false);
+    if (mine !== gen || r2 === "abort") { line("  superseded by a later tap"); return; }
+    ok = r2 === "ok";
     taint = ok;
   }
-  if (!ok) { verdict("No audio at all. The stream would not load either way — see the log.", "bad"); return; }
+  if (!ok) {
+    verdict("This track would not play, either way. The server served it, so this is that "
+      + "particular file rather than Audius — try another.", "warn");
+    return;
+  }
   wire();
   if (ac.state === "suspended") await ac.resume();
   line("playing" + (taint ? " WITHOUT crossOrigin — analyser is probably tainted" : ""));
