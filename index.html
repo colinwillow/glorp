@@ -923,7 +923,9 @@ function analyseTts() {
 const MUSIC_DIR = "music/";
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
-  list: null, i: -1, playing: false, title: "",
+  list: null, i: -1, playing: false, title: "", unlocked: 0,
+  // why the last attempt produced no music, so the page can say which
+  err: "",
   // 1 when the dance started it, so the dance can stop it again
   byDance: 0,
   scale: 0, spectrum: new Float32Array(BANDS), turbulence: 0, impulse: 0, hue: 0,
@@ -936,16 +938,55 @@ const music = {
 async function musicList() {
   if (music.list) return music.list;
   music.list = [];
+  music.listErr = "";
   try {
     const r = await fetch(MUSIC_DIR + "manifest.json", { cache: "no-store" });
-    if (r.ok) {
+    if (!r.ok) music.listErr = "music/manifest.json returned " + r.status;
+    else {
       const j = await r.json();
       const arr = Array.isArray(j) ? j : (j && j.tracks) || [];
       music.list = arr.filter((t) => t && t.file);
+      if (!music.list.length) music.listErr = "music/manifest.json lists nothing";
     }
-  } catch (e) { /* no manifest yet is not an error, it is an empty shelf */ }
+  } catch (e) {
+    music.listErr = "could not read music/manifest.json (" + (e && e.message || "failed") + ")";
+  }
   return music.list;
 }
+
+/* Half a millisecond of silence, as a file.
+   An audio element on iOS is not allowed to play until it has been played once
+   inside a real gesture, and there is no gesture anywhere near "play some
+   music" -- by then the only thing that happened was a person talking, which
+   Safari does not count and should not. So the element is started and stopped
+   on something inaudible at the moment somebody taps the microphone, and from
+   then on it will start when it is asked to. */
+const SILENCE = "data:audio/wav;base64,UklGRqQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+function musicUnlock() {
+  musicWire();
+  if (!music.el || music.unlocked) return;
+  music.unlocked = 1;
+  try {
+    music.el.src = SILENCE;
+    const p = music.el.play();
+    if (p && p.then) p.then(() => { try { music.el.pause(); } catch (e) {} }, () => {});
+  } catch (e) { /* a browser that did not need this is not a problem */ }
+}
+
+/* Any first touch, not just the microphone.
+
+   The microphone tap is a gesture and it was already being spent on the audio
+   context -- but the AUDIO ELEMENT is gated separately and did not exist yet at
+   that moment, so it never got its turn. That is the whole bug: the context was
+   unlocked and running, speech was working, and the one object that needed the
+   tap was created several minutes later by a sentence. Take the first touch
+   anywhere, whatever it lands on. */
+["pointerdown", "touchstart", "mousedown", "keydown"].forEach((ev) =>
+  addEventListener(ev, function once() {
+    ["pointerdown", "touchstart", "mousedown", "keydown"].forEach((e2) =>
+      removeEventListener(e2, once, true));
+    try { musicUnlock(); } catch (e) {}
+  }, true));
 
 function musicWire() {
   ensureTtsCtx();
@@ -971,8 +1012,15 @@ function musicWire() {
 }
 
 async function musicPlay(which) {
+  music.err = "";
   const list = await musicList();
-  if (!list.length) return "";
+  if (!list.length) {
+    /* Two different failures used to read as one line, and the one it printed
+       was the wrong one: "nothing in music/ yet" for a shelf that was full and
+       a browser that had refused to start it. */
+    music.err = music.listErr || "nothing listed in music/manifest.json";
+    return "";
+  }
   let idx;
   if (typeof which === "number") idx = ((which % list.length) + list.length) % list.length;
   else if (which) {
@@ -982,14 +1030,22 @@ async function musicPlay(which) {
     idx = f >= 0 ? f : (Math.random() * list.length) | 0;
   } else idx = (Math.random() * list.length) | 0;
   musicWire();
-  if (!music.el) return "";
+  if (!music.el) { music.err = "no audio output on this browser"; return ""; }
   const t = list[idx];
   music.i = idx;
   music.el.src = MUSIC_DIR + t.file;
   // one track on the shelf means that track on repeat, gaplessly, rather than
   // an `ended` and a reload every few minutes
   music.el.loop = list.length === 1;
-  try { await music.el.play(); } catch (e) { return ""; }
+  try {
+    if (ttsCtx && ttsCtx.state === "suspended") await ttsCtx.resume();
+    await music.el.play();
+  } catch (e) {
+    music.err = music.unlocked
+      ? "the browser would not start it (" + (e && e.name || "blocked") + ")"
+      : "tap the mic once first — this browser needs a tap before it will play audio";
+    return "";
+  }
   music.playing = true;
   music.title = t.title || t.file.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ");
   // a declared tempo is trusted; a measured one starts over with the track
@@ -1999,6 +2055,7 @@ micBtn.onclick = async () => {
       throw new Error("getUserMedia unavailable — needs https or localhost");
     // this click is the gesture; spend it on everything that needs one
     ensureTtsCtx();
+    musicUnlock();
     /* SPEECH FIRST, then the analyser. Two consumers want one microphone and
        the one that asks LAST is the one that keeps it -- which is why the
        analyser used to go dead the moment recognition started, and why granting
@@ -5667,7 +5724,7 @@ function musicSay(flat) {
   if (m && /\b(play|put on)\b/.test(flat)) {
     let want = (m[1] || "").replace(/\b(music|song|songs|track|tune|please|for me|some)\b/g, "").trim();
     musicPlay(want || undefined).then((t) => {
-      caption(null, t ? "♪ " + t : "nothing in music/ yet");
+      caption(null, t ? "♪ " + t : (music.err || "no music"));
     });
     return "music";
   }
@@ -5692,7 +5749,10 @@ function sandboxSay(flat) {
          is already playing, and flagged so that standing up stops it again --
          he started it, so it is his to stop. */
       if (/dance/.test(list[0] || "") && !music.playing)
-        musicPlay().then((t) => { if (t) { music.byDance = 1; caption(null, "♪ " + t); } });
+        musicPlay().then((t) => {
+          if (t) { music.byDance = 1; caption(null, "♪ " + t); }
+          else if (music.err) caption(null, music.err);
+        });
       const nm = playSeq(list, 0.3);
       if (!nm) continue;
       world.walking = 0; world.pose = 1; world.actUntil = 0;
