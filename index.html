@@ -2180,8 +2180,11 @@ let bare = (() => { try { return localStorage.getItem("orbBare") === "1"; } catc
 const bareBtn = document.getElementById("bareBtn");
 function syncBare() {
   document.body.classList.toggle("bare", bare);
-  // the spectrum is drawn INTO the canvas, so a CSS rule cannot reach it
-  showBars = !bare && barsWant;
+  /* The bars are not a readout. Everything else the eye hides is a number about
+     the machine -- frame rate, decibels, which state it is in -- and none of it
+     belongs on screen while you are just looking at the thing. The bars are the
+     sound itself, drawn, which is the same job the orb has. They stay. */
+  showBars = barsWant;
   // an open eye means "everything is showing, press to hide"; a struck-through
   // one means "it is all off, press to bring it back"
   bareBtn.innerHTML = bare
@@ -2205,7 +2208,7 @@ let barsWant = true;
 let showBars = true;
 document.getElementById("bars").onclick = (e) => {
   barsWant = !barsWant;
-  showBars = barsWant && !bare;
+  showBars = barsWant;
   e.target.textContent = barsWant ? "hide bars" : "show bars";
   e.target.classList.toggle("on", barsWant);
 };
@@ -2652,6 +2655,28 @@ function seedNear(cnt, spawnR) {
     px[i] = cx + Math.cos(a) * r; py[i] = cy + Math.sin(a) * r;
     vx[i] = vy[i] = 0; pz[i] = vz[i] = 0;
   }
+}
+
+/* The meter along the bottom, and its echo along the top.
+   h is how tall a full-scale band draws; top is how much of that the upper row
+   gets; fall is how fast a peak cap sinks, in full-scale units a second. */
+const BARS = { h: 56, top: 0.5, gap: 1.6, fall: 0.75, alpha: 0.55, peakA: 0.9, dim: 0.5,
+  /* A TILT, for the display only. The bands are spaced so the low end gets most
+     of them -- which is right for driving the ring, where the bass is where the
+     shape is -- and it means the right-hand half of a meter drawn straight off
+     them is empty on almost everything. Heat Waves worst of all: it is a warm
+     mix with nearly nothing above 5kHz, so two thirds of the width sat dark.
+     Every real analyser tilts its display for the same reason. It changes
+     nothing the orb reads. */
+  tilt: 2.4 };
+let barPeak = null;
+/* Rounded, because everything else here is made of circles and a square-ended
+   bar reads as a different program's widget. roundRect is not everywhere yet,
+   so fall back rather than throw. */
+function barRect(x, y, w, h) {
+  const r = Math.min(w * 0.5, h * 0.5);
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+  else ctx.fillRect(x, y, w, h);
 }
 
 const LUT_N = 96;
@@ -9177,12 +9202,51 @@ function loop() {
   }
 
   if (showBars) {
-    const bw = W / BANDS;
-    ctx.fillStyle = "rgba(200,244,154,0.30)";
+    if (!barPeak) barPeak = new Float32Array(BANDS);
+    const bw = W / BANDS, bwid = Math.max(1, bw - BARS.gap);
+    // seconds, clamped, so a stalled frame does not drop every peak at once
+    const dts = Math.min(0.1, dt / 1000);
     for (let b = 0; b < BANDS; b++) {
-      const h = drive.spectrum[b] * 46;
-      if (h > 0.5) ctx.fillRect(b * bw + 0.5, H - h, bw - 1, h);
+      /* Straight off the music analyser while a record is on, rather than off
+         the shared drive. Correct for a music meter -- it is the track being
+         drawn, so draw the track -- and it makes this an independent probe of
+         the thing you are seeing on Heat Waves. The two now fail differently:
+         bars moving with a dead orb means the drive is being taken by
+         something else; bars dead means the analyser is getting no audio. */
+      const src = music.playing ? music.spectrum : drive.spectrum;
+      let v = src[b] * (1 + (b / BANDS) * BARS.tilt);
+      if (v > 1) v = 1; else if (v < 0) v = 0;
+      /* Peak hold. The bar itself is the sound now and the cap is where it has
+         been -- it is what makes a meter readable, because the eye cannot
+         follow sixty-four things moving at once but it can follow the line they
+         leave behind. Up instantly, down slowly. */
+      if (v > barPeak[b]) barPeak[b] = v;
+      else { barPeak[b] -= BARS.fall * dts; if (barPeak[b] < v) barPeak[b] = v; }
+
+      /* Coloured out of the orb's OWN palette, sampled at the height the bar
+         has reached, so the meter is made of the same light as the thing above
+         it and shifts with it when the palette turns. A flat green strip is a
+         piece of UI sitting on top of a picture. */
+      let li = (((v * sizeHiPx) - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
+      if (li < 0) li = 0; else if (li > LUT_N - 1) li = LUT_N - 1;
+      const col = lut[li];
+      const x = b * bw + (bw - bwid) / 2;
+      const hB = v * BARS.h, pB = barPeak[b] * BARS.h;
+
+      ctx.globalAlpha = BARS.alpha;
+      ctx.fillStyle = col;
+      if (hB > 0.6) barRect(x, H - hB, bwid, hB);
+      if (pB > 1.5) { ctx.globalAlpha = BARS.peakA; barRect(x, H - pB - 2, bwid, 2); }
+
+      // and the same again off the top edge, shorter and quieter -- an echo of
+      // the bottom row rather than a second one competing with it
+      const hT = hB * BARS.top, pT = pB * BARS.top;
+      ctx.globalAlpha = BARS.alpha * BARS.dim;
+      ctx.fillStyle = col;
+      if (hT > 0.6) barRect(x, 0, bwid, hT);
+      if (pT > 1.5) { ctx.globalAlpha = BARS.peakA * BARS.dim; barRect(x, pT, bwid, 2); }
     }
+    ctx.globalAlpha = 1;
   }
 
   acc += dt; frames++;
