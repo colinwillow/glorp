@@ -4591,6 +4591,11 @@ function glLoad(buf, src, R) {
          would stutter the thing everyone is looking at. */
       if (gl.mixer) setTimeout(() => {
         for (const nm of Object.keys(gl.clips)) if (/walk|run/.test(nm)) clipSpeed(nm);
+        /* Pose signatures for anything that runs as a sequence, for the same
+           reason and at the same moment: sampling drives the mixer's clock, and
+           doing it at the hand-off would stutter the hand-off. */
+        for (const [, list, hold] of ACTS)
+          if (hold && list.length > 1) for (const nm of list) if (haveClip(nm)) clipPoses(nm);
       }, 1200);
       gl.src = src;
       res(g);
@@ -5011,6 +5016,165 @@ function pickOne(list) {
   return ok.length ? ok[(Math.random() * ok.length) | 0] : "";
 }
 
+/* WHERE IN A CLIP TO COME IN.
+
+   A crossfade blends the pose he is in toward the pose the new clip starts on,
+   and it is only ever as good as the distance between those two. The flares
+   end folded over with both hands near the floor; uprock starts upright with
+   its weight on one leg. No fade length makes that read as a move -- a short
+   one is the teleport, a long one is a swoop through a pose that is in neither
+   clip.
+
+   But a loop's first frame is only one of the poses in it. Sample the whole
+   clip once, and at the hand-off start it at whichever frame is CLOSEST to the
+   pose he is already standing in. Coming in a third of the way through a dance
+   costs nothing -- it is a loop, it will reach its own beginning shortly.
+
+   The signature is joint positions in group space, taken RELATIVE TO THE HIPS
+   and divided by his height, so it compares shapes rather than places: two
+   crouches match whether or not they are at the same spot on the floor, and
+   the number that comes out is in body heights and means the same thing for
+   any model that gets loaded here later. */
+const POSE_N = 48;
+const POSE_BONES = ["mixamorig_Hips", "mixamorig_Spine1", "mixamorig_Head",
+  "mixamorig_LeftArm", "mixamorig_LeftForeArm", "mixamorig_LeftHand",
+  "mixamorig_RightArm", "mixamorig_RightForeArm", "mixamorig_RightHand",
+  "mixamorig_LeftUpLeg", "mixamorig_LeftLeg", "mixamorig_LeftFoot",
+  "mixamorig_RightUpLeg", "mixamorig_RightLeg", "mixamorig_RightFoot"];
+const POSE_D = POSE_BONES.length * 3;
+let poseCur = null, poseTmp = null, poseM4 = null, poseV3 = null;
+
+function poseRead(out) {
+  const T = window.THREE;
+  if (!gl.mesh || !gl.mesh.skeleton || !gl.group) return null;
+  if (!poseM4) { poseM4 = new T.Matrix4(); poseV3 = new T.Vector3(); }
+  if (!gl.boneBy) {
+    gl.boneBy = {};
+    for (const bn of gl.mesh.skeleton.bones) gl.boneBy[bn.name] = bn;
+  }
+  const hips = gl.boneBy[POSE_BONES[0]];
+  if (!hips) return null;
+  poseM4.copy(gl.group.matrixWorld).invert();
+  const H = figH1() || 1;
+  poseV3.setFromMatrixPosition(hips.matrixWorld).applyMatrix4(poseM4);
+  const hx = poseV3.x, hy = poseV3.y, hz = poseV3.z;
+  for (let i = 0; i < POSE_BONES.length; i++) {
+    const bn = gl.boneBy[POSE_BONES[i]];
+    if (!bn) { out[i * 3] = 0; out[i * 3 + 1] = 0; out[i * 3 + 2] = 0; continue; }
+    poseV3.setFromMatrixPosition(bn.matrixWorld).applyMatrix4(poseM4);
+    out[i * 3] = (poseV3.x - hx) / H;
+    out[i * 3 + 1] = (poseV3.y - hy) / H;
+    out[i * 3 + 2] = (poseV3.z - hz) / H;
+  }
+  return out;
+}
+
+/* Sampled the same way clipSpeed samples, and for the same reason it is done
+   after the build rather than during it: driving the mixer's clock stutters
+   whatever is on screen. */
+function clipPoses(name) {
+  if (!gl.poses) gl.poses = {};
+  if (gl.poses[name] !== undefined) return gl.poses[name];
+  gl.poses[name] = null;                     // and never try twice, whatever happens
+  const clip = gl.clips && gl.clips[name];
+  if (!clip || !clip.duration || !gl.mixer || !gl.mesh) return null;
+  if (!poseTmp) { poseTmp = new Float32Array(POSE_D); poseCur = new Float32Array(POSE_D); }
+  /* Position AND velocity, in that order, 2*POSE_D wide.
+
+     Position alone is not enough and the flares showed why. It picks the
+     instant inside the spin where his limbs are arranged most like the next
+     dance -- and that instant is mid-spin, travelling fast in a direction the
+     next dance is not going. The pose matches and the motion reverses, which
+     reads as a stumble rather than a cut. Matching where he IS and where he is
+     GOING picks a slower moment that agrees about both. */
+  const data = new Float32Array(POSE_N * POSE_D * 2);
+  const was = gl.mixer.time, keep = gl.action;
+  for (const a of gl.mixer._actions.slice()) a.stop();
+  const act = gl.mixer.clipAction(clip);
+  act.reset(); act.setEffectiveWeight(1); act.play();
+  const W = POSE_D * 2;
+  for (let k = 0; k < POSE_N; k++) {
+    gl.mixer.setTime((k / POSE_N) * clip.duration);
+    gl.group.updateMatrixWorld(true);
+    if (poseRead(poseTmp)) data.set(poseTmp, k * W);
+  }
+  // central difference round the loop, in body heights per second
+  const step = clip.duration / POSE_N;
+  for (let k = 0; k < POSE_N; k++) {
+    const a = ((k + 1) % POSE_N) * W, b = ((k + POSE_N - 1) % POSE_N) * W;
+    for (let j = 0; j < POSE_D; j++)
+      data[k * W + POSE_D + j] = (data[a + j] - data[b + j]) / (2 * step);
+  }
+  act.stop();
+  if (keep) { keep.reset(); keep.setEffectiveWeight(1); keep.play(); gl.action = keep; }
+  gl.mixer.setTime(was);
+  gl.poses[name] = data;
+  return data;
+}
+
+// distance between two signatures, in body heights per joint. Rows in a clip's
+// table are 2*POSE_D wide -- position then velocity -- so ao strides by that.
+function poseDist(a, ao, b) {
+  let d = 0;
+  for (let j = 0; j < POSE_D; j++) { const e = a[ao + j] - b[j]; d += e * e; }
+  return Math.sqrt(d / POSE_BONES.length);
+}
+
+/* How much the direction of travel counts against the pose itself. Velocities
+   here run a few body heights a second against positions of a few tenths of a
+   body height, so this is mostly a units conversion with a thumb on it. */
+const POSE_VW = 0.08;
+
+/* The best way from one clip into another: WHERE TO LEAVE and WHERE TO ARRIVE.
+
+   Searching only the arrival is the obvious half and it is the weaker one.
+   Measured across the four dances, mean distance between the two poses:
+
+     leave at frame 0, arrive at frame 0      0.264      (what it did)
+     leave at frame 0, search the arrival     0.204
+     search both                              0.134
+
+   and the worst pair 0.365 -> 0.225. The three that do not involve the flares
+   collapse to 0.05, which is nothing at all. The flares is the one you named
+   and it is genuinely the hard case -- a flare is inverted on the hands for its
+   whole length, and no upright dance contains anything like it -- but every
+   route out of it wants to leave at phase 0.32, the instant he is most upright
+   inside the spin, and that is worth 0.32 -> 0.21 on its own.
+
+   2304 pairs of 45 numbers per link, once, cached. */
+function clipLink(from, to) {
+  if (!gl.link) gl.link = {};
+  const key = from + ">" + to;
+  if (gl.link[key] !== undefined) return gl.link[key];
+  gl.link[key] = null;
+  const A = clipPoses(from), B = clipPoses(to);
+  if (!A || !B) return null;
+  const W = POSE_D * 2;
+  let best = 1e30, be = 0, bn = 0, bp = 0;
+  for (let e = 0; e < POSE_N; e++) {
+    const ao = e * W;
+    for (let k = 0; k < POSE_N; k++) {
+      const bo = k * W;
+      let dp = 0, dv = 0;
+      for (let j = 0; j < POSE_D; j++) {
+        const q = A[ao + j] - B[bo + j]; dp += q * q;
+        const r = A[ao + POSE_D + j] - B[bo + POSE_D + j]; dv += r * r;
+      }
+      const d = dp + POSE_VW * POSE_VW * dv;
+      if (d < best) { best = d; be = e; bn = k; bp = dp; }
+    }
+  }
+  gl.link[key] = { exit: be / POSE_N, entry: bn / POSE_N,
+                   // the fade is paid for by the POSE gap; velocity only chose where
+                   dist: Math.sqrt(bp / POSE_BONES.length) };
+  return gl.link[key];
+}
+/* How long to take over it. A blend is a straight line between two poses and
+   nothing in the middle of it is a pose either clip contains, so a long one is
+   only worth paying for when the ends are far apart -- and a far pair given a
+   short one is the teleport. */
+function linkFade(d) { return Math.max(0.3, Math.min(0.75, 0.25 + d * 2.2)); }
+
 /* Told to dance, he dances -- he does not play one dance for ever.
 
    Held acts used to pick one clip out of their list and loop it until they were
@@ -5021,10 +5185,12 @@ function pickOne(list) {
    MIN_HOLD is why a clip is repeated rather than cut short. The list is not
    uniform -- the flares are 1.03s and uprock_01 is 13s -- so playing each one
    through once shows the short ones for a blink. Each gets whole repeats until
-   it has had four seconds, which keeps every hand-off ON A LOOP BOUNDARY: the
-   outgoing clip is at its own first frame at that moment, which is the pose
-   closest to a rest, and the blend into the next clip's first frame is the
-   smallest one available. */
+   it has had four seconds.
+
+   And it does not hand over on a loop boundary. It hands over at the moment in
+   the outgoing clip that is closest to a pose the incoming clip actually
+   contains -- see clipLink. The next clip is known as soon as the current one
+   starts, so the exit is scheduled the moment it begins. */
 const MIN_HOLD = 4000;
 function playSeq(list, fade) {
   const ok = list.filter(haveClip);
@@ -5034,23 +5200,31 @@ function playSeq(list, fade) {
     const t = ok[i]; ok[i] = ok[j]; ok[j] = t;
   }
   world.seq = { list: ok, i: 0, until: 0 };
-  return seqNext(fade);
+  return seqNext(fade, 0);
 }
-function seqNext(fade) {
+function seqNext(fade, atTime) {
   const s = world.seq;
   const nm = s.list[s.i % s.list.length];
   s.i++;
-  const dur = playClip(nm, fade);       // which clears world.seq...
-  world.seq = s;                        // ...so it is only ours if we say so
-  const reps = Math.max(1, Math.ceil(MIN_HOLD / Math.max(dur * 1000, 1)));
-  s.until = performance.now() + dur * reps * 1000;
+  const dur = playClip(nm, fade, false, atTime);   // which clears world.seq...
+  world.seq = s;                                   // ...so it is only ours if we say so
+  /* Whole repeats to the minimum, then out at the exit phase. Landing on the
+     exit costs up to one more pass of the clip, so it is taken out of the
+     repeats rather than added on top -- a four second minimum stays about four
+     seconds instead of becoming eight. */
+  const nxt = s.list[s.i % s.list.length];
+  const lk = nxt === nm ? null : clipLink(nm, nxt);
+  const exit = lk ? lk.exit : 0;
+  let hold = dur * Math.max(1, Math.ceil(MIN_HOLD / Math.max(dur * 1000, 1)) - 1) + dur * exit;
+  while (hold * 1000 < MIN_HOLD * 0.75) hold += dur;
+  s.until = performance.now() + hold * 1000;
   return nm;
 }
 
 /* Crossfaded, always. A cut between two poses of the same skeleton is the most
    obviously computed thing a character can do -- it is what separates a puppet
    from a performance, and it costs one call. */
-function playClip(name, fade, once) {
+function playClip(name, fade, once, atTime) {
   if (!gl.mixer || !haveClip(name)) return 0;
   const next = gl.mixer.clipAction(gl.clips[name]);
   /* Asking for the clip he is already doing is not a request to start it again.
@@ -5063,6 +5237,8 @@ function playClip(name, fade, once) {
     return gl.clips[name].duration;
   }
   next.reset();
+  // reset() rewinds to zero; a matched hand-off wants to come in elsewhere
+  if (atTime) next.time = atTime;
   next.setLoop(once ? window.THREE.LoopOnce : window.THREE.LoopRepeat, Infinity);
   next.clampWhenFinished = !!once;
   next.enabled = true;
@@ -5351,9 +5527,15 @@ function updateWorld(dt, now) {
       }
     }
   } else if (world.seq && now > world.seq.until) {
-    /* Longer than the fade anywhere else. Two dances are two whole-body poses
-       moving at speed, and a quick cut between them reads as a skip. */
-    const nm = seqNext(0.5);
+    /* The fade is as long as the two poses are far apart, and the incoming clip
+       starts wherever it comes closest to the one he is leaving. Two dances are
+       two whole-body poses moving at speed; a far pair given a quick cut is the
+       teleport, and a near pair given a long one is a wallow. */
+    const s = world.seq;
+    const nxt = s.list[s.i % s.list.length];
+    const lk = clipLink(world.act, nxt);
+    const nm = seqNext(lk ? linkFade(lk.dist) : 0.5,
+                       lk ? lk.entry * gl.clips[nxt].duration : 0);
     caption(null, nm.replace(/_/g, " "));
   } else if (world.actUntil && now > world.actUntil) {
     world.actUntil = 0;
