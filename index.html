@@ -7356,8 +7356,21 @@ function loop() {
       const sqx = sq, sqy = sq;
       const oCx = isOrb ? orbCX : cx, oCy = isOrb ? orbCY : cy;
       const oRk = isOrb ? orbK : 1;
-      let tx = oCx + ux * ringR * oRk * sqx * ex;
-      let ty = oCy + uy * ringR * oRk * sqy * ey;
+      /* The orb stays ROUND. ex and ey are the mouth: ey carries a jaw term
+         that doubles the vertical extent at full level, and ecc spreads or
+         rounds the lips by spectral centroid -- all of which is why the big orb
+         reads as something speaking rather than something pulsing.
+
+         At a third of the size, behind his head, it does not read as a mouth.
+         It reads as a circle being pulled into a tall thin slot, which is the
+         crevice. Take the two of them out and the only reaction left is the one
+         that was always the good one: ringR growing per particle with its own
+         frequency band, and the membrane and the kick pushing along the radius.
+         Those are radial in every direction, so it swells and breathes instead
+         of gaping. */
+      const oEx = isOrb ? 1 : ex, oEy = isOrb ? 1 : ey;
+      let tx = oCx + ux * ringR * oRk * sqx * oEx;
+      let ty = oCy + uy * ringR * oRk * sqy * oEy;
       /* The free particles part rather than surround. A ring big enough to
          encircle a word has to be as wide as the word is long, which means a
          huge circle round a small piece of text -- so the top half arches over
@@ -7490,8 +7503,8 @@ function loop() {
           let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2] * ringMul * oRk;
           // radius of the ellipse at this angle, or the membrane rounds the lips
           // straight back off the way it used to round off the corners
-          const elx = ey * (rx / rd), ely = ex * (ry / rd);
-          surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
+          const elx = oEy * (rx / rd), ely = oEx * (ry / rd);
+          surf *= oEx * oEy / Math.sqrt(elx * elx + ely * ely);
           if (surf > maxR * oRk) surf = maxR * oRk;
           const push = (surf - rd) * 0.02 * mb * oT * oT;
           ax += (rx / rd) * push; ay += (ry / rd) * push;
@@ -7584,7 +7597,12 @@ function loop() {
          and scaled with it. */
       const wcx = isOrb ? orbCX : cx, wcy = isOrb ? orbCY : cy;
       const wek = isOrb ? orbK : 1;
-      const wxh = hx * bi * wek, wyh = hy * bi * wek;
+      /* And a round wall, for the same reason. The field's ellipse is fitted to
+         the viewport so a phone gets its full height -- 1:2 on this screen --
+         and a 1:2 wall around a round orb is a bias with nothing to justify it:
+         a stray leaving sideways is caught at half the distance of one leaving
+         upward. The narrow axis, applied to both. */
+      const wxh = hx * bi * wek, wyh = (isOrb ? hx : hy) * bi * wek;
       const qx = (px[i] - wcx) / wxh, qy = (py[i] - wcy) / wyh;
       const q = Math.sqrt(qx * qx + qy * qy);
       if ((walled || isOrb) && q > containNow) {
