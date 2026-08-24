@@ -1,0 +1,256 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Audius → analyser test</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:#08090b; color:#c9d3cd; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+         padding:env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 14px); }
+  h1 { font-size:15px; font-weight:600; letter-spacing:.02em; color:#8ef0a8; margin:18px 0 2px; }
+  p.sub { margin:0 0 14px; color:#6b7a72; font-size:12px; }
+  button, input { font:inherit; border-radius:10px; border:1px solid #2a3630; background:#11161a; color:#c9d3cd; padding:11px 13px; }
+  button { cursor:pointer; }
+  button.go { background:#16281c; border-color:#2f5a3c; color:#9ef2b4; width:100%; font-size:16px; padding:16px; }
+  button:active { filter:brightness(1.35); }
+  .row { display:flex; gap:8px; margin:10px 0; }
+  .row input { flex:1; min-width:0; }
+  ol { list-style:none; padding:0; margin:8px 0; }
+  ol li { padding:10px 12px; border:1px solid #1d2721; border-radius:10px; margin-bottom:6px; cursor:pointer; }
+  ol li:active { background:#141b17; }
+  ol li b { color:#cfe8d6; font-weight:600; display:block; }
+  ol li span { color:#6b7a72; font-size:12px; }
+  #verdict { margin:14px 0; padding:14px; border-radius:12px; border:1px solid #2a3630;
+             background:#0d1113; font-size:15px; line-height:1.45; }
+  .ok   { border-color:#2f5a3c !important; color:#9ef2b4; }
+  .bad  { border-color:#5a2f2f !important; color:#f2a0a0; }
+  .warn { border-color:#5a4a2f !important; color:#f2d79e; }
+  canvas { width:100%; height:120px; display:block; background:#0a0d0f; border-radius:10px; border:1px solid #1d2721; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#0a0d0f; border:1px solid #1d2721;
+        border-radius:10px; padding:10px; font-size:11px; color:#7d8c84; max-height:44vh; overflow:auto; }
+  .k { color:#8ef0a8; }
+</style>
+
+<h1>Audius → analyser test</h1>
+<p class="sub">Does a streamed track actually reach the Web Audio analyser on this device? That is the only
+question here. Everything else about the orb is already known to work.</p>
+
+<button class="go" id="start">tap to start audio</button>
+
+<div id="app" hidden>
+  <div class="row">
+    <input id="q" placeholder="search Audius…" value="lofi" autocapitalize="off" autocorrect="off">
+    <button id="search">go</button>
+  </div>
+  <ol id="results"></ol>
+  <div id="verdict">Pick a track.</div>
+  <canvas id="bars" width="700" height="240"></canvas>
+  <pre id="log"></pre>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $("log"), verdictEl = $("verdict");
+const line = (s, cls) => {
+  const t = new Date().toISOString().slice(11, 19);
+  logEl.textContent += t + "  " + s + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+};
+const verdict = (s, cls) => { verdictEl.textContent = s; verdictEl.className = cls || ""; };
+
+/* ---- audio graph, built inside the first tap because iOS insists ---- */
+let ac = null, an = null, el = null, src = null, freq = null, time = null, wired = false;
+let taint = false;                 // true when we had to drop crossOrigin to get sound
+
+function build() {
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  an = ac.createAnalyser();
+  an.fftSize = 2048;
+  an.smoothingTimeConstant = 0.6;
+  freq = new Uint8Array(an.frequencyBinCount);
+  time = new Float32Array(an.fftSize);
+  el = new Audio();
+  el.preload = "auto";
+  el.playsInline = true;
+  el.addEventListener("error", () => {
+    const c = el.error ? el.error.code : 0;
+    line("element error code " + c + (c === 4 ? " (source not supported / blocked)" : ""));
+  });
+  // the silence trick: play something inaudible now, while we have the gesture
+  el.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+  el.play().then(() => el.pause(), () => {});
+  line("AudioContext " + ac.state + ", sample rate " + ac.sampleRate);
+}
+
+/* createMediaElementSource can only ever be called once per element, so the
+   graph is wired on the first real track and reused for every one after. */
+function wire() {
+  if (wired) return;
+  src = ac.createMediaElementSource(el);
+  const g = ac.createGain(); g.gain.value = 0.9;
+  src.connect(an); an.connect(g); g.connect(ac.destination);
+  wired = true;
+  line("graph wired: element → analyser → speakers");
+}
+
+/* ---- Audius ---- */
+let host = null;
+async function getHost() {
+  if (host) return host;
+  line("asking api.audius.co for a discovery node…");
+  const r = await fetch("https://api.audius.co", { cache: "no-store" });
+  const j = await r.json();
+  const hosts = (j && j.data) || [];
+  if (!hosts.length) throw new Error("no discovery nodes returned");
+  host = hosts[Math.floor(Math.random() * Math.min(hosts.length, 5))];
+  line("using " + host);
+  return host;
+}
+
+async function search(q) {
+  const h = await getHost();
+  const u = h + "/v1/tracks/search?query=" + encodeURIComponent(q) + "&app_name=glorb-test";
+  line("GET " + u);
+  const r = await fetch(u, { cache: "no-store" });
+  line("  → " + r.status);
+  const j = await r.json();
+  return (j.data || []).filter((t) => t && t.id).slice(0, 8);
+}
+
+function show(list) {
+  const ol = $("results");
+  ol.innerHTML = "";
+  if (!list.length) { ol.innerHTML = "<li><b>nothing found</b></li>"; return; }
+  for (const t of list) {
+    const li = document.createElement("li");
+    li.innerHTML = "<b></b><span></span>";
+    li.querySelector("b").textContent = t.title || "(untitled)";
+    li.querySelector("span").textContent =
+      ((t.user && t.user.name) || "?") + " · " + (t.duration || "?") + "s";
+    li.onclick = () => play(t);
+    ol.appendChild(li);
+  }
+}
+
+/* THE ACTUAL TEST.
+
+   Two ways this can fail and they look completely different from the outside,
+   which is the whole reason this page exists:
+
+     crossOrigin="anonymous" and no CORS header  → the load fails, no sound
+     no crossOrigin and no CORS header           → sound plays, and the graph
+                                                   is tainted: the analyser
+                                                   returns silence for ever
+
+   So it tries the strict way first. If that will not load, it retries without
+   and marks the result tainted, because sound with a dead analyser is the
+   answer "this service cannot be visualised", not "it works". */
+let started = 0;
+async function play(t) {
+  const h = await getHost();
+  const url = h + "/v1/tracks/" + t.id + "/stream?app_name=glorb-test";
+  started = Date.now();
+  verdict("loading…", "");
+  line("track " + t.id + " — " + (t.title || ""));
+
+  const attempt = (anon) => new Promise((res) => {
+    let done = 0;
+    const finish = (ok) => { if (!done) { done = 1; cleanup(); res(ok); } };
+    const onPlay = () => finish(true), onErr = () => finish(false);
+    const cleanup = () => {
+      el.removeEventListener("playing", onPlay);
+      el.removeEventListener("error", onErr);
+    };
+    el.addEventListener("playing", onPlay);
+    el.addEventListener("error", onErr);
+    if (anon) el.crossOrigin = "anonymous"; else el.removeAttribute("crossorigin");
+    el.src = url;
+    el.load();
+    el.play().catch((e) => { line("play() rejected: " + e.name); finish(false); });
+    setTimeout(() => finish(false), 12000);
+  });
+
+  line("attempt 1: crossOrigin=anonymous (the one that lets the analyser see it)");
+  let ok = await attempt(true);
+  taint = false;
+  if (!ok) {
+    line("  failed — retrying without crossOrigin");
+    /* A tainted element can never feed a graph, so the element is replaced
+       wholesale; the old MediaElementSource dies with it. */
+    try { if (src) src.disconnect(); } catch (e) {}
+    el.pause(); el = new Audio(); el.preload = "auto"; el.playsInline = true;
+    wired = false;
+    line("attempt 2: no crossOrigin (sound may work, analyser may not)");
+    ok = await attempt(false);
+    taint = ok;
+  }
+  if (!ok) { verdict("No audio at all. The stream would not load either way — see the log.", "bad"); return; }
+  wire();
+  if (ac.state === "suspended") await ac.resume();
+  line("playing" + (taint ? " WITHOUT crossOrigin — analyser is probably tainted" : ""));
+}
+
+/* ---- the meter, and the verdict it produces ---- */
+const cv = $("bars"), cx = cv.getContext("2d");
+let quiet = 0, loud = 0;
+function draw() {
+  requestAnimationFrame(draw);
+  const W = cv.width, H = cv.height;
+  cx.fillStyle = "#0a0d0f"; cx.fillRect(0, 0, W, H);
+  if (!an) return;
+  an.getByteFrequencyData(freq);
+  an.getFloatTimeDomainData(time);
+  let sum = 0, peak = 0;
+  for (let i = 0; i < time.length; i++) { const v = time[i]; sum += v * v; if (Math.abs(v) > peak) peak = Math.abs(v); }
+  const rms = Math.sqrt(sum / time.length);
+
+  const N = 64, bw = W / N;
+  for (let b = 0; b < N; b++) {
+    let a = 0;
+    const lo = Math.floor(Math.pow(b / N, 2) * freq.length);
+    const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / N, 2) * freq.length));
+    for (let i = lo; i < hi; i++) a += freq[i];
+    const v = a / (hi - lo) / 255;
+    const h = v * (H - 8) * (1 + (b / N) * 2.4);
+    cx.fillStyle = "rgba(142,240,168," + (0.35 + v * 0.6) + ")";
+    if (h > 1) cx.fillRect(b * bw + 1, H - h, bw - 2, h);
+  }
+
+  // the element is running but the analyser sees nothing = tainted by CORS
+  if (el && !el.paused && el.currentTime > 0.4) {
+    if (rms < 0.0005) quiet++; else loud++;
+    if (loud > 20) {
+      verdict("WORKS. Audio is playing and the analyser is seeing it — peak "
+        + peak.toFixed(3) + ", rms " + rms.toFixed(4) + ". Audius can drive the orb.", "ok");
+    } else if (quiet > 150) {
+      verdict(taint
+        ? "Audio plays, analyser is DEAD. The stream sends no CORS header, so the graph is tainted "
+          + "and returns silence. Audius playback works here; visualising it does not."
+        : "Audio is running but the analyser reads zero. Something is muting the graph — see the log.",
+        "bad");
+    }
+  }
+  if (el && el.currentTime > 0.4 && el.currentTime < 0.6) line("audio is running, t=" + el.currentTime.toFixed(1));
+}
+draw();
+
+/* ---- wiring ---- */
+$("start").onclick = () => {
+  build();
+  $("start").hidden = true;
+  $("app").hidden = false;
+  line("started. now search and pick a track.");
+};
+$("search").onclick = async () => {
+  $("results").innerHTML = "<li><b>searching…</b></li>";
+  quiet = loud = 0;
+  try { show(await search($("q").value.trim() || "lofi")); }
+  catch (e) {
+    $("results").innerHTML = "";
+    line("SEARCH FAILED: " + e.name + " — " + e.message);
+    verdict("Could not reach the Audius API at all. If this says TypeError it is CORS or the network, "
+      + "not the audio — the orb never got as far as a stream.", "bad");
+  }
+};
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("search").click(); });
+</script>
