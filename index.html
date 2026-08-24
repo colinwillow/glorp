@@ -395,6 +395,7 @@ function srcSpeaking(t) {
 function updateState(dt) {
   stateT += dt; blendT += dt;
   analyseTts();
+  analyseMusic();
 
   if (!manual) {
     // barge-in: voice wins from any state, so it can be interrupted mid-sentence
@@ -431,7 +432,17 @@ function updateState(dt) {
   }
 
   const t = stateT / 1000;
-  if (state === "listening") {
+  /* Music takes the visuals while it is on. Not while he is SPEAKING -- his
+     own voice has to keep the mouth, or he mouths the track instead of the
+     sentence -- and not while he is thinking, which has a look of its own. The
+     rest of the time the orb is reacting to the room, and the loudest thing in
+     the room is the music. */
+  if (music.playing && state !== "speaking" && state !== "thinking") {
+    srcD.scale = music.scale; srcD.hue = music.hue;
+    srcD.turbulence = music.turbulence; srcD.impulse = music.impulse;
+    srcD.spectrum.set(music.spectrum);
+  }
+  else if (state === "listening") {
     srcD.scale = mic.scale; srcD.hue = mic.hue;
     srcD.turbulence = mic.turbulence; srcD.impulse = mic.impulse;
     srcD.spectrum.set(mic.spectrum);
@@ -889,6 +900,239 @@ function analyseTts() {
   tts.hue += (centroid * g - tts.hue) * 0.06;
   tts.turbulence += (Math.min(1, zcr * 26) * g - tts.turbulence) * 0.16;
   tts.impulse = Math.max(tts.impulse * 0.86, Math.min(1, flux * 0.05) * g);
+}
+
+/* ---------------- music ----------------
+
+   Files live in music/ and are listed in music/manifest.json, so adding a
+   track is dropping a file next to a line of JSON rather than editing this
+   page. Each entry is { file, title, bpm } and only `file` is required -- the
+   tempo is measured from the audio if it is not declared, and a declared one
+   is trusted over the measurement because a number typed by someone who knows
+   the track beats an onset detector every time.
+
+   It shares the TTS AudioContext deliberately. Safari will only start a
+   context inside a real gesture, that one is already built inside a click and
+   already gets resumed everywhere iOS suspends it, and a second context would
+   be a second thing to keep alive for no benefit. */
+const MUSIC_DIR = "music/";
+const music = {
+  el: null, an: null, gain: null, freq: null, time: null, prev: null,
+  list: null, i: -1, playing: false, title: "",
+  // 1 when the dance started it, so the dance can stop it again
+  byDance: 0,
+  scale: 0, spectrum: new Float32Array(BANDS), turbulence: 0, impulse: 0, hue: 0,
+  // beat: a second of low-band energy history, and the intervals it has seen
+  eHist: new Float32Array(60), eAt: 0, lastBeat: 0, ivs: [], bpm: 0, bpmSaid: 0,
+  // the tempo the dance is currently stretched to, so a change can be noticed
+  bpmApplied: -1
+};
+
+async function musicList() {
+  if (music.list) return music.list;
+  music.list = [];
+  try {
+    const r = await fetch(MUSIC_DIR + "manifest.json", { cache: "no-store" });
+    if (r.ok) {
+      const j = await r.json();
+      const arr = Array.isArray(j) ? j : (j && j.tracks) || [];
+      music.list = arr.filter((t) => t && t.file);
+    }
+  } catch (e) { /* no manifest yet is not an error, it is an empty shelf */ }
+  return music.list;
+}
+
+function musicWire() {
+  ensureTtsCtx();
+  if (music.an || !ttsCtx) return;
+  if (!music.el) {
+    music.el = new Audio();
+    music.el.preload = "auto";
+    music.el.crossOrigin = "anonymous";
+    music.el.addEventListener("ended", () => { if (music.playing) musicPlay(music.i + 1); });
+  }
+  const an = ttsCtx.createAnalyser();
+  an.fftSize = 2048; an.smoothingTimeConstant = 0.5;
+  /* Once per element, ever. createMediaElementSource re-routes the element
+     away from the speakers into the graph, and calling it twice throws. */
+  const src = ttsCtx.createMediaElementSource(music.el);
+  const g = ttsCtx.createGain();
+  g.gain.value = 0.75;
+  src.connect(an); an.connect(g); g.connect(ttsCtx.destination);
+  music.an = an; music.gain = g;
+  music.freq = new Uint8Array(an.frequencyBinCount);
+  music.prev = new Float32Array(an.frequencyBinCount);
+  music.time = new Float32Array(an.fftSize);
+}
+
+async function musicPlay(which) {
+  const list = await musicList();
+  if (!list.length) return "";
+  let idx;
+  if (typeof which === "number") idx = ((which % list.length) + list.length) % list.length;
+  else if (which) {
+    const q = String(which).toLowerCase().trim();
+    const f = list.findIndex((t) =>
+      (t.title || "").toLowerCase().includes(q) || (t.file || "").toLowerCase().includes(q));
+    idx = f >= 0 ? f : (Math.random() * list.length) | 0;
+  } else idx = (Math.random() * list.length) | 0;
+  musicWire();
+  if (!music.el) return "";
+  const t = list[idx];
+  music.i = idx;
+  music.el.src = MUSIC_DIR + t.file;
+  // one track on the shelf means that track on repeat, gaplessly, rather than
+  // an `ended` and a reload every few minutes
+  music.el.loop = list.length === 1;
+  try { await music.el.play(); } catch (e) { return ""; }
+  music.playing = true;
+  music.title = t.title || t.file.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ");
+  // a declared tempo is trusted; a measured one starts over with the track
+  music.bpmSaid = +t.bpm || 0;
+  music.bpm = music.bpmSaid;
+  music.ivs.length = 0; music.lastBeat = 0; music.bpmApplied = -1;
+  return music.title;
+}
+function musicStop() {
+  if (music.el) music.el.pause();
+  music.playing = false; music.byDance = 0; music.bpmApplied = -1;
+  // back to its own speed, or he keeps dancing to a tempo that is not there
+  if (gl.action) gl.action.setEffectiveTimeScale(1);
+}
+
+/* The same numbers the voice produces, from the same kind of analyser, so the
+   orb reacts to a track exactly the way it reacts to a sentence -- plus the
+   one thing a sentence does not have. */
+function analyseMusic() {
+  if (!music.playing || !music.an) return;
+  /* `playing` is the INTENT, and only musicStop clears it. Reading it off the
+     element instead meant the gap between one track ending and the next
+     starting counted as the music being off -- and the dance, which asks
+     whether music is playing to decide how fast to run, fell back to its own
+     speed for a clip and then stayed there. */
+  if (music.el && music.el.paused) return;
+  music.an.getByteFrequencyData(music.freq);
+  music.an.getFloatTimeDomainData(music.time);
+
+  let sum = 0, zc = 0, last = music.time[0];
+  for (let i = 0; i < music.time.length; i++) {
+    const v = music.time[i]; sum += v * v;
+    if ((v >= 0) !== (last >= 0)) zc++;
+    last = v;
+  }
+  const rms = Math.sqrt(sum / music.time.length);
+  const zcr = zc / music.time.length;
+  const db = 20 * Math.log10(rms + 1e-7);
+  let lvl = (db + 52) / 34;
+  if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
+  music.scale += (lvl - music.scale) * (lvl > music.scale ? cfg.attack : cfg.release);
+
+  const N = music.freq.length;
+  for (let b = 0; b < BANDS; b++) {
+    const lo = Math.floor(Math.pow(b / BANDS, 2) * N);
+    const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / BANDS, 2) * N));
+    let acc = 0;
+    for (let i = lo; i < hi; i++) acc += music.freq[i];
+    music.spectrum[b] += (acc / (hi - lo) / 255 - music.spectrum[b]) * 0.35;
+  }
+  let cn = 0, cd = 0, flux = 0;
+  for (let i = 0; i < N; i++) {
+    const val = music.freq[i] / 255;
+    cn += i * val; cd += val;
+    const diff = val - music.prev[i];
+    if (diff > 0) flux += diff;
+    music.prev[i] = val;
+  }
+  let centroid = cd > 0.001 ? cn / cd / N : 0;
+  centroid = (centroid - 0.03) / 0.20;
+  if (centroid < 0) centroid = 0; else if (centroid > 1) centroid = 1;
+  const g = Math.min(1, Math.max(0, (music.scale - cfg.gateFloor) / 0.12));
+  music.hue += (centroid * g - music.hue) * 0.06;
+  music.turbulence += (Math.min(1, zcr * 26) * g - music.turbulence) * 0.16;
+  music.impulse = Math.max(music.impulse * 0.86, Math.min(1, flux * 0.05) * g);
+
+  /* THE BEAT. Energy in the bottom of the spectrum against its own recent
+     average: a kick is a large brief rise in a band a voice does not live in.
+     A ratio rather than a threshold, so it works on a quiet track and a loud
+     one; a refractory period, because one kick spread over three frames is one
+     beat; and the tempo is the MEDIAN interval rather than the mean, because a
+     detector that misses a beat produces one double-length interval and a mean
+     swallows it whole. */
+  let lowE = 0;
+  for (let i = 0; i < 24; i++) { const v = music.freq[i] / 255; lowE += v * v; }
+  lowE /= 24;
+  let mean = 0;
+  for (let i = 0; i < music.eHist.length; i++) mean += music.eHist[i];
+  mean /= music.eHist.length;
+  music.eHist[music.eAt++ % music.eHist.length] = lowE;
+  const now = performance.now();
+  if (lowE > mean * 1.45 && lowE > 0.004 && now - music.lastBeat > 240) {
+    if (music.lastBeat) {
+      const iv = now - music.lastBeat;
+      if (iv < 1500) { music.ivs.push(iv); if (music.ivs.length > 32) music.ivs.shift(); }
+    }
+    music.lastBeat = now;
+    if (!music.bpmSaid && music.ivs.length >= 8) {
+      const srt = music.ivs.slice().sort((a, b) => a - b);
+      let t = 60000 / srt[srt.length >> 1];
+      /* Folded into the octave a person would tap. A detector counting every
+         hi-hat as well as every kick reports a tempo two or four times the one
+         anybody is dancing to -- Cosmic came out at 190 -- and since this
+         number's only job is to stretch a dance to fit, being an octave out is
+         worse than being a little off. */
+      while (t > 150) t /= 2;
+      while (t < 65) t *= 2;
+      music.bpm = t;
+    }
+  }
+
+  /* And whatever is dancing gets the tempo the moment it is known, rather than
+     at the next hand-off. The first dance starts before the track has even
+     loaded, and a measured tempo needs a few seconds of kicks to settle, so
+     waiting would leave the opening ten seconds -- the ten seconds anyone is
+     actually watching -- running free. Changing a timeScale mid-clip costs
+     nothing: it is a speed, not a position, so nothing jumps. */
+  if (world.seq && gl.action && Math.abs(music.bpm - music.bpmApplied) > 0.5) {
+    music.bpmApplied = music.bpm;
+    const c = gl.clips && gl.clips[world.act];
+    if (c) gl.action.setEffectiveTimeScale(beatWarp(c.duration));
+  }
+}
+
+/* Dancing TO it rather than NEAR it.
+
+   A clip has its own length and the track has its own beat, and there is no
+   reason for them to agree. Stretch the clip by the smallest amount that makes
+   its length a whole number of beats, and every repeat lands on one -- which is
+   most of what "in time" looks like, without touching the choreography.
+
+   Clamped, because past about a fifth either way it stops being the same dance:
+   a flare at 1.3x is a blur and a k-kick at 0.8x is a man wading. Outside the
+   clamp it plays at its own speed and simply is not in time, which looks better
+   than the alternative. */
+function beatWarp(dur) {
+  if (!music.playing || !music.bpm || !dur) return 1;
+  const beat = 60 / music.bpm;
+  /* Over a RUN of the clip, not one pass of it. The flares is 1.03s, and at 92
+     BPM one pass wants to be either 1 beat (a 58% speed-up) or 2 (a 21%
+     slow-down) -- both far enough to wreck it, so it ran free and off the
+     beat. Four passes want to be 6 beats, which is a 5% stretch. Every fourth
+     landing is still a landing, and a phrase that comes round every six beats
+     is a phrase; what it is not is drift.
+
+     Clips are held for several passes anyway (see MIN_HOLD), so this costs
+     nothing. The smallest stretch that fits wins, and if none fits inside the
+     clamp it runs at its own speed, which looks better than a blur. */
+  let best = 1, bestErr = 1e9;
+  for (let reps = 1; reps <= 4; reps++) {
+    const total = dur * reps;
+    const beats = Math.max(1, Math.round(total / beat));
+    const r = total / (beats * beat);
+    if (r < 0.88 || r > 1.14) continue;
+    const err = Math.abs(Math.log(r));
+    if (err < bestErr) { bestErr = err; best = r; }
+  }
+  return best;
 }
 
 let ttsGen = 0;
@@ -5206,8 +5450,15 @@ function seqNext(fade, atTime) {
   const s = world.seq;
   const nm = s.list[s.i % s.list.length];
   s.i++;
-  const dur = playClip(nm, fade, false, atTime);   // which clears world.seq...
-  world.seq = s;                                   // ...so it is only ours if we say so
+  /* In time with whatever is playing. The clip is stretched so its length is a
+     whole number of beats, which puts every repeat and every hand-off on one.
+     Worked out before it starts, because the timeScale has to be in place
+     before the crossfade is, and the hold below is measured in the STRETCHED
+     length or the exit lands at the wrong phase and undoes the matching. */
+  const warp = beatWarp(gl.clips[nm] ? gl.clips[nm].duration : 0);
+  const raw = playClip(nm, fade, false, atTime, warp);   // which clears world.seq...
+  world.seq = s;                                        // ...so it is only ours if we say so
+  const dur = raw / warp;
   /* Whole repeats to the minimum, then out at the exit phase. Landing on the
      exit costs up to one more pass of the clip, so it is taken out of the
      repeats rather than added on top -- a four second minimum stays about four
@@ -5224,7 +5475,7 @@ function seqNext(fade, atTime) {
 /* Crossfaded, always. A cut between two poses of the same skeleton is the most
    obviously computed thing a character can do -- it is what separates a puppet
    from a performance, and it costs one call. */
-function playClip(name, fade, once, atTime) {
+function playClip(name, fade, once, atTime, tScale) {
   if (!gl.mixer || !haveClip(name)) return 0;
   const next = gl.mixer.clipAction(gl.clips[name]);
   /* Asking for the clip he is already doing is not a request to start it again.
@@ -5239,11 +5490,19 @@ function playClip(name, fade, once, atTime) {
   next.reset();
   // reset() rewinds to zero; a matched hand-off wants to come in elsewhere
   if (atTime) next.time = atTime;
+  // and before the fade is set up, because the fade can be told to warp time
+  next.setEffectiveTimeScale(tScale || 1);
   next.setLoop(once ? window.THREE.LoopOnce : window.THREE.LoopRepeat, Infinity);
   next.clampWhenFinished = !!once;
   next.enabled = true;
   next.setEffectiveWeight(1);
-  if (gl.action && gl.action !== next) next.crossFadeFrom(gl.action, fade == null ? 0.28 : fade, true);
+  /* Not time-warped. crossFadeFrom's third argument makes the mixer ramp both
+     clips' timeScale toward each other through the blend, which is meant for
+     a walk becoming a run and is wrong for two dances of unrelated length --
+     and it silently overwrites a timeScale set on purpose, which is how the
+     beat warp came out as 1.000 every time. Measured with it on and off, the
+     blend itself is identical. */
+  if (gl.action && gl.action !== next) next.crossFadeFrom(gl.action, fade == null ? 0.28 : fade, false);
   next.play();
   gl.action = next;
   world.act = name;
@@ -5332,11 +5591,35 @@ function sandboxMove(flat) {
   return "";
 }
 
+/* Music is not a sandbox thing -- it plays whether or not he is standing in a
+   room -- so it is answered before anything that needs him to be. */
+function musicSay(flat) {
+  if (/\b(stop|kill|turn off|no more|enough)\b.*\b(music|song|track|tune)\b/.test(flat) ||
+      /\b(music|song|track|tune)\b.*\b(off|stop)\b/.test(flat)) {
+    if (!music.playing) return "";
+    musicStop(); caption(null, "music off"); return "music off";
+  }
+  if (/\b(next|another|skip|different)\b.*\b(song|track|tune|one)\b/.test(flat) && music.playing) {
+    musicPlay(music.i + 1).then((t) => t && caption(null, "♪ " + t));
+    return "next track";
+  }
+  const m = flat.match(/\bplay\b(?:\s+(?:me|us|the|some|a))*\s*(.*)$/);
+  if (m && /\b(play|put on)\b/.test(flat)) {
+    let want = (m[1] || "").replace(/\b(music|song|songs|track|tune|please|for me|some)\b/g, "").trim();
+    musicPlay(want || undefined).then((t) => {
+      caption(null, t ? "♪ " + t : "nothing in music/ yet");
+    });
+    return "music";
+  }
+  return "";
+}
+
 function sandboxSay(flat) {
   if (!world.on) return "";
   /* Out of a pose first. Nothing in the table means "stand up", so a phrase
      that does has to be caught before it can match something that doesn't. */
   if (world.pose && /\b(stand( up)?|get up|sit up|up you get|enough|as you were)\b/.test(flat)) {
+    if (music.byDance) musicStop();
     world.pose = 0; world.actUntil = 0; playClip(pickIdle(), 0.45);
     world.idleAt = performance.now() + 5000;
     return "up";
@@ -5345,6 +5628,11 @@ function sandboxSay(flat) {
     if (!re.test(flat)) continue;
     // a held act with somewhere to go runs as a sequence rather than a loop
     if (hold && list.filter(haveClip).length > 1) {
+      /* Asked to dance, put something on. Only for the dances, only if nothing
+         is already playing, and flagged so that standing up stops it again --
+         he started it, so it is his to stop. */
+      if (/dance/.test(list[0] || "") && !music.playing)
+        musicPlay().then((t) => { if (t) { music.byDance = 1; caption(null, "♪ " + t); } });
       const nm = playSeq(list, 0.3);
       if (!nm) continue;
       world.walking = 0; world.pose = 1; world.actUntil = 0;
@@ -6655,6 +6943,10 @@ function heardSentence(heard) {
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
+  /* Music, before anything that needs him to be standing in a room. "Play some
+     music" is the same instruction whether he is there or not, and the word
+     "play" is used nowhere else. */
+  if (musicSay(flat)) { caption(heard, ""); return "music"; }
   /* While he is standing in his room, what he can do outranks the brain. "Do a
      backflip" is not a question. */
   if (world.on > 0.5 && sandboxSay(flat)) { caption(heard, ""); return "act"; }
