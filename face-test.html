@@ -66,9 +66,20 @@
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { DRACOLoader } from "./vendor/DRACOLoader.js";
 import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
 
 const $ = (id) => document.getElementById(id);
+
+/* A Blender export with "compression" ticked is Draco, and Draco is listed in
+   extensionsRequired -- so without a decoder the loader does not degrade, it
+   refuses the file outright. One shared loader, so the decoder is fetched and
+   the worker spun up once rather than per model. */
+const GLTF = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath("./vendor/draco/");
+draco.setDecoderConfig({ type: "wasm" });
+GLTF.setDRACOLoader(draco);
 const logEl = $("log");
 const line = (s) => { logEl.textContent += s + "\n"; logEl.scrollTop = 1e6; };
 const say = (s, cls) => { $("status").textContent = s; $("status").className = cls || ""; };
@@ -90,7 +101,51 @@ const VIS_RIG = {
   L:    { jawOpen:0.34, tongueOut:0.32, mouthStretchLeft:0.14, mouthStretchRight:0.14 },
   etc:  { jawOpen:0.22, mouthStretchLeft:0.20, mouthStretchRight:0.20 }
 };
+/* Reallusion ships its own viseme set on CC meshes, and it is better than
+   anything we can build out of ARKit parts. V_Open, V_Tight_O, V_Wide and the
+   rest are sculpted phoneme shapes -- one shape per mouth position, made by
+   people who do this for a living. The ARKit rig above has to reconstruct a
+   vowel from a jaw angle plus a pucker plus two stretches and hope they add up.
+
+   It also sidesteps a real trap. This mesh has no plain Mouth_Funnel or
+   Mouth_Pucker, only the four corner variants of each, so the ARKit rig drives
+   O and U off Mouth_Funnel_Up_L alone -- one corner of four. Which does not
+   look like a bug. It looks like a bad mesh. */
+const VIS_RIG_CC = {
+  rest: {},
+  MBP:  { V_Explosive: 1.00 },
+  FV:   { V_Dental_Lip: 1.00 },
+  E:    { V_Wide: 0.88 },
+  AI:   { V_Open: 0.90, V_Lip_Open: 0.35 },
+  O:    { V_Tight_O: 0.92 },
+  U:    { V_Tight_O: 0.55, V_Tight: 0.60 },
+  WQ:   { V_Tight: 0.95 },
+  L:    { V_Lip_Open: 0.50, V_Tongue_Raise: 0.70, V_Tongue_Out: 0.20 },
+  etc:  { V_Affricate: 0.80 }
+};
+let RIG = VIS_RIG;
 let GAIN = 1.0;
+
+/* The jaw is a bone, not a shape.
+
+   On this CC export Jaw_Open exists as a blend shape and moves 4872 vertices,
+   but the mouth does not open: the shape only tidies the lips and cheeks
+   around a jaw that something else is supposed to swing. That something is
+   CC_Base_JawRoot. Drive the shapes without the bone and the character mumbles
+   with its mouth shut.
+
+   Axis and sign were measured, not assumed -- the model came through Cinema 4D
+   and Blender and either could have flipped them. Rotating the bone 21 degrees
+   each way about each of its local axes and watching where the chin ended up,
+   local Z is the hinge; the other two swing it sideways. */
+const JAW = { axis: "z", sign: 1, deg: 21 };
+const JAW_AXIS = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0),
+                   z: new THREE.Vector3(0,0,1) };
+let jawBone = null, jawRest = null, jawNow = 0, jawWant = 0;
+
+// how far each shape drops the jaw, 0..1 of JAW.deg
+const VIS_JAW = { rest:0.02, MBP:0, FV:0.06, E:0.30, AI:0.85, O:0.55, U:0.22,
+                  WQ:0.14, L:0.45, etc:0.28 };
 
 /* ---- scene ---- */
 const canvas = $("view");
@@ -102,9 +157,12 @@ scene.background = new THREE.Color(0x08090b);
 const pmrem = new THREE.PMREMGenerator(R);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 const cam = new THREE.PerspectiveCamera(28, 1, 0.01, 500);
-const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(-4, 5, 6); scene.add(key);
-const rim = new THREE.DirectionalLight(0xc9d8ff, 1.3); rim.position.set(4, 3, -6); scene.add(rim);
-scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+const key = new THREE.DirectionalLight(0xffffff, 2.4); key.position.set(-3, 3.5, 5); scene.add(key);
+const rim = new THREE.DirectionalLight(0xc9d8ff, 1.1); rim.position.set(4, 2, -5); scene.add(rim);
+scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+// the room environment alone lights a clay head almost perfectly evenly, and
+// an evenly lit mouth has no readable shape at all -- keep it as fill only
+scene.environmentIntensity = 0.3;
 const root = new THREE.Group(); scene.add(root);
 
 let model = null, meshes = [], mapped = null, headBox = null, fullBox = null, zoomed = 1;
@@ -115,44 +173,111 @@ function resize() {
 }
 addEventListener("resize", resize); resize();
 
-/* Framing on the HEAD without being told where the head is. Three tries, best
-   first:
-     1. a head bone. CC ships CC_Base_Head, Mixamo ships mixamorigHead. If one
-        is there it sits at the top of the neck, so the head runs from it to
-        the top of the model and we know the height exactly.
-     2. proportion. A standing figure is far taller than it is wide, so the
-        head is the top slice. This is what the first version did, and it is
-        why a head-only export got framed on its own scalp.
-     3. the model is already a head -- roughly as tall as it is wide -- so
-        frame all of it.
-   The target sits a little below the middle of the head, which pushes the
-   whole head up the screen and keeps the chin clear of the controls. The
-   mouth is the point of this page; it must never be under a button. */
-function headBone() {
-  let hit = null;
-  if (!model) return null;
-  model.traverse((o) => {
-    if (hit || !o.isBone) return;
-    // "HeadTop_End" and "headEnd" are tip markers above the skull, not the head
-    if (/head/i.test(o.name) && !/(end|tip|top)$/i.test(o.name)) hit = o;
+/* Framing a head without being told where the head is, on a rig you have never
+   seen. Two things went wrong before this, both worth writing down.
+
+   Box3.setFromObject is useless on a skinned mesh. It reports the bind-pose
+   geometry box transformed by matrixWorld -- but skinning places vertices from
+   the bone matrices, and bindMatrix/bindMatrixInverse absorb any scale
+   difference. On the CC export that box read 178 units tall while the character
+   is 1.63. Everything measured off it was wrong.
+
+   And nothing says a model is Y-up. This one stands along +Z, so the first
+   version dutifully framed the top of the Y axis and found the feet.
+
+   The skeleton has neither problem. Bone world positions are real, correctly
+   scaled, and tell you which way is up: the vector from the hips to the head is
+   up, by definition, whatever the file thinks. So: stand the model up from its
+   own bones, turn it to face the camera, and frame the head from the spread of
+   the bones inside the head. No axis conventions assumed anywhere. */
+
+const rx = (re) => (o) => re.test(o.name || "");
+function findBone(sk, re, skip) {
+  return sk && sk.bones.find((b) => re.test(b.name) && !(skip && skip.test(b.name)));
+}
+function boneBox(root) {
+  const bb = new THREE.Box3(), v = new THREE.Vector3();
+  root.traverse((o) => { if (o.isBone) bb.expandByPoint(o.getWorldPosition(v.clone())); });
+  return bb;
+}
+
+let skel = null, headBoneRef = null;
+
+/* Rotate the model so up is +Y and the face looks down +Z. Returns what it did,
+   because when this guesses wrong you want to be told, not left wondering why
+   you are looking at an ear. */
+function standUp(model) {
+  if (!skel) return "no skeleton -- orientation left alone";
+  const head = findBone(skel, /head/i, /(end|tip|top)$/i);
+  const hip = findBone(skel, /hip|pelvis|spine|root/i) || skel.bones[0];
+  headBoneRef = head;
+  if (!head || !hip) return "no head or hip bone -- orientation left alone";
+
+  const up = head.getWorldPosition(new THREE.Vector3())
+    .sub(hip.getWorldPosition(new THREE.Vector3()));
+  if (up.lengthSq() < 1e-12) return "head and hip are in the same place -- left alone";
+  up.normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
+  model.quaternion.premultiply(q);
+  model.updateMatrixWorld(true);
+
+  // Which way is the face? The jaw, teeth and tongue sit in front of the middle
+  // of the skull, so their average points out through the mouth.
+  const hp = head.getWorldPosition(new THREE.Vector3());
+  const fwd = new THREE.Vector3(); let n = 0;
+  head.traverse((o) => {
+    if (o.isBone && /jaw|teeth|tongue|nose|lip/i.test(o.name)) {
+      fwd.add(o.getWorldPosition(new THREE.Vector3()).sub(hp)); n++;
+    }
   });
-  return hit;
+  let facing = "face direction unknown, not turned";
+  if (n) {
+    fwd.y = 0;
+    if (fwd.lengthSq() > 1e-12) {
+      fwd.normalize();
+      const yaw = Math.atan2(fwd.x, fwd.z);          // rotate fwd onto +Z
+      model.rotateY(-yaw);
+      model.updateMatrixWorld(true);
+      facing = "turned " + Math.round(-yaw * 180 / Math.PI) + "deg to face front";
+    }
+  }
+  return "stood up from " + head.name + " over " + hip.name + "; " + facing;
 }
 
 function headSpan() {
+  // The bones inside the head span roughly the head: jaw and teeth at the
+  // front and bottom, eyes and the skull tip at the top and back.
+  if (headBoneRef) {
+    const bb = boneBox(headBoneRef);
+    if (!bb.isEmpty()) {
+      const s = new THREE.Vector3(), c = new THREE.Vector3();
+      bb.getSize(s); bb.getCenter(c);
+      // the bones stop at the jaw and eyes; the skull carries on past them
+      const span = Math.max(s.x, s.y, s.z) * 2.3;
+      if (span > 1e-6) {
+        line("framing on the bones inside " + headBoneRef.name
+             + " (head about " + span.toFixed(3) + " across)");
+        return { span, x: c.x, top: c.y + span * 0.5, z: c.z };
+      }
+    }
+    // a head bone with nothing inside it: fall back to human proportion
+    const all = boneBox(skel.bones[0]);
+    const s = new THREE.Vector3(); all.getSize(s);
+    const p = headBoneRef.getWorldPosition(new THREE.Vector3());
+    const span = s.y / 7.5;
+    line("no bones inside " + headBoneRef.name + " -- guessing a head "
+         + span.toFixed(3) + " tall from a " + s.y.toFixed(2) + " figure");
+    return { span, x: p.x, top: p.y + span * 0.75, z: p.z };
+  }
   const size = new THREE.Vector3(), ctr = new THREE.Vector3();
   fullBox.getSize(size); fullBox.getCenter(ctr);
-  const top = fullBox.max.y;
-  const bone = headBone();
-  if (bone) {
-    const p = bone.getWorldPosition(new THREE.Vector3());
-    const h = top - p.y;
-    // a sane head is a decent slice of the model; a bone in a silly place is not
-    if (h > size.y * 0.04) return { span: h * 1.12, x: p.x, z: ctr.z, top };
-  }
   const wide = Math.max(size.x, size.z);
-  if (size.y > wide * 1.8) return { span: size.y * 0.18, x: ctr.x, z: ctr.z, top };
-  return { span: size.y, x: ctr.x, z: ctr.z, top };
+  if (size.y > wide * 1.8) {
+    line("no skeleton; framing by proportion, " + size.y.toFixed(2) + " tall vs " + wide.toFixed(2) + " wide");
+    return { span: size.y * 0.18, x: ctr.x, z: ctr.z, top: fullBox.max.y };
+  }
+  line("no skeleton; framing the whole model");
+  return { span: size.y, x: ctr.x, z: ctr.z, top: fullBox.max.y };
 }
 
 /* Orbit. An unknown export can arrive facing any direction, and a mesh whose
@@ -169,20 +294,27 @@ function place() {
                    camTgt.y + Math.sin(pitch) * d,
                    camTgt.z + Math.cos(yaw) * cp * d);
   cam.lookAt(camTgt);
-  cam.near = Math.max(0.001, d * 0.02); cam.far = d * 40;
+  cam.near = Math.max(0.0005, d * 0.02); cam.far = d * 60;
   cam.updateProjectionMatrix();
 }
 
 function frame(head) {
   if (!fullBox) return;
-  const size = new THREE.Vector3(), ctr = new THREE.Vector3();
-  fullBox.getSize(size); fullBox.getCenter(ctr);
   let span;
   if (head) {
     const h = headSpan();
     span = h.span;
     camTgt.set(h.x, h.top - span * 0.58, h.z);
-  } else { span = Math.max(size.x, size.y); camTgt.copy(ctr); }
+  } else if (skel) {
+    const bb = boneBox(skel.bones[0]);
+    const s = new THREE.Vector3(), c = new THREE.Vector3();
+    bb.getSize(s); bb.getCenter(c);
+    span = Math.max(s.x, s.y) * 1.1; camTgt.copy(c);
+  } else {
+    const s = new THREE.Vector3(), c = new THREE.Vector3();
+    fullBox.getSize(s); fullBox.getCenter(c);
+    span = Math.max(s.x, s.y); camTgt.copy(c);
+  }
   camDist = (span * 0.5) / Math.tan((cam.fov * Math.PI / 180) / 2) * 1.45;
   place();
 }
@@ -210,7 +342,7 @@ canvas.addEventListener("wheel", (e) => {
 const canon = (x) => x.toLowerCase().replace(/[^a-z]/g,"").replace(/left$/,"l").replace(/right$/,"r");
 function buildMap() {
   const want = new Set();
-  for (const sh in VIS_RIG) for (const k in VIS_RIG[sh]) want.add(k);
+  for (const sh in RIG) for (const k in RIG[sh]) want.add(k);
   const per = [];
   let total = 0;
   for (const m of meshes) {
@@ -243,7 +375,7 @@ async function load(file) {
   say("loading " + file + "…");
   let g;
   try {
-    g = await new Promise((res, rej) => new GLTFLoader().load("models/" + file, res, null, rej));
+    g = await new Promise((res, rej) => GLTF.load("models/" + file, res, null, rej));
   } catch (e) {
     say("could not load models/" + file + " — " + (e.message || e), "bad");
     return;
@@ -251,13 +383,47 @@ async function load(file) {
   try {
     if (model) root.remove(model);
     model = g.scene; meshes = [];
+    /* An export stripped of textures has no materials at all, and three.js
+       hands those meshes default white -- which blows out under any decent key
+       light and hides the one thing we are here to look at. Clay instead. */
+    const clay = new THREE.MeshStandardMaterial({
+      color: 0xb9b2ab, roughness: 0.72, metalness: 0.0 });
+    let fixedNormals = 0;
     model.traverse((o) => {
       if (o.isMesh || o.isSkinnedMesh) {
         o.frustumCulled = false;
+        /* An export stripped for size can come with no NORMAL attribute at all.
+           glTF says to treat that as flat shading, and GLTFLoader duly sets
+           flatShading on the material it builds -- so replacing the material
+           throws that away and every surface lights as though it faced the
+           camera. A whole face disappears and it looks like the wrong side of
+           the head. Compute real normals instead: smooth reads far better on a
+           mouth than facets do, and it survives us swapping the material.
+
+           The morph targets carry POSITION only, so these normals do not follow
+           the deformation. The shape is right; the shading inside a wide-open
+           mouth is slightly stale. That is the correct trade here. */
+        if (o.geometry && !o.geometry.attributes.normal) {
+          o.geometry.computeVertexNormals(); fixedNormals++;
+        }
+        const m = o.material;
+        const plain = !m || (Array.isArray(m) ? false : !m.map && !m.normalMap);
+        if (plain) o.material = clay;
         if (o.morphTargetInfluences && o.morphTargetInfluences.length) meshes.push(o);
       }
     });
+    if (fixedNormals) line("no NORMAL attribute on " + fixedNormals
+      + " mesh(es) -- computed them, or everything would light dead flat");
+    skel = null; headBoneRef = null; jawBone = null; jawRest = null; jawNow = 0;
+    model.traverse((o) => { if (o.isSkinnedMesh && o.skeleton && !skel) skel = o.skeleton; });
+    if (skel) {
+      jawBone = findBone(skel, /jaw/i, /upper/i);
+      if (jawBone) { jawRest = jawBone.quaternion.clone(); line("jaw bone: " + jawBone.name); }
+      else line("no jaw bone -- the mouth can only open as far as the shapes take it");
+    }
     root.add(model);
+    model.updateMatrixWorld(true);
+    line(standUp(model));
     fullBox = new THREE.Box3().setFromObject(model);
     frame(zoomed);
     if (!meshes.length) {
@@ -270,6 +436,19 @@ async function load(file) {
       buildSliders([]);
       return;
     }
+    /* Which vocabulary does this mesh speak? Count how many of CC's own viseme
+       shapes are present; if most of them are, use them. */
+    const have = new Set();
+    meshes.forEach((m) => Object.keys(m.morphTargetDictionary || {})
+      .forEach((k) => have.add(canon(k))));
+    const ccWant = new Set();
+    for (const sh in VIS_RIG_CC) for (const k in VIS_RIG_CC[sh]) ccWant.add(canon(k));
+    let ccHit = 0;
+    for (const w of ccWant) if ([...have].some((h) => h === w || h.includes(w))) ccHit++;
+    RIG = ccHit >= ccWant.size - 2 ? VIS_RIG_CC : VIS_RIG;
+    line("rig: " + (RIG === VIS_RIG_CC ? "Character Creator visemes" : "ARKit shapes")
+         + " (" + ccHit + " of " + ccWant.size + " CC viseme shapes present)");
+
     const r = buildMap();
     buildSliders(r);
     if (!r.found) {
@@ -295,10 +474,21 @@ async function load(file) {
    way. If a vowel looks wrong here it is the sculpt; if it only looks wrong
    while speaking it is the timing. */
 function buildSliders(r) {
+  const jawRow = () => {
+    if (!jawBone) return null;
+    const d = document.createElement("div"); d.textContent = "JAW BONE (" + jawBone.name + ")";
+    const s = document.createElement("input");
+    s.type = "range"; s.min = 0; s.max = 1; s.step = 0.01; s.value = 0;
+    s.oninput = () => { manual = true; jawWant = +s.value; };
+    d.appendChild(s); return d;
+  };
+  buildSliders.jawRow = jawRow;
   const box = $("sliders"); box.innerHTML = "";
+  const jr = jawRow(); if (jr) box.appendChild(jr);
   const names = new Set();
   meshes.forEach((m) => Object.keys(m.morphTargetDictionary || {}).forEach((k) => names.add(k)));
-  if (!names.size) { box.innerHTML = "<div>no blend shapes</div>"; return; }
+  if (!names.size) { box.appendChild(Object.assign(document.createElement("div"),
+    { textContent: "no blend shapes" })); return; }
   [...names].sort().forEach((n) => {
     const d = document.createElement("div");
     d.textContent = n;
@@ -419,13 +609,20 @@ function tick() {
   $("shape").textContent = vis.shape + (vis.marked ? "  ·  marks" : "");
 
   if (mapped && !manual) {
-    const target = VIS_RIG[vis.shape] || VIS_RIG.rest;
+    const target = RIG[vis.shape] || RIG.rest;
     const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
     for (const p of mapped) for (const name in p.map) {
       const i = p.map[name];
       const wantV = (target[name] || 0) * GAIN;
       p.mesh.morphTargetInfluences[i] += (wantV - p.mesh.morphTargetInfluences[i]) * k;
     }
+    if (!manual) jawWant = VIS_JAW[vis.shape] != null ? VIS_JAW[vis.shape] : 0;
+  }
+  if (jawBone && jawRest) {
+    const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
+    jawNow += (jawWant - jawNow) * k;
+    jawBone.quaternion.copy(jawRest).multiply(new THREE.Quaternion()
+      .setFromAxisAngle(JAW_AXIS[JAW.axis], JAW.sign * jawNow * JAW.deg * Math.PI / 180));
   }
   R.render(scene, cam);
 }
@@ -437,7 +634,7 @@ tick();
    and it exists to answer one question -- when your own mesh will not move, is
    it the mesh or is it this page? Load the probe. If the probe talks, the page
    is fine and the export dropped its blend shapes. */
-const CANDIDATES = ["face.glb","head.glb","cc_base.glb","cc_tune.glb","tune.glb",
+const CANDIDATES = ["toon_base.glb","toon_base_opt.glb","face.glb","head.glb","cc_base.glb","cc_tune.glb","tune.glb",
                     "base.glb","colin_face.glb","test_head.glb","colin_slim.glb",
                     "_probe.glb"];
 const sel = $("model");
