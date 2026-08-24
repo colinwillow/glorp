@@ -951,7 +951,34 @@ const MUSIC_SPEC = 0.42;
    a sentence; it widens the range travelled without moving any faster, because
    the hue that feeds it is smoothed and a faster palette is how a visualiser
    becomes something nobody can look at. */
-const MUSIC_VIS = { low: 9, mid: 26, kick: 6.5, snap: 6.0, hat: 3.2, hue: 0.6 };
+/* roles: 0. OFF, and not as a tuning -- as a verdict.
+
+   Giving each band its own behaviour is a good idea that this field will not
+   take, and the reason is structural rather than a matter of degree. Index is
+   angle here, so a band is an ARC, and any force that is not the same all the
+   way round moves one arc relative to the others:
+
+     tangential   a torque. It does not snap the arc, it carries it. Measured,
+                  the snare group turned 3.6 degrees a second while the other
+                  two sat at nothing, and ring density went from 78-130% of
+                  even to 48-145% -- half of it piling up, half emptying. That
+                  is the thin bottom.
+     alternating  nearly cancels, and only nearly: 1.2 degrees a second left,
+                  because the force cap clips the two directions differently
+                  once particles sit at different radii.
+     inward       cannot rotate anything, and is worse: 41-186%, because a pull
+                  that strong drags that arc through the middle and scatters it
+                  out the far side.
+
+   With them off, ring density under music is 87-125% -- more even than the
+   resting field's own 75-138%, because the spectrum spreads it. Nothing about
+   the ring is wrong any more.
+
+   The code stays, because a much gentler version driven off something that is
+   not a force -- dot size, or brightness, which cannot transport anybody -- is
+   probably the right shape for this idea. Raising kick/snap/hat turns what is
+   here back on. */
+const MUSIC_VIS = { low: 9, mid: 26, roles: 0, kick: 1.8, snap: 1.5, hat: 0.9, hue: 0.15 };
 
 /* THE SLOW CLOCKS.
 
@@ -978,8 +1005,16 @@ const MUSIC_VIS = { low: 9, mid: 26, kick: 6.5, snap: 6.0, hat: 3.2, hue: 0.6 };
 const DRIFT = {
   // 1 to run these all the time rather than only under music
   always: 0,
-  radLo: 0.17, radHi: 0.40, radSec: 53,
-  shapeAmp: 3.6, shapeA: 41, shapeB: 67
+  /* rms -> size, not radius. You said RMS size and shape and I drifted radius,
+     which is a different slider that happens to also change how big it is. This
+     is the one: how much the level opens the ring, rather than how big the ring
+     is to begin with. */
+  rmsLo: 0.62, rmsHi: 1.45, rmsSec: 53,
+  /* And a fraction of what it was. At 3.6 the drift swamped the slider, which
+     is why moving shape stopped appearing to do anything -- it was still being
+     added, it was just the small term. At 1.1 the slider sets the shape and
+     this wanders around it. */
+  shapeAmp: 1.1, shapeA: 41, shapeB: 67
 };
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
@@ -7719,12 +7754,13 @@ function loop() {
      with the track rather than snapping in. */
   const driftOn = DRIFT.always ? 1 : drive.music;
 
+  const baseR = cfg.radius * scale;
   /* Blended toward the slider rather than added to it, so this cannot walk the
-     radius somewhere the slider could not have been put -- and so that letting
-     go of the music returns it exactly to where it is set. */
-  const rWant = (DRIFT.radLo + DRIFT.radHi) / 2 +
-                (DRIFT.radHi - DRIFT.radLo) / 2 * Math.sin(tt / DRIFT.radSec * TAU + 0.9);
-  const baseR = (cfg.radius + (rWant - cfg.radius) * driftOn) * scale;
+     value somewhere the slider could not have been put -- and so that letting
+     go of the music returns it to exactly where it is set. */
+  const rmsWant = (DRIFT.rmsLo + DRIFT.rmsHi) / 2 +
+                  (DRIFT.rmsHi - DRIFT.rmsLo) / 2 * Math.sin(tt / DRIFT.rmsSec * TAU + 0.9);
+  const rmsNow = cfg.rmsGain + (rmsWant - cfg.rmsGain) * driftOn;
 
   /* The ring cannot be allowed to reel a shell back in. Even at a tenth of its
      strength it wins: drag kills the outward velocity within a second, and from
@@ -7827,7 +7863,7 @@ function loop() {
   const wander = rest * (0.62 * Math.sin(tt / 7.3) + 0.38 * Math.sin(tt / 11.9 + 1.7));
   const drift2 = driftOn * DRIFT.shapeAmp *
                  (0.62 * Math.sin(tt / DRIFT.shapeA) + 0.38 * Math.sin(tt / DRIFT.shapeB + 2.4));
-  const gScale = (1 + drive.scale * cfg.rmsGain) * (1 + rest * 0.05 * Math.sin(tt / 9.1));
+  const gScale = (1 + drive.scale * rmsNow) * (1 + rest * 0.05 * Math.sin(tt / 9.1));
   const maxR = Math.min(W, H) * 0.5 * cfg.fit;
 
   // falloff / sizeHi were absolute px, which is why desktop looked nothing
@@ -8323,16 +8359,16 @@ function loop() {
 
          Only while music is playing, and faded in by drive.music, so a
          conversation is still the tempered thing it was. */
-      if (drive.music > 0.01 && mBand >= 0) {
+      if (MUSIC_VIS.roles && drive.music > 0.01 && mBand >= 0) {
         const h = drive.hit[mBand] * drive.music;
         if (h > 0.012) {
           if (mBand < MUSIC_VIS.low) {
             ax += ux * h * MUSIC_VIS.kick * oT;
             ay += uy * h * MUSIC_VIS.kick * oT;
           } else if (mBand < MUSIC_VIS.mid) {
-            // along the ring, not out of it: perpendicular to the radius
-            ax += -uy * h * MUSIC_VIS.snap * oT;
-            ay += ux * h * MUSIC_VIS.snap * oT;
+            // see the note on MUSIC_VIS.roles for why none of these ship on
+            ax -= ux * h * MUSIC_VIS.snap * oT;
+            ay -= uy * h * MUSIC_VIS.snap * oT;
           } else {
             ax += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
             ay += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
