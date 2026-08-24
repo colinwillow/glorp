@@ -118,6 +118,27 @@
     color:#9FB98B;background:rgba(11,11,11,.72);border:1px solid #3B4A31;
     border-radius:11px;padding:6px 9px;cursor:pointer}
   #fig button.at{color:#0B0B0B;background:#B6E08A;border-color:#B6E08A}
+  /* The music player. Up only when asked for, and it closes itself, because a
+     visualiser with a permanent control strip across it is a media player. */
+  #mus{position:fixed;left:50%;transform:translateX(-50%);
+    bottom:calc(96px + env(safe-area-inset-bottom));width:min(92vw,420px);
+    display:none;z-index:7;background:rgba(11,11,11,.9);border:1px solid #3B4A31;
+    border-radius:14px;padding:11px 12px;backdrop-filter:blur(9px);
+    font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9FB98B}
+  #mus.on{display:block}
+  #mus .now{color:#D8EFC2;font-size:13px;margin-bottom:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #mus .sub{color:#6E8560;margin-bottom:9px}
+  #mus .btns{display:flex;gap:6px;margin-bottom:9px;flex-wrap:wrap}
+  #mus button{font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9FB98B;
+    background:rgba(11,11,11,.6);border:1px solid #3B4A31;border-radius:10px;
+    padding:7px 10px;cursor:pointer}
+  #mus button:active{background:#1c2417}
+  #mus ol{list-style:none;margin:0;padding:0;max-height:33vh;overflow:auto}
+  #mus li{padding:7px 8px;border-radius:9px;cursor:pointer;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #mus li:active{background:#1c2417}
+  #mus li.at{color:#0B0B0B;background:#B6E08A}
   /* Never on screen. It is rendered to and then drawn INTO the 2D canvas, which
      is the only way the model can be layered between the trail and the
      particles rather than simply on top of everything. */
@@ -176,6 +197,7 @@
 <div id="cap"></div>
 <div id="fig"></div>
 <div id="panel"></div>
+<div id="mus"></div>
 
 <!-- Vendored, not from a CDN, and resolved by the browser's own import map
      rather than by a bundler. The whole bargain this file is built on is that
@@ -1024,7 +1046,8 @@ const DRIFT = {
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
   raw: new Float32Array(BANDS),
-  list: null, i: -1, playing: false, title: "", unlocked: 0, skipped: 0,
+  list: null, i: -1, playing: false, paused: 0, title: "", artist: "",
+  unlocked: 0, skipped: 0,
   // why the last attempt produced no music, so the page can say which
   err: "",
   // 1 when the dance started it, so the dance can stop it again
@@ -1172,6 +1195,76 @@ function musicWire() {
   music.time = new Float32Array(an.fftSize);
 }
 
+/* Finding a track by what somebody called it.
+
+   "play ice cream paint job" did not match "Icecream Paint Job", because the
+   old test was a substring and one of them has a space in it. Speech has no
+   spelling: a recogniser will hand you "ice cream" or "icecream" depending on
+   the sentence around it, and neither is wrong.
+
+   So: squash both to letters and digits with nothing between them, which makes
+   the space question disappear entirely, and if that does not settle it, score
+   on how many of the words asked for actually appear. A prefix counts, because
+   "million dollar" should find "Million Dollar Baby". */
+function musicSquash(x) { return String(x || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function musicMatch(list, q) {
+  const sq = musicSquash(q);
+  if (!sq) return -1;
+  const words = String(q).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1);
+  let best = -1, bestScore = 0;
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
+    const name = (t.title || t.file || "") + " " + (t.artist || "");
+    const ns = musicSquash(name);
+    let score = 0;
+    if (ns && (ns.includes(sq) || sq.includes(ns))) score = 1;
+    else if (words.length) {
+      const nw = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      let hit = 0;
+      for (const w of words) if (nw.some((x) => x.startsWith(w) || w.startsWith(x))) hit++;
+      score = hit / words.length * 0.9;
+    }
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  // over half the words, or a clean squashed hit
+  return bestScore >= 0.55 ? best : -1;
+}
+
+/* ---- Audius: the shelf that is not in this repo ----
+
+   Proved on the device before any of this was written (see audius-test.html):
+   the content nodes send a real Access-Control-Allow-Origin header, so a
+   streamed track reaches the analyser exactly the way a local file does. Same
+   element, same graph, same everything downstream -- the bars, the orb, the
+   beat-matched dancing and the hue equalisation cannot tell the difference and
+   did not have to be told about any of this.
+
+   No key. app_name is courtesy, and identifies us in their logs. */
+const AUDIUS = { host: "", tried: 0 };
+async function audiusHost() {
+  if (AUDIUS.host) return AUDIUS.host;
+  const r = await fetch("https://api.audius.co", { cache: "no-store" });
+  const j = await r.json();
+  const hosts = (j && j.data) || [];
+  if (!hosts.length) throw new Error("no discovery nodes");
+  AUDIUS.host = hosts[(Math.random() * Math.min(hosts.length, 5)) | 0];
+  return AUDIUS.host;
+}
+async function audiusSearch(q) {
+  const h = await audiusHost();
+  const r = await fetch(h + "/v1/tracks/search?query=" + encodeURIComponent(q) +
+                        "&app_name=glorb", { cache: "no-store" });
+  if (!r.ok) throw new Error("search " + r.status);
+  const j = await r.json();
+  return (j.data || []).filter((t) => t && t.id && !t.is_delete && (t.duration || 0) > 20)
+    .slice(0, 8).map((t) => ({
+      url: h + "/v1/tracks/" + t.id + "/stream?app_name=glorb",
+      title: t.title || "untitled",
+      artist: (t.user && t.user.name) || "",
+      from: "audius"
+    }));
+}
+
 async function musicPlay(which) {
   music.err = "";
   const list = await musicList();
@@ -1185,16 +1278,19 @@ async function musicPlay(which) {
   let idx;
   if (typeof which === "number") idx = ((which % list.length) + list.length) % list.length;
   else if (which) {
-    const q = String(which).toLowerCase().trim();
-    const f = list.findIndex((t) =>
-      (t.title || "").toLowerCase().includes(q) || (t.file || "").toLowerCase().includes(q));
-    idx = f >= 0 ? f : (Math.random() * list.length) | 0;
+    const f = musicMatch(list, which);
+    /* No match is NO MATCH. It used to fall through to a random track, so
+       asking for one song by name played a different one and said nothing
+       about it -- which is indistinguishable from the matching being fine and
+       the shelf being wrong. */
+    if (f < 0) { music.err = "no track here called \u201c" + which + "\u201d"; return ""; }
+    idx = f;
   } else idx = (Math.random() * list.length) | 0;
   musicWire();
   if (!music.el) { music.err = "no audio output on this browser"; return ""; }
   const t = list[idx];
   music.i = idx;
-  music.el.src = MUSIC_DIR + t.file;
+  music.el.src = t.url || (MUSIC_DIR + t.file);
   // one track on the shelf means that track on repeat, gaplessly, rather than
   // an `ended` and a reload every few minutes
   music.el.loop = list.length === 1;
@@ -1219,7 +1315,8 @@ async function musicPlay(which) {
     return "";
   }
   music.playing = true;
-  music.title = t.title || t.file.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ");
+  music.title = t.title || (t.file || "").replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ");
+  music.artist = t.artist || "";
   // a declared tempo is trusted; a measured one starts over with the track
   music.bpmSaid = +t.bpm || 0;
   music.bpm = music.bpmSaid;
@@ -1229,11 +1326,87 @@ async function musicPlay(which) {
   music.cAt = 0; music.cN = 0; music.cLo = 0.2; music.cHi = 0.6;
   return music.title;
 }
+/* Play a list that did not come from the manifest. The run, the skip-on-error
+   and the beat matching all key off music.list, so a search result set simply
+   BECOMES the list -- nothing downstream needs a second code path. */
+async function musicPlayList(list, idx) {
+  if (!list || !list.length) return "";
+  music.list = list;
+  return musicPlay(typeof idx === "number" ? idx : 0);
+}
+function musicLocalList() {
+  music.list = null; music.listErr = "";
+  return musicList();
+}
+
+/* -1 means "refresh what is already up". Called from everywhere that changes
+   what is playing, so the panel cannot go stale -- which is the failure mode
+   that has now cost us three rounds in three other guises. */
+const musEl = () => document.getElementById("mus");
+let musOn = 0;
+function musicPanel(on) {
+  const e = musEl();
+  if (!e) return;
+  if (on === 0) { musOn = 0; e.className = ""; return; }
+  if (on === 1) musOn = 1;
+  if (!musOn) return;
+  e.className = "on";
+  const list = music.list || [];
+  const t = list[music.i];
+  e.innerHTML =
+    '<div class="now"></div><div class="sub"></div><div class="btns">' +
+    '<button data-a="pp"></button><button data-a="next">next</button>' +
+    '<button data-a="stop">stop</button><button data-a="close">close</button>' +
+    '</div><ol></ol>';
+  e.querySelector(".now").textContent =
+    music.playing && t ? (t.title || t.file || "") : "nothing playing";
+  e.querySelector(".sub").textContent = music.playing && t
+    ? ((t.artist ? t.artist + " \u00b7 " : "") + (t.from === "audius" ? "audius" : "local")
+       + (music.paused ? " \u00b7 paused" : "")
+       + (music.bpm ? " \u00b7 " + Math.round(music.bpm) + " bpm" : ""))
+    : "say \u201cplay\u201d and a name, or pick one";
+  e.querySelector('[data-a="pp"]').textContent = music.paused ? "resume" : "pause";
+  const ol = e.querySelector("ol");
+  list.forEach((tr, i) => {
+    const li = document.createElement("li");
+    li.textContent = (tr.title || tr.file || "?") + (tr.artist ? "  \u00b7  " + tr.artist : "");
+    if (i === music.i && music.playing) li.className = "at";
+    li.onclick = (ev) => { ev.stopPropagation(); musicPlay(i).then(() => musicPanel(-1)); };
+    ol.appendChild(li);
+  });
+  e.onclick = (ev) => {
+    const a = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-a");
+    if (!a) return;
+    ev.stopPropagation();
+    if (a === "close") return musicPanel(0);
+    if (a === "stop") return musicStop();
+    if (a === "next") return void musicPlay(music.i + 1).then(() => musicPanel(-1));
+    if (music.paused) musicResume(); else musicPause();
+  };
+}
+
 function musicStop() {
-  if (music.el) music.el.pause();
-  music.playing = false; music.byDance = 0; music.bpmApplied = -1;
+  if (music.el) { music.el.pause(); music.el.currentTime = 0; }
+  music.playing = false; music.paused = 0; music.byDance = 0; music.bpmApplied = -1;
   // back to its own speed, or he keeps dancing to a tempo that is not there
   if (gl.action) gl.action.setEffectiveTimeScale(1);
+  musicPanel(0);
+}
+/* Pause is not stop. Stop forgets the track; pause keeps the position, the
+   tempo and the place in the run, so resume picks the same bar back up. */
+function musicPause() {
+  if (!music.el || !music.playing || music.paused) return 0;
+  music.el.pause(); music.paused = 1;
+  musicPanel(-1);
+  return 1;
+}
+function musicResume() {
+  if (!music.el || !music.paused) return 0;
+  music.paused = 0;
+  if (ttsCtx && ttsCtx.state === "suspended") ttsCtx.resume();
+  music.el.play().catch(() => {});
+  musicPanel(-1);
+  return 1;
 }
 
 /* The same numbers the voice produces, from the same kind of analyser, so the
@@ -1246,7 +1419,7 @@ function analyseMusic() {
      starting counted as the music being off -- and the dance, which asks
      whether music is playing to decide how fast to run, fell back to its own
      speed for a clip and then stayed there. */
-  if (music.el && music.el.paused) return;
+  if (music.el && music.el.paused) return;   // paused, or between tracks
   music.an.getByteFrequencyData(music.freq);
   music.an.getFloatTimeDomainData(music.time);
 
@@ -6049,26 +6222,72 @@ function sandboxMove(flat) {
 /* Music is not a sandbox thing -- it plays whether or not he is standing in a
    room -- so it is answered before anything that needs him to be. */
 function musicSay(flat) {
+  /* Closing first. "Close the music player" contains "music player", so the
+     opener matched it and opened what was being dismissed. */
+  if (/\b(hide|close|dismiss|get rid of)\b/.test(flat) && /\b(music|player)\b/.test(flat)) {
+    musicPanel(0); caption(null, "closed"); return "closed";
+  }
+  if (/\b(music player|show the music|what('| i)?s playing|now playing)\b/.test(flat)) {
+    musicPanel(1);
+    if (!music.list) musicLocalList().then(() => musicPanel(-1)); else musicPanel(-1);
+    caption(null, music.playing ? "\u266a " + music.title : "music player");
+    return "music player";
+  }
+
   if (/\b(stop|kill|turn off|no more|enough)\b.*\b(music|song|track|tune)\b/.test(flat) ||
       /\b(music|song|track|tune)\b.*\b(off|stop)\b/.test(flat)) {
-    // and it answers even when nothing is on, rather than falling through to
-    // the way out and quietly leaving the room instead
     if (!music.playing) { caption(null, "nothing playing"); return "music off"; }
     musicStop(); caption(null, "music off"); return "music off";
   }
+  /* Resume before pause, and both before play: "unpause" contains "pause", and
+     a bare "play" while paused means carry on rather than start something. */
+  if (/\b(resume|unpause|carry on|keep going|continue|play it)\b/.test(flat) ||
+      (music.paused && /^\s*play\s*$/.test(flat))) {
+    if (musicResume()) { caption(null, "\u266a " + music.title); return "resume"; }
+  }
+  if (/\b(pause|freeze it)\b/.test(flat) && music.playing && !music.paused) {
+    if (musicPause()) { caption(null, "paused \u00b7 " + music.title); return "pause"; }
+  }
   if (/\b(next|another|skip|different)\b.*\b(song|track|tune|one)\b/.test(flat) && music.playing) {
-    musicPlay(music.i + 1).then((t) => t && caption(null, "♪ " + t));
+    musicPlay(music.i + 1).then((t) => { if (t) caption(null, "\u266a " + t); musicPanel(-1); });
     return "next track";
   }
   const m = flat.match(/\bplay\b(?:\s+(?:me|us|the|some|a))*\s*(.*)$/);
   if (m && /\b(play|put on)\b/.test(flat)) {
-    let want = (m[1] || "").replace(/\b(music|song|songs|track|tune|please|for me|some)\b/g, "").trim();
-    musicPlay(want || undefined).then((t) => {
-      caption(null, t ? "♪ " + t : (music.err || "no music"));
-    });
+    const want = (m[1] || "")
+      .replace(/\b(music|song|songs|track|tune|please|for me|some|by)\b/g, "").trim();
+    musicWant(want);
     return "music";
   }
   return "";
+}
+
+/* The shelf first, then the network.
+
+   Local because it is five tracks somebody chose, it is instant, and it works
+   with no signal. Audius only when the name is not on the shelf -- which is
+   also the only time a search could tell you anything you did not know. */
+async function musicWant(want) {
+  await musicLocalList();
+  if (!want) {
+    const t0 = await musicPlay();
+    caption(null, t0 ? "\u266a " + t0 : (music.err || "no music"));
+    musicPanel(-1);
+    return;
+  }
+  const local = await musicPlay(want);
+  if (local) { caption(null, "\u266a " + local); musicPanel(-1); return; }
+  caption(null, "looking for \u201c" + want + "\u201d\u2026");
+  try {
+    const found = await audiusSearch(want);
+    if (!found.length) { caption(null, "nothing found for \u201c" + want + "\u201d"); return; }
+    const t1 = await musicPlayList(found, 0);
+    caption(null, t1 ? "\u266a " + t1 + (music.artist ? " \u00b7 " + music.artist : "")
+                     : (music.err || "could not play that"));
+    musicPanel(-1);
+  } catch (e) {
+    caption(null, "no track called \u201c" + want + "\u201d, and the search is unreachable");
+  }
 }
 
 function sandboxSay(flat) {
@@ -8434,7 +8653,21 @@ function loop() {
       /* Radial, so it cannot hold an arc -- left on, it reels the two halves
          back into the circle they were just talked out of. It fades on the free
          particles as the shape forms and comes back with them. */
-      const mb = held ? memb : membFree * (1 - formT), kk2 = held ? kick : kickFree;
+      /* THE ORB IS NOT THE FIGURE, and `hold` is about the figure.
+
+         memb, kick and turb are each multiplied by (1 - formT) so that a held
+         shape does not get sprung back into a circle, smeared by turbulence or
+         punched out of alignment by an onset. All correct -- for the particles
+         that ARE the shape. The orb is the free ring standing behind him, and
+         while he was up it was losing the membrane, the onset kick and the
+         turbulence all at once: three of the four things that make it react,
+         leaving only the target radius still moving with the spectrum. Which
+         is why it drifted instead of reacting.
+
+         Measured under the same track: 0.49 px a step against the 2D field's
+         7.26. It was not deaf, it was gagged. */
+      const mb = isOrb ? membFree : held ? memb : membFree * (1 - formT);
+      const kk2 = isOrb ? kickFree : held ? kick : kickFree;
       if (!isCore && (mb > 0.001 || kk2 > 0.01)) {
         /* In the orb's frame, not the field's. Both of these are RADIAL, and
            radial from where decides everything they do. Measured from the field
@@ -8535,7 +8768,7 @@ function loop() {
         }
       }
 
-      const tb = held ? turb : turbFree;
+      const tb = isOrb ? turbFree : held ? turb : turbFree;
       if (tb > 0.01) {
         ax += (Math.random() - 0.5) * tb * 2.4 * oT;
         ay += (Math.random() - 0.5) * tb * 2.4 * oT;
