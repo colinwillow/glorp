@@ -4722,6 +4722,9 @@ const world = {
   // "turn around" -- with no walk waiting at the end of it.
   tx: 0, tz: 0, walking: 0, run: 0, turning: 0, turnOnly: 0,
   act: "", actUntil: 0, idleAt: 0, pose: 0,
+  // a run of clips played one after another rather than one on repeat -- see
+  // playSeq. null whenever a single clip is in charge.
+  seq: null,
   // the lowest his current clip has got to, in model units -- see playClip
   groundMin: 1e30
 };
@@ -5008,12 +5011,57 @@ function pickOne(list) {
   return ok.length ? ok[(Math.random() * ok.length) | 0] : "";
 }
 
+/* Told to dance, he dances -- he does not play one dance for ever.
+
+   Held acts used to pick one clip out of their list and loop it until they were
+   told to stop, which is fine when the list is one long idle and dull when it
+   is four dances. A run instead: shuffled once so the same request twice is not
+   the same performance, then round and round.
+
+   MIN_HOLD is why a clip is repeated rather than cut short. The list is not
+   uniform -- the flares are 1.03s and uprock_01 is 13s -- so playing each one
+   through once shows the short ones for a blink. Each gets whole repeats until
+   it has had four seconds, which keeps every hand-off ON A LOOP BOUNDARY: the
+   outgoing clip is at its own first frame at that moment, which is the pose
+   closest to a rest, and the blend into the next clip's first frame is the
+   smallest one available. */
+const MIN_HOLD = 4000;
+function playSeq(list, fade) {
+  const ok = list.filter(haveClip);
+  if (!ok.length) return "";
+  for (let i = ok.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const t = ok[i]; ok[i] = ok[j]; ok[j] = t;
+  }
+  world.seq = { list: ok, i: 0, until: 0 };
+  return seqNext(fade);
+}
+function seqNext(fade) {
+  const s = world.seq;
+  const nm = s.list[s.i % s.list.length];
+  s.i++;
+  const dur = playClip(nm, fade);       // which clears world.seq...
+  world.seq = s;                        // ...so it is only ours if we say so
+  const reps = Math.max(1, Math.ceil(MIN_HOLD / Math.max(dur * 1000, 1)));
+  s.until = performance.now() + dur * reps * 1000;
+  return nm;
+}
+
 /* Crossfaded, always. A cut between two poses of the same skeleton is the most
    obviously computed thing a character can do -- it is what separates a puppet
    from a performance, and it costs one call. */
 function playClip(name, fade, once) {
   if (!gl.mixer || !haveClip(name)) return 0;
   const next = gl.mixer.clipAction(gl.clips[name]);
+  /* Asking for the clip he is already doing is not a request to start it again.
+     reset() puts the action back to time zero, and with no other action to fade
+     from there is nothing to blend it against -- so the one case that CANNOT be
+     crossfaded is the one that cuts. "Dance" twice in a row had a one in four
+     chance of it, and it reads as a skip in the middle of the performance. */
+  if (gl.action === next && next.isRunning()) {
+    world.act = name;
+    return gl.clips[name].duration;
+  }
   next.reset();
   next.setLoop(once ? window.THREE.LoopOnce : window.THREE.LoopRepeat, Infinity);
   next.clampWhenFinished = !!once;
@@ -5023,6 +5071,10 @@ function playClip(name, fade, once) {
   next.play();
   gl.action = next;
   world.act = name;
+  /* Any clip started from anywhere else ends the run. playSeq puts it back
+     immediately afterwards, so a sequence never has to be cancelled by hand at
+     every one of the dozen places that can interrupt it. */
+  world.seq = null;
   /* Every clip decides for itself where the floor is. Some of these poses were
      authored off the origin -- laying_idle_00 keeps his lowest vertex 1.98
      units up, more than a third of his height, so played as exported he lies
@@ -5115,6 +5167,14 @@ function sandboxSay(flat) {
   }
   for (const [re, list, hold] of ACTS) {
     if (!re.test(flat)) continue;
+    // a held act with somewhere to go runs as a sequence rather than a loop
+    if (hold && list.filter(haveClip).length > 1) {
+      const nm = playSeq(list, 0.3);
+      if (!nm) continue;
+      world.walking = 0; world.pose = 1; world.actUntil = 0;
+      caption(null, nm.replace(/_/g, " "));
+      return nm;
+    }
     const nm = pickOne(list);
     if (!nm) continue;
     const dur = playClip(nm, 0.3, /idle_(jump|waving|sad_kick|swat_fly)|backflip|stumble/.test(nm));
@@ -5290,6 +5350,11 @@ function updateWorld(dt, now) {
         world.z += (dz / d) * step;
       }
     }
+  } else if (world.seq && now > world.seq.until) {
+    /* Longer than the fade anywhere else. Two dances are two whole-body poses
+       moving at speed, and a quick cut between them reads as a skip. */
+    const nm = seqNext(0.5);
+    caption(null, nm.replace(/_/g, " "));
   } else if (world.actUntil && now > world.actUntil) {
     world.actUntil = 0;
     playClip(pickIdle(), 0.4);
@@ -5314,6 +5379,7 @@ function worldReset() {
   world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
   world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
   world.pose = 0; world.groundMin = 1e30; world.turning = 0; world.turnOnly = 0;
+  world.seq = null;
 }
 
 /* ---------------- the figure ----------------
