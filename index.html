@@ -443,6 +443,7 @@ function updateState(dt) {
   analyseTts();
   analyseMusic();
   visFrame();
+  visRig(dt);
 
   if (!manual) {
     // barge-in: voice wins from any state, so it can be interrupted mid-sentence
@@ -1117,6 +1118,84 @@ function visSet(on) {
   const w = document.getElementById("visWrap");
   if (w) w.className = on ? "on" : "";
   if (!on) visShow("rest");
+}
+
+/* ---------------- driving a face with the same timeline ----------------
+
+   The shape names are the interface. The timeline emits "MBP" or "O"; what
+   draws that is a detail, and this is the second implementation of it -- the
+   jpgs are the first. Nothing above changes to add a face.
+
+   ARKIT NAMES, deliberately. Apple's 52 are the de facto standard and Character
+   Creator, MetaHuman, Ready Player Me and Apple's own capture all ship them, so
+   a driver written against those names works on any character that exports
+   them. That is the answer to "I would have to sculpt every character": the
+   sculpting is per character and it has usually already been done by the tool
+   -- what has to be standard is the naming, not the geometry.
+
+   Matched loosely, because exporters prefix and re-case: CC writes things like
+   "CC_Base_Body.jawOpen", Blender may write "jawOpen.001". */
+const VIS_RIG = {
+  rest: {},
+  MBP:  { mouthClose: 0.92, mouthPressLeft: 0.35, mouthPressRight: 0.35, jawOpen: 0.04 },
+  FV:   { mouthLowerDownLeft: 0.45, mouthLowerDownRight: 0.45, mouthShrugUpper: 0.30, jawOpen: 0.10 },
+  E:    { jawOpen: 0.26, mouthStretchLeft: 0.52, mouthStretchRight: 0.52,
+          mouthSmileLeft: 0.18, mouthSmileRight: 0.18 },
+  AI:   { jawOpen: 0.62, mouthStretchLeft: 0.22, mouthStretchRight: 0.22 },
+  O:    { jawOpen: 0.44, mouthFunnel: 0.62, mouthPucker: 0.22 },
+  U:    { jawOpen: 0.18, mouthPucker: 0.68, mouthFunnel: 0.38 },
+  WQ:   { jawOpen: 0.12, mouthPucker: 0.90, mouthFunnel: 0.30 },
+  L:    { jawOpen: 0.34, tongueOut: 0.32, mouthStretchLeft: 0.14, mouthStretchRight: 0.14 },
+  etc:  { jawOpen: 0.22, mouthStretchLeft: 0.20, mouthStretchRight: 0.20 }
+};
+/* Above 1 is legal and is the fix for a head that was scaled up after the
+   shapes were made: morph deltas are vertex offsets baked in the base
+   proportions and they do NOT rescale when the mesh does, so a bigger head
+   wearing the same deltas moves proportionally less. */
+const VIS_RIG_GAIN = 1.0;
+
+function visRigFind(mesh) {
+  if (mesh.__visMap) return mesh.__visMap;
+  const dict = mesh.morphTargetDictionary || {};
+  const keys = Object.keys(dict);
+  const map = {};
+  const want = new Set();
+  for (const sh of Object.keys(VIS_RIG)) for (const k of Object.keys(VIS_RIG[sh])) want.add(k);
+  /* Canonicalised on both sides, and the Left/Right suffix is the reason.
+     ARKit writes mouthStretchLeft; Character Creator writes mouthStretch_L;
+     some exporters write mouthStretch.L. Comparing raw names matched six of
+     thirteen and silently dropped every paired shape -- which would have looked
+     like a face that opens its jaw and cannot shape a vowel, and would have
+     been blamed on the shapes rather than on this. */
+  const canon = (x) => x.toLowerCase().replace(/[^a-z]/g, "")
+                        .replace(/left$/, "l").replace(/right$/, "r");
+  const ck = keys.map(canon);
+  for (const w of want) {
+    const cw = canon(w);
+    let i = ck.indexOf(cw);
+    if (i < 0) i = ck.findIndex((k) => k.endsWith(cw));
+    if (i < 0) i = ck.findIndex((k) => k.includes(cw));
+    if (i >= 0) map[w] = dict[keys[i]];
+  }
+  mesh.__visMap = map;
+  return map;
+}
+
+/* Eased, not switched -- which is the blending the still pictures cannot have.
+   A mouth is already moving toward the next shape before it has finished the
+   last one, and that is most of the difference between a slideshow of correct
+   poses and something that looks like talking. */
+function visRig(dt) {
+  const mesh = gl.mesh;
+  if (!mesh || !mesh.morphTargetInfluences || !mesh.morphTargetInfluences.length) return;
+  const map = visRigFind(mesh);
+  const target = (vis.on ? VIS_RIG[vis.shape] : null) || VIS_RIG.rest;
+  const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
+  for (const name in map) {
+    const i = map[name];
+    const want = (target[name] || 0) * VIS_RIG_GAIN;
+    mesh.morphTargetInfluences[i] += (want - mesh.morphTargetInfluences[i]) * k;
+  }
 }
 
 /* ---------------- the boom box ----------------
@@ -5748,6 +5827,11 @@ function glLoad(buf, src, R) {
       ghost.frustumCulled = false;
       mesh.parent.add(ghost);
       gl.mesh = mesh; gl.ghost = ghost;
+      /* Worth knowing out loud. colin_slim.glb currently exports with none of
+         them, which is the whole reason his face cannot move -- not that the
+         shapes are subtle, that they are absent. */
+      gl.morphs = mesh.morphTargetDictionary ? Object.keys(mesh.morphTargetDictionary).length : 0;
+      console.log("orb figure", src, "blend shapes:", gl.morphs);
       /* Every clip, by name. The dance file had one; this one has thirty-six,
          and the whole sandbox is the difference between "play the animation"
          and "play THAT one". */
