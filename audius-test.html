@@ -151,6 +151,7 @@ async function play(t) {
   const h = await getHost();
   const url = h + "/v1/tracks/" + t.id + "/stream?app_name=glorb-test";
   verdict("loading…", "");
+  resetVerdict();                          // every track is judged on its own
   line("track " + t.id + " — " + (t.title || ""));
 
   /* Ask the server what it thinks of this track before blaming the browser.
@@ -222,7 +223,20 @@ async function play(t) {
 
 /* ---- the meter, and the verdict it produces ---- */
 const cv = $("bars"), cx = cv.getContext("2d");
-let quiet = 0, loud = 0;
+/* A ROLLING window, and reset for every track.
+
+   The first version counted up cumulatively and never reset, so a track that
+   worked left `loud` above its threshold for ever -- and the next track, dead
+   silent, was greeted with "WORKS" while the very same sentence printed peak
+   0.000, rms 0.0000. A verdict that contradicts the numbers printed beside it
+   is worse than no verdict.
+
+   Three seconds of recent history instead, so the answer is always about the
+   track that is playing NOW and can change its mind if the sound stops. */
+const WIN = 180;
+const heard = new Uint8Array(WIN);
+let hAt = 0, hN = 0, played = 0;
+function resetVerdict() { hAt = 0; hN = 0; played = 0; }
 function draw() {
   requestAnimationFrame(draw);
   const W = cv.width, H = cv.height;
@@ -246,17 +260,23 @@ function draw() {
     if (h > 1) cx.fillRect(b * bw + 1, H - h, bw - 2, h);
   }
 
-  // the element is running but the analyser sees nothing = tainted by CORS
+  // the element is running but the analyser sees nothing = tainted, or silent
   if (el && !el.paused && el.currentTime > 0.4) {
-    if (rms < 0.0005) quiet++; else loud++;
-    if (loud > 20) {
+    heard[hAt % WIN] = rms >= 0.0005 ? 1 : 0;
+    hAt++; if (hN < WIN) hN++;
+    played++;
+    let live = 0;
+    for (let i = 0; i < hN; i++) live += heard[i];
+    const frac = hN ? live / hN : 0;
+    if (frac > 0.1) {
       verdict("WORKS. Audio is playing and the analyser is seeing it — peak "
         + peak.toFixed(3) + ", rms " + rms.toFixed(4) + ". Audius can drive the orb.", "ok");
-    } else if (quiet > 150) {
+    } else if (played > WIN) {
       verdict(taint
         ? "Audio plays, analyser is DEAD. The stream sends no CORS header, so the graph is tainted "
           + "and returns silence. Audius playback works here; visualising it does not."
-        : "Audio is running but the analyser reads zero. Something is muting the graph — see the log.",
+        : "Playing, but SILENT — the analyser reads zero and so does the file. Either this track "
+          + "has no audio in it or it is muted at source. Other tracks are the test; try another.",
         "bad");
     }
   }
@@ -273,7 +293,7 @@ $("start").onclick = () => {
 };
 $("search").onclick = async () => {
   $("results").innerHTML = "<li><b>searching…</b></li>";
-  quiet = loud = 0;
+  resetVerdict();
   try { show(await search($("q").value.trim() || "lofi")); }
   catch (e) {
     $("results").innerHTML = "";
