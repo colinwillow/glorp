@@ -1173,8 +1173,13 @@ function visRigFind(mesh) {
   for (const w of want) {
     const cw = canon(w);
     let i = ck.indexOf(cw);
-    if (i < 0) i = ck.findIndex((k) => k.endsWith(cw));
-    if (i < 0) i = ck.findIndex((k) => k.includes(cw));
+    // Several shapes can contain the name we want: CC ships Mouth_Funnel_Up_L
+    // and Mouth_Funnel_Down_L next to plain Mouth_Funnel. Taking the first
+    // match drove O and U off a corner variant -- which does not look like a
+    // bug, it looks like the mesh has bad shapes. Shortest name wins: that is
+    // the plain shape, and the longer ones are always the variants.
+    if (i < 0) for (let j = 0; j < ck.length; j++)
+      if (ck[j].includes(cw) && (i < 0 || ck[j].length < ck[i].length)) i = j;
     if (i >= 0) map[w] = dict[keys[i]];
   }
   mesh.__visMap = map;
