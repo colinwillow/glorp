@@ -5924,7 +5924,9 @@ function sandboxMove(flat) {
 function musicSay(flat) {
   if (/\b(stop|kill|turn off|no more|enough)\b.*\b(music|song|track|tune)\b/.test(flat) ||
       /\b(music|song|track|tune)\b.*\b(off|stop)\b/.test(flat)) {
-    if (!music.playing) return "";
+    // and it answers even when nothing is on, rather than falling through to
+    // the way out and quietly leaving the room instead
+    if (!music.playing) { caption(null, "nothing playing"); return "music off"; }
     musicStop(); caption(null, "music off"); return "music off";
   }
   if (/\b(next|another|skip|different)\b.*\b(song|track|tune|one)\b/.test(flat) && music.playing) {
@@ -7268,16 +7270,21 @@ function heardSentence(heard) {
     const d0 = sandboxMove(flat);
     if (d0) { caption(heard, ""); return "act"; }
   }
+  /* MUSIC FIRST, and specifically before HOME_SAID, which owns the word "stop"
+     everywhere else. "Stop the music" was matching the way out and sending him
+     home with the track still playing -- the one reading of that sentence
+     nobody could have meant.
+
+     Safe to put ahead of it because the stop branch in there needs the word
+     music, song, track or tune as well as the word stop. A bare "stop" still
+     falls through to here and still means what it always meant. */
+  if (musicSay(flat)) { caption(heard, ""); return "music"; }
   if (brief && HOME_SAID.test(flat)) {
     goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";
     return "home";
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
-  /* Music, before anything that needs him to be standing in a room. "Play some
-     music" is the same instruction whether he is there or not, and the word
-     "play" is used nowhere else. */
-  if (musicSay(flat)) { caption(heard, ""); return "music"; }
   /* While he is standing in his room, what he can do outranks the brain. "Do a
      backflip" is not a question. */
   if (world.on > 0.5 && sandboxSay(flat)) { caption(heard, ""); return "act"; }
