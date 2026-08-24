@@ -56,6 +56,7 @@
     <button id="zoom">head</button>
     <button id="pose">shapes</button>
     <button id="mime">mime</button>
+    <button id="wire">wire</button>
     <button id="dbg">log</button>
   </div>
 </div>
@@ -138,7 +139,7 @@ let GAIN = 1.0;
    and Blender and either could have flipped them. Rotating the bone 21 degrees
    each way about each of its local axes and watching where the chin ended up,
    local Z is the hinge; the other two swing it sideways. */
-const JAW = { axis: "z", sign: 1, deg: 21 };
+const JAW = { axis: "z", sign: 1, deg: 21 };   // 21 = your -90 rest to -111 open
 const JAW_AXIS = { x: new THREE.Vector3(1,0,0), y: new THREE.Vector3(0,1,0),
                    z: new THREE.Vector3(0,0,1) };
 let jawBone = null, jawRest = null, jawNow = 0, jawWant = 0;
@@ -412,6 +413,11 @@ async function load(file) {
         if (o.morphTargetInfluences && o.morphTargetInfluences.length) meshes.push(o);
       }
     });
+    if (wire) model.traverse((o) => {
+      if (!o.isMesh && !o.isSkinnedMesh) return;
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
+        if (m) m.wireframe = true;
+    });
     if (fixedNormals) line("no NORMAL attribute on " + fixedNormals
       + " mesh(es) -- computed them, or everything would light dead flat");
     skel = null; headBoneRef = null; jawBone = null; jawRest = null; jawNow = 0;
@@ -663,6 +669,20 @@ $("mime").onclick = () => {
 };
 $("pose").onclick = () => { $("sliders").classList.toggle("on");
   if (!$("sliders").classList.contains("on")) manual = false; };
+/* Wireframe. Shading is a proxy for geometry and a bad one -- an export with no
+   normals lights dead flat and reads as the wrong side of the head. Wireframe
+   is not a proxy for anything: if the polygons are there you see them, whatever
+   the material is doing. Should have been the first thing on this page. */
+let wire = false;
+$("wire").onclick = () => {
+  wire = !wire;
+  if (model) model.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return;
+    for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
+      if (m) m.wireframe = wire;
+  });
+  $("wire").textContent = wire ? "solid" : "wire";
+};
 $("dbg").onclick = () => logEl.classList.toggle("on");
 
 /* Try each candidate until one loads, so whatever it ends up being called just
