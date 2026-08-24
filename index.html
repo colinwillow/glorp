@@ -4907,9 +4907,9 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    divide on top came out as a 17px orb against the big one's 78. And y of 1.95
    put its centre at screen y=13, where the field's containment wall squashed
    the whole thing into a 30px vertical smear. */
-const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, share: 0.13, full: 0.55 };
+const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.5, share: 0.13, full: 0.55 };
 // where it is on screen this frame, and how big -- see the physics loop
-let orbCX = 0, orbCY = 0, orbK = 1;
+let orbCX = 0, orbCY = 0, orbK = 1, orbT = 1;
 // normalised distance from the orb's centre: 0 in the middle, 1 on the ring
 // its own painter's-order scratch, since it draws in a pass of its own
 const ordOrb = new Int32Array(MAX), zbufOrb = new Float32Array(MAX);
@@ -7160,7 +7160,11 @@ function loop() {
     const oH = rig.built || 0;
     orbCX = cx + rx3 * pp3 * oH; orbCY = cy + ry3 * pp3 * oH;
     orbK = 1 + (ORB.k * pp3 - 1) * oH;
+    // and its clock eases in with it, so that while the block is still sitting
+    // in the field its particles run at exactly the field's speed
+    orbT = 1 + (ORB.tempo / orbK - 1) * oH;
   }
+  else orbT = 1;
   const membNow = cfg.membrane + drive.scale * cfg.membGain;
   const membFree = membNow * pull, memb = membFree * hold;
 
@@ -7360,14 +7364,31 @@ function loop() {
          which is the swarming. Lend a particle six times the force and it
          arrives instantly instead, in lockstep with every other one. */
       const loose = isOrb ? 0 : 1;
+      /* A smaller copy of a motion is a slower motion. Halve every distance and
+         keep the same clock and every velocity halves with it -- measured, the
+         small orb ran 0.148 px a step against the big one's 0.338, which is the
+         size ratio and nothing else. Its relative tempo was already right (3.7
+         against 4.22); what was wrong was that relative tempo is not what you
+         see. You see pixels moving.
+
+         So it runs a faster clock, in proportion to how much smaller it is.
+         Scaling positions by k and time by k leaves velocity alone and divides
+         acceleration by k, which is where these exponents come from: the
+         desired speed and the force cap take one power of the tempo, and the
+         membrane takes two because its push already carries a distance. This is
+         also just true of small things -- a sparrow's wings beat faster than a
+         swan's, and a sparrow moving at swan tempo reads as a model of a bird
+         rather than a bird. */
+      const oT = isOrb ? orbT : 1;
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull;
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull * oT;
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
       let spd = mSpd[i];
       if (dd < 500) spd = (dd / 100) * mSpd[i];
+      spd *= oT;
       let ax = (ddx / dd) * spd - vx[i];
       let ay = (ddy / dd) * spd - vy[i];
       const am = Math.sqrt(ax * ax + ay * ay);
@@ -7378,7 +7399,15 @@ function loop() {
          particles as the shape forms and comes back with them. */
       const mb = held ? memb : membFree * (1 - formT), kk2 = held ? kick : kickFree;
       if (!isCore && (mb > 0.001 || kk2 > 0.01)) {
-        const rx = px[i] - cx, ry = py[i] - cy;
+        /* In the orb's frame, not the field's. Both of these are RADIAL, and
+           radial from where decides everything they do. Measured from the field
+           centre a particle sitting in the middle of the orb reads as 200px out
+           and almost straight up -- so the membrane, which is the strongest
+           force at rest and the one carrying drive.scale, was shoving the whole
+           orb up and down as a block instead of breathing it in and out. That
+           is the reaction that was missing: it was there, pointed the wrong
+           way. */
+        const rx = px[i] - oCx, ry = py[i] - oCy;
         const rd = Math.sqrt(rx * rx + ry * ry) || 0.0001;
         let th = Math.atan2(ry, rx); if (th < 0) th += TAU;
         let s2 = ((th / TAU) * SHAPE_N) | 0; if (s2 >= SHAPE_N) s2 = SHAPE_N - 1;
@@ -7391,13 +7420,14 @@ function loop() {
              toward the ring surface and it is the strongest force here at rest,
              so three concentric shells get sprung back onto one and the whole
              muse comes out as a slightly restless circle. */
-          let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2] * ringMul;
+          // ...and its own radius, for the same reason the target above has one
+          let surf = (baseR * gScale + drive.spectrum[b2] * baseR * cfg.specGain) * shapeLut[s2] * ringMul * oRk;
           // radius of the ellipse at this angle, or the membrane rounds the lips
           // straight back off the way it used to round off the corners
           const elx = ey * (rx / rd), ely = ex * (ry / rd);
           surf *= ex * ey / Math.sqrt(elx * elx + ely * ely);
-          if (surf > maxR) surf = maxR;
-          const push = (surf - rd) * 0.02 * mb;
+          if (surf > maxR * oRk) surf = maxR * oRk;
+          const push = (surf - rd) * 0.02 * mb * oT * oT;
           ax += (rx / rd) * push; ay += (ry / rd) * push;
         }
 
@@ -7418,8 +7448,8 @@ function loop() {
           // dilation, so the outline stays similar to itself however hard it
           // is hit.
           const mag = 1 + (shapeLut[s2] - 1) * cfg.kickShape;
-          ax += (rx / rd) * kk2 * 1.6 * mag;
-          ay += (ry / rd) * kk2 * 1.6 * mag;
+          ax += (rx / rd) * kk2 * 1.6 * mag * oT;
+          ay += (ry / rd) * kk2 * 1.6 * mag * oT;
         }
       }
 
@@ -7433,8 +7463,8 @@ function loop() {
 
       const tb = held ? turb : turbFree;
       if (tb > 0.01) {
-        ax += (Math.random() - 0.5) * tb * 2.4;
-        ay += (Math.random() - 0.5) * tb * 2.4;
+        ax += (Math.random() - 0.5) * tb * 2.4 * oT;
+        ay += (Math.random() - 0.5) * tb * 2.4 * oT;
       }
 
       if (hasMouse) {
