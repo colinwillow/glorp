@@ -268,7 +268,15 @@ const PRESETS = {
 };
 
 /* the only channel audio has into physics */
-const drive = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
+const drive = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0,
+  /* 0 for a voice, 1 for a record, and everything in between while it fades.
+     The music visualiser is a different instrument from the one a conversation
+     plays, and this is the crossfade between them -- so nothing below has to
+     know whether music is on, only how much. */
+  music: 0,
+  /* Per band, what is NEW this frame rather than how much is there. A drum is
+     an onset; a bass note that has been ringing for a bar is not a kick. */
+  hit: new Float32Array(BANDS) };
 
 /* ---------------- states ----------------
    idle | listening | thinking | speaking. Every state writes the SAME five
@@ -437,7 +445,14 @@ function updateState(dt) {
      sentence -- and not while he is thinking, which has a look of its own. The
      rest of the time the orb is reacting to the room, and the loudest thing in
      the room is the music. */
-  if (music.playing && state !== "speaking" && state !== "thinking") {
+  const onMusic = music.playing && state !== "speaking" && state !== "thinking";
+  /* Eased, so switching a track on or off is a change of instrument rather
+     than a jump cut. About a third of a second either way. */
+  drive.music += ((onMusic ? 1 : 0) - drive.music) * 0.06;
+  if (onMusic) drive.hit.set(music.hit);
+  else for (let b = 0; b < BANDS; b++) drive.hit[b] *= 0.9;
+
+  if (onMusic) {
     srcD.scale = music.scale; srcD.hue = music.hue;
     srcD.turbulence = music.turbulence; srcD.impulse = music.impulse;
     srcD.spectrum.set(music.spectrum);
@@ -925,6 +940,18 @@ const MUSIC_DIR = "music/";
    decibels is about the dynamic range of a mastered pop record, so a chorus
    lands at the top and a verse sits comfortably below it. */
 const MUSIC_RANGE = 18;
+/* What the average band should read, across every record. Measured off the
+   five here before any of this existed, a well-behaved master ran a mean band
+   around 0.45 and looked right; Heat Waves ran 0.16 and looked dead. */
+const MUSIC_SPEC = 0.42;
+/* The music visualiser's own instrument. `low` and `mid` are band indices, and
+   the band mapping is quadratic, so band 9 is about 430Hz and band 26 about
+   3.6kHz -- kick and bass below the first, snare and voice between them, hats
+   and air above. hue is how much wider the palette swings on a record than on
+   a sentence; it widens the range travelled without moving any faster, because
+   the hue that feeds it is smoothed and a faster palette is how a visualiser
+   becomes something nobody can look at. */
+const MUSIC_VIS = { low: 9, mid: 26, kick: 6.5, snap: 6.0, hat: 3.2, hue: 0.6 };
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
   raw: new Float32Array(BANDS),
@@ -947,7 +974,7 @@ const music = {
      speaker and can be measured against fixed numbers; five records cannot.
      Each track is normalised against its OWN recent loudest moment, so every
      one of them reaches the top of the range on its choruses. */
-  refDb: -14, specRef: 0.25,
+  refDb: -14, specRef: 0.42,
   /* Ten seconds of loudness history, and the reference is a high percentile of
      it. A decaying maximum was the obvious thing and it does not work: it can
      only fall at whatever rate you pick, so it is either too slow to reach a
@@ -956,6 +983,7 @@ const music = {
      every bar. A window has no rate at all -- it is simply right, ten seconds
      late, and ten seconds is one chorus. */
   hist: new Float32Array(600), histAt: 0, histN: 0, sortBuf: new Float32Array(600),
+  hit: new Float32Array(BANDS),
   eHist: new Float32Array(60), eAt: 0, lastBeat: 0, ivs: [], bpm: 0, bpmSaid: 0,
   // the tempo the dance is currently stretched to, so a change can be noticed
   bpmApplied: -1
@@ -1079,7 +1107,7 @@ async function musicPlay(which) {
   music.bpm = music.bpmSaid;
   music.ivs.length = 0; music.lastBeat = 0; music.bpmApplied = -1;
   // a new record is a new reference, or the last one's loud parts set the bar
-  music.refDb = -14; music.specRef = 0.25; music.histAt = 0; music.histN = 0;
+  music.refDb = -14; music.specRef = 0.42; music.histAt = 0; music.histN = 0;
   return music.title;
 }
 function musicStop() {
@@ -1126,7 +1154,25 @@ function analyseMusic() {
     music.refDb = buf[Math.min(nH - 1, Math.floor(nH * 0.92))];
     if (music.refDb < -45) music.refDb = -45;
   }
-  let lvl = (db - (music.refDb - MUSIC_RANGE)) / MUSIC_RANGE;
+  /* A FLOOR, NOT A LEVELLER, and this is the whole shape of the fix.
+
+     Normalising every track to its own reference is the obvious reading of
+     "make them all react" and it quietly breaks the ones that already worked:
+     measured, Yoga Pants went from 0.78 to 0.36, because it is a dynamic
+     master and its 92nd percentile sits well above its average. It did not
+     need helping and it got levelled.
+
+     So the reference only ever lifts. Whichever of the two readings is higher
+     wins -- the fixed mapping the voice path has always used, or the track's
+     own -- which leaves a well-behaved record exactly where it was and brings
+     a quiet or filtered one up to meet it.
+
+     Headroom on the normalised branch, too: the 92nd percentile is ordinary
+     loudness, not a peak, so mapping it to 1.0 pins the orb open with nothing
+     left for a chorus. It lands at 0.85. */
+  const fixedLvl = (db + 52) / 34;
+  const normLvl = (db - (music.refDb - MUSIC_RANGE)) / (MUSIC_RANGE / 0.85);
+  let lvl = fixedLvl > normLvl ? fixedLvl : normLvl;
   if (lvl < 0) lvl = 0; else if (lvl > 1) lvl = 1;
   music.scale += (lvl - music.scale) * (lvl > music.scale ? cfg.attack : cfg.release);
 
@@ -1136,7 +1182,7 @@ function analyseMusic() {
      is an invisible one. Two passes, because the ceiling has to be known before
      anything is divided by it. */
   const N = music.freq.length;
-  let mxb = 0;
+  let sumB = 0;
   for (let b = 0; b < BANDS; b++) {
     const lo = Math.floor(Math.pow(b / BANDS, 2) * N);
     const hi = Math.max(lo + 1, Math.floor(Math.pow((b + 1) / BANDS, 2) * N));
@@ -1144,19 +1190,34 @@ function analyseMusic() {
     for (let i = lo; i < hi; i++) acc += music.freq[i];
     const v = acc / (hi - lo) / 255;
     music.raw[b] = v;
-    if (v > mxb) mxb = v;
+    sumB += v;
   }
-  /* The spectrum ceiling can chase harder than the level does. It is not
-     setting how loud anything looks, only how much of the ring the shape
-     fills, and a shape that takes a second to find its size is not something
-     anybody notices. */
-  if (mxb > music.specRef) music.specRef += (mxb - music.specRef) * 0.25;
-  else music.specRef -= 0.004;
-  if (music.specRef < 0.08) music.specRef = 0.08;
-  // bounded, so a near-silent passage is not amplified into snow
-  const sg = Math.min(4, 0.85 / music.specRef);
-  for (let b = 0; b < BANDS; b++)
-    music.spectrum[b] += (Math.min(1, music.raw[b] * sg) - music.spectrum[b]) * 0.35;
+  /* Against the MEAN, not the ceiling. Scaling so the loudest band hits full
+     was the obvious reading of "make every record fill the ring" and it is the
+     wrong one: it drives most of the other sixty-three bands up with it, and
+     the ring radius is per band -- so the whole thing inflates into one fat
+     green doughnut with no shell and no gap, which is not a louder orb, it is
+     a different and worse object. The average band is what the shape is made
+     of, so that is what gets held steady. */
+  const meanB = sumB / BANDS;
+  if (meanB > music.specRef) music.specRef += (meanB - music.specRef) * 0.25;
+  else music.specRef -= 0.002;
+  if (music.specRef < 0.02) music.specRef = 0.02;
+  // and the same on the spectrum: never below 1, so a bright master keeps its
+  // own shape, and capped, so a dull one is lifted rather than turned to snow
+  const sg = Math.max(1, Math.min(2.4, MUSIC_SPEC / music.specRef));
+  for (let b = 0; b < BANDS; b++) {
+    const nb = Math.min(1, music.raw[b] * sg);
+    /* The onset in this band: how far it has jumped ABOVE its own smoothed
+       self. Level cannot tell a kick from a bass note held through the bar --
+       both are simply energy down there -- and what a drum is, is the jump.
+       Held with a fast decay so a hit is a shape in time rather than one
+       frame nobody sees. */
+    const rise = nb - music.spectrum[b];
+    const h = rise > 0 ? Math.min(1, rise * 3.4) : 0;
+    music.hit[b] = h > music.hit[b] ? h : music.hit[b] * 0.82;
+    music.spectrum[b] += (nb - music.spectrum[b]) * 0.35;
+  }
   let cn = 0, cd = 0, flux = 0;
   for (let i = 0; i < N; i++) {
     const val = music.freq[i] / 255;
@@ -7793,7 +7854,8 @@ function loop() {
      audio shift rather than adding to it: a firework is loud by definition, and
      the two together walked straight back out of the palette. */
   const shift = bs ? bs.hue
-              : Math.round(drive.hue * cfg.hueGain * 28 * (hu * hu * (3 - 2 * hu)) + museHue);
+              : Math.round(drive.hue * cfg.hueGain * (1 + drive.music * MUSIC_VIS.hue) *
+                           28 * (hu * hu * (3 - 2 * hu)) + museHue);
   const flat = 0;
   const lo = -3.4 * sizeHiPx;
   if (shift !== lastShift || flat !== lastFlat || lo !== LUT_LO) {
@@ -7917,10 +7979,14 @@ function loop() {
          puts it all the way round and gives it the whole spectrum. */
       const lf = isOrb ? (i - rig.orbFrom) / (n - rig.orbFrom) : i / n;
       let ringR;
+      // kept for the band roles further down, which need to know which part of
+      // the song this particle is standing in
+      let mBand = -1;
       if (isCore) {
         ringR = baseR * gScale * cfg.coreR;
       } else {
         const band = (lf * BANDS) | 0;
+        mBand = band < BANDS ? band : BANDS - 1;
         const sk = (lf * SHAPE_N) | 0;
         ringR = (baseR * gScale + drive.spectrum[band < BANDS ? band : BANDS - 1] * baseR * cfg.specGain)
                 * shapeLut[sk < SHAPE_N ? sk : SHAPE_N - 1];
@@ -8193,6 +8259,43 @@ function loop() {
         ay += bs.gravity * k * (1 - back);
         // air. Drag is why a star decelerates and hangs at the top of its arc
         if (bs.drag) { ax -= vx[i] * bs.drag; ay -= vy[i] * bs.drag; }
+      }
+
+      /* THE BAND ROLES.
+
+         Index is angle in this field and band is index, so frequency already
+         runs round the ring -- the bass lives at one o'clock and the air at
+         seven whether anybody asked for it or not. What was missing is that
+         every band did the same THING with its energy: pushed the ring out a
+         bit. So a record came out as one shape breathing, which reads as
+         "reacting to sound" and not as reading a song.
+
+         Three behaviours instead, on the onset rather than the level, because
+         a bass note held through a bar is not a kick:
+
+           bass   a heavy shove straight out and a slow settle -- the thump
+           snare  a snap ALONG the ring, sideways, which the eye reads as a
+                  crack rather than a swell because nothing else here moves
+                  that way
+           hats   fine fast jitter, small enough to shimmer rather than blur
+
+         Only while music is playing, and faded in by drive.music, so a
+         conversation is still the tempered thing it was. */
+      if (drive.music > 0.01 && mBand >= 0) {
+        const h = drive.hit[mBand] * drive.music;
+        if (h > 0.012) {
+          if (mBand < MUSIC_VIS.low) {
+            ax += ux * h * MUSIC_VIS.kick * oT;
+            ay += uy * h * MUSIC_VIS.kick * oT;
+          } else if (mBand < MUSIC_VIS.mid) {
+            // along the ring, not out of it: perpendicular to the radius
+            ax += -uy * h * MUSIC_VIS.snap * oT;
+            ay += ux * h * MUSIC_VIS.snap * oT;
+          } else {
+            ax += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
+            ay += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
+          }
+        }
       }
 
       const tb = held ? turb : turbFree;
