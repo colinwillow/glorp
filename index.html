@@ -4871,10 +4871,12 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    because a built figure's own dots are invisible by then anyway. fat scales
    the dots against the big orb's, which would otherwise be far too heavy for
    something this size. */
-const ORB = { r: 0.30, flat: 0.30, y: 0.06, share: 0.13, full: 0.86,
-              fat: 0.85, react: 1.15, reach: 1.45 };
+const ORB = { r: 0.30, flat: 0.42, y: 0.10, share: 0.13, full: 0.86,
+              fat: 0.85, react: 1.15, reach: 1.34, purple: 2.05 };
 // normalised distance from the orb's centre: 0 in the middle, 1 on the ring
 const orbD = new Float32Array(MAX);
+// and its own painter's-order scratch, since it draws in a pass of its own
+const ordOrb = new Int32Array(MAX), zbufOrb = new Float32Array(MAX);
 
 const ROOM = { back: -0.04, down: 0.09 };
 // his height in the working space, measured at load
@@ -7301,9 +7303,17 @@ function loop() {
       const tz = fT > 0.002 ? formZ[i] * scale * formS * fT : 0;
       vz[i] += (tz - pz[i]) * 0.020 - vz[i] * 0.20;
       pz[i] += vz[i];
+      /* Orb particles are not hitting a mark, they ARE the ring, so they get
+         the free field's force budget rather than a formation's. This is the
+         whole difference between the two orbs: the steering below is a
+         Reynolds one -- desired velocity minus current velocity, capped at
+         maxF -- and that cap is what produces momentum, overshoot and settling,
+         which is the swarming. Lend a particle six times the force and it
+         arrives instantly instead, in lockstep with every other one. */
+      const loose = rig.on && i >= rig.orbFrom ? 0 : 1;
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5) * pull;
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull;
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -7404,7 +7414,11 @@ function loop() {
          is over. Pull position directly toward the target while a shape is
          holding -- the force model still runs underneath and takes back over
          as the formation releases. */
-      if (fT > 0.002 && cfg.snap > 0.001) {
+      /* And no snap at all for them. Moving position directly toward the
+         target overrides the force model completely -- 30% of the gap every
+         frame, identically for every particle -- which is exactly why they all
+         moved outward and inward together like one rigid object. */
+      if (fT > 0.002 && cfg.snap > 0.001 && loose) {
         const k2 = cfg.snap * fT;
         px[i] += (tx - px[i]) * k2;
         py[i] += (ty - py[i]) * k2;
@@ -7469,6 +7483,52 @@ function loop() {
      front. */
   if (rig.on && gl.ready) {
     glFrame(rig.R.fit.k * scale * formS, scale * 1.7);
+    /* The orb goes UNDER him, and the compositing order is the only place that
+       can be decided: the 2D canvas has no depth buffer, so a dot drawn after
+       the model is in front of it, full stop. Everything else in the loop wants
+       to be in front -- the dots are announcing the figure -- so the orb, and
+       only the orb, is drawn here instead, in its own small pass before the
+       model lands on top of it. He stands on it rather than wearing it. */
+    if (rig.orbFrom < 1e8) {
+      const nAll = Math.round(cfg.count);
+      const cyw0 = Math.cos(view.yaw), syw0 = Math.sin(view.yaw);
+      const pit0 = view.pitch * formT;
+      const cpt0 = Math.cos(pit0), spt0 = Math.sin(pit0);
+      const FOC0 = scale * 1.7;
+      /* Painter's order, far first. The main loop sorts by depth and this pass
+         has to as well: drawn in index order, the near rim of the ring lands on
+         top of the green core and buries the one part of the orb that says it
+         is an orb. */
+      const oq = ordOrb.subarray(0, nAll - rig.orbFrom);
+      for (let q = 0; q < oq.length; q++) {
+        const ii = rig.orbFrom + q;
+        const oxq = px[ii] - cx, oyq = py[ii] - cy;
+        zbufOrb[q] = oyq * spt0 + (-oxq * syw0 + pz[ii] * cyw0) * cpt0;
+        oq[q] = ii;
+      }
+      oq.sort((a, b) => zbufOrb[b - rig.orbFrom] - zbufOrb[a - rig.orbFrom]);
+      for (let q = 0; q < oq.length; q++) {
+        const i = oq[q];
+        const w0 = (1 - orbD[i]) * sizeHiPx * ORB.fat;
+        const sz0 = w0 >= 0 ? w0 : w0 * ORB.purple;
+        let r0 = Math.abs(sz0) * 0.5 * cfg.dot;
+        if (r0 <= 0.2) continue;
+        const ox0 = px[i] - cx, oy0 = py[i] - cy, oz0 = pz[i];
+        const rx0 = ox0 * cyw0 + oz0 * syw0;
+        let rz0 = -ox0 * syw0 + oz0 * cyw0;
+        const ry0 = oy0 * cpt0 - rz0 * spt0;
+        rz0 = oy0 * spt0 + rz0 * cpt0;
+        const pp0 = FOC0 / Math.max(FOC0 * 0.25, FOC0 + rz0);
+        r0 *= pp0;
+        if (r0 > radCap) r0 = radCap;
+        let li0 = ((sz0 - LUT_LO) / (LUT_HI - LUT_LO) * (LUT_N - 1)) | 0;
+        if (li0 < 0) li0 = 0; else if (li0 > LUT_N - 1) li0 = LUT_N - 1;
+        ctx.fillStyle = lut[li0];
+        ctx.beginPath();
+        ctx.arc(cx + rx0 * pp0, cy + ry0 * pp0, r0, 0, TAU);
+        ctx.fill();
+      }
+    }
     ctx.drawImage(glCanvas, 0, 0, W, H);
   }
 
@@ -7588,10 +7648,11 @@ function loop() {
            is a lit sphere. It is not the orb, and side by side with the real
            one it read as a different object entirely. */
         const w = (1 - orbD[i]) * sizeHiPx * ORB.fat;
-        // the same asymmetry the field uses: the palette is not symmetric, and
-        // magenta needs several times the reach green does. Without it the
-        // purple outside stays thin and the ring never reads as a shell.
-        want = w >= 0 ? w : w * 2.4;
+        /* The same asymmetry the field uses -- the palette is not symmetric and
+           magenta needs more reach than green -- but 2.4, the field's own
+           figure, made the purple so much fatter than the core that lying flat
+           it simply covered it. */
+        want = w >= 0 ? w : w * ORB.purple;
       } else if (formHasB && formB[i] > HOLO_SHADE + 1) {
         // brought its own place on the palette. Depth shading would fight it:
         // a lit dot at the back would go dark and the model would come apart.
@@ -7679,8 +7740,8 @@ function loop() {
        he is dots again. */
     if (rig.on && gl.ready) {
       if (i >= rig.orbFrom) {
-        // the orb is not announcing anything -- it IS the thing. No hand-over
-        // to the model, and no rim fade: it stays for as long as he does.
+        // already drawn, underneath him, before the model was composited
+        rad = 0;
       } else {
         const g4 = figGate(i, 3);
         if (g4 > 0) {

@@ -2739,6 +2739,48 @@ structure stays invisible:
 
 It sits under **him**, not under the origin, so it travels when he walks.
 
+### Under him, and swarming
+
+Three things were wrong with the orb on the ground, and they are three different
+kinds of wrong.
+
+**It drew over him.** The 2D canvas has no depth buffer, so a dot drawn after the
+model is in front of it, full stop — and the model is composited before the
+particle loop precisely so the dots announcing a figure sit in front of it. The
+orb is the one thing that wants to be behind, so it gets its own small pass
+*before* the composite. He stands on it rather than wearing it.
+
+That pass needs its own painter's sort. Drawn in index order, the near rim of the
+ring landed on top of the green core and buried the one part of the orb that says
+it is an orb.
+
+**It moved as one rigid object.** This is the important one, and the cause is a
+single line. The field's steering is a Reynolds one — desired velocity minus
+current velocity, capped at `maxF` — and *that cap is the swarming*: it produces
+momentum, overshoot and settling, and since `mSpd` is per-particle, no two of
+them arrive together. Two things were bypassing it:
+
+- `cfg.snap` moves position **directly** toward the target, 30% of the gap every
+  frame, identically for every particle. It exists so a word glimpsed for 400 ms
+  can actually form. For the orb it overrode the entire force model.
+- `maxF` is multiplied by `1 + fT * 5` while a formation holds — six times the
+  force, so they arrive instantly instead of drifting in.
+
+Orb particles now take neither: no snap, and the free field's force budget.
+Measured as the spread of per-particle speeds in one frame — 0 would be a rigid
+body — they run at **2.3**, with the slowest tenth at 0.6 px and the fastest
+tenth at 7.4.
+
+**The dots were too small for the shape.** Not the dots — the shape. Part of what
+makes the big orb read is that its particles are large enough relative to the
+whole that they mush together into volumes rather than reading as separate
+points. The ring radius came down and the dots stayed, and now they overlap.
+
+One thing that had to be un-borrowed: the field stretches the negative half of
+the palette **2.4×**, because magenta needs more reach than green. Copied
+directly, the purple was so much fatter than the core that lying flat it simply
+covered it. The orb uses 2.05.
+
 ### One place, several names
 
 "Can I see the 3D characters" got "I don't have 3D characters". It does — that is
