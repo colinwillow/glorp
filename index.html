@@ -952,6 +952,35 @@ const MUSIC_SPEC = 0.42;
    the hue that feeds it is smoothed and a faster palette is how a visualiser
    becomes something nobody can look at. */
 const MUSIC_VIS = { low: 9, mid: 26, kick: 6.5, snap: 6.0, hat: 3.2, hue: 0.6 };
+
+/* THE SLOW CLOCKS.
+
+   radius and shape are the two that change what the thing IS rather than how
+   hard it is reacting, so putting them on slow clocks makes a record play as a
+   sequence of looks instead of one look bouncing. Both are already sliders and
+   both keep working as sliders: these ride ON TOP of whatever they are set to
+   and fade back to exactly that when the music stops.
+
+   There was already a drift like this on shape -- `wander`, two sines at 7.3
+   and 11.9 seconds -- and it has never been visible during music because it is
+   multiplied by `rest`, which is cut to nothing the moment anything is loud. It
+   is a resting-state idle. This is the loud-state one.
+
+   Shape does not need bouncing off its ends: buildShapeLut takes its index
+   modulo the number of shapes, so the list is a ring and a big swing simply
+   travels round it -- circle, triangle, square, pentagon, hexagon, star,
+   rosette, mouth, and back to circle.
+
+   Two rates on shape and a third on radius, none of them a multiple of another,
+   so the pair never lines up the same way twice: 41s, 67s and 53s take about
+   forty minutes to repeat. That is the difference between a pattern and a
+   loop. */
+const DRIFT = {
+  // 1 to run these all the time rather than only under music
+  always: 0,
+  radLo: 0.17, radHi: 0.40, radSec: 53,
+  shapeAmp: 3.6, shapeA: 41, shapeB: 67
+};
 const music = {
   el: null, an: null, gain: null, freq: null, time: null, prev: null,
   raw: new Float32Array(BANDS),
@@ -7683,7 +7712,19 @@ function loop() {
   updateDock();
   updateShell();
 
-  const baseR = cfg.radius * scale;
+  // seconds, for every slow clock in here
+  const tt = now / 1000;
+  /* 0 while a conversation is going on, 1 under a record -- and it is the same
+     eased factor everything else music-shaped rides on, so these come and go
+     with the track rather than snapping in. */
+  const driftOn = DRIFT.always ? 1 : drive.music;
+
+  /* Blended toward the slider rather than added to it, so this cannot walk the
+     radius somewhere the slider could not have been put -- and so that letting
+     go of the music returns it exactly to where it is set. */
+  const rWant = (DRIFT.radLo + DRIFT.radHi) / 2 +
+                (DRIFT.radHi - DRIFT.radLo) / 2 * Math.sin(tt / DRIFT.radSec * TAU + 0.9);
+  const baseR = (cfg.radius + (rWant - cfg.radius) * driftOn) * scale;
 
   /* The ring cannot be allowed to reel a shell back in. Even at a tenth of its
      strength it wins: drag kills the outward velocity within a second, and from
@@ -7781,10 +7822,11 @@ function loop() {
              (view.turn >= 1 ? 0 : view.turn * TAU *
                ((formSpin != null ? formSpin : cfg.spin) < 0 ? -1 : 1)) * formT;
 
-  const tt = now / 1000;
   const rest = cfg.drift * (1 - Math.min(1, drive.scale * 2.4)) * (1 - formT) * (bs ? 0 : 1) *
                (1 - muses.amt);
   const wander = rest * (0.62 * Math.sin(tt / 7.3) + 0.38 * Math.sin(tt / 11.9 + 1.7));
+  const drift2 = driftOn * DRIFT.shapeAmp *
+                 (0.62 * Math.sin(tt / DRIFT.shapeA) + 0.38 * Math.sin(tt / DRIFT.shapeB + 2.4));
   const gScale = (1 + drive.scale * cfg.rmsGain) * (1 + rest * 0.05 * Math.sin(tt / 9.1));
   const maxR = Math.min(W, H) * 0.5 * cfg.fit;
 
@@ -7835,7 +7877,7 @@ function loop() {
   const softSpan = Math.max(0.02, 1 - containNow);
   const wall = 3.5 * k;
 
-  const sIdx = cfg.shape + drive.hue * cfg.shapeGain + wander;
+  const sIdx = cfg.shape + drive.hue * cfg.shapeGain + wander + drift2;
   const mKey = Math.round(sIdx * 128);
   if (mKey !== lastMorph) { buildShapeLut(mKey / 128); lastMorph = mKey; }
 
