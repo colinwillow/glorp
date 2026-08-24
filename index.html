@@ -139,6 +139,21 @@
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #mus li:active{background:#1c2417}
   #mus li.at{color:#0B0B0B;background:#B6E08A}
+  /* The mouth test. All ten stacked and toggled, never swapped by src -- a
+     decode in the middle of a sentence is a dropped frame exactly where the
+     thing being tested is. */
+  #visWrap{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 76px);
+    transform:translateX(-50%);display:none;z-index:8;text-align:center}
+  #visWrap.on{display:block}
+  #vis{position:relative;width:min(58vw,240px);aspect-ratio:1;margin:0 auto;
+    border:1px solid #3B4A31;border-radius:16px;overflow:hidden;background:#0B0B0B}
+  /* No invert. The source scans are already light-on-dark, so inverting them
+     produced a glaring white card in the middle of a black app. */
+  #vis img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+    opacity:0;filter:brightness(1.12) contrast(1.12) saturate(0.6)}
+  #vis img.on{opacity:1}
+  #visLab{margin-top:7px;font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#6E8560;letter-spacing:.14em}
   /* Never on screen. It is rendered to and then drawn INTO the 2D canvas, which
      is the only way the model can be layered between the trail and the
      particles rather than simply on top of everything. */
@@ -198,6 +213,7 @@
 <div id="fig"></div>
 <div id="panel"></div>
 <div id="mus"></div>
+<div id="visWrap"><div id="vis"></div><div id="visLab">rest</div></div>
 
 <!-- Vendored, not from a CDN, and resolved by the browser's own import map
      rather than by a bundler. The whole bargain this file is built on is that
@@ -426,6 +442,7 @@ function updateState(dt) {
   stateT += dt; blendT += dt;
   analyseTts();
   analyseMusic();
+  visFrame();
 
   if (!manual) {
     // barge-in: voice wins from any state, so it can be interrupted mid-sentence
@@ -944,6 +961,118 @@ function analyseTts() {
   tts.impulse = Math.max(tts.impulse * 0.86, Math.min(1, flux * 0.05) * g);
 }
 
+/* ---------------- the mouths ----------------
+
+   These are the Preston Blair chart, which is why there is an `etc` and a
+   `rest`: etc is the generic consonant -- C, D, G, K, N, R, S, Th, Y, Z, every
+   sound the mouth barely changes for -- and rest is the closed idle. Ten
+   shapes has been the working set for hand-drawn animation since the forties
+   because it is the fewest that still reads as speech, so it is a good pick to
+   have sculpted toward.
+
+   TIMED FROM THE TEXT, ANCHORED TO THE AUDIO. Driving mouths off the live
+   waveform alone is the obvious approach and it is the weaker one: a level
+   meter knows how LOUD he is, not what he is saying, so you get a mouth
+   flapping open and shut in time with the syllables and forming none of them.
+   The reply text is known before the audio plays, and the decoded audio knows
+   exactly how long it lasts -- so the letters become a sequence of shapes, the
+   sequence is stretched to fit the real duration, and the level is used only
+   to close the mouth in the gaps the text cannot predict.
+
+   Letters, not phonemes, and that is a real limit: English spelling lies about
+   vowels, so "car" and "cat" get the same shape. A proper job wants a
+   pronunciation dictionary or the phoneme timings from the voice API. This is
+   close enough to tell you whether the idea is worth sculpting for. */
+const VIS_DIR = "images/phonemes/";
+const VIS_NAMES = ["AI", "E", "O", "U", "WQ", "L", "FV", "MBP", "etc", "rest"];
+const VIS_OF = {
+  a: "AI", i: "AI", y: "AI",
+  e: "E",
+  o: "O",
+  u: "U",
+  w: "WQ", q: "WQ",
+  l: "L",
+  f: "FV", v: "FV",
+  m: "MBP", b: "MBP", p: "MBP"
+};
+/* How long each shape wants, relative to the others. A vowel is the part of a
+   syllable you can hear; a consonant is mostly the move into it. */
+const VIS_HOLD = { AI: 2.2, E: 2.0, O: 2.2, U: 2.0, WQ: 1.6, L: 1.2,
+                   FV: 1.2, MBP: 1.0, etc: 1.0, rest: 1.6 };
+const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: null };
+
+function visLoad() {
+  if (vis.el) return;
+  const wrap = document.getElementById("vis");
+  if (!wrap) return;
+  for (const n of VIS_NAMES) {
+    const im = document.createElement("img");
+    im.src = VIS_DIR + n + ".jpg";
+    im.alt = n;
+    im.draggable = false;
+    wrap.appendChild(im);
+    vis.imgs[n] = im;
+  }
+  vis.el = wrap;
+  visShow("rest");
+}
+function visShow(n) {
+  if (!vis.el || vis.shape === n) return;
+  const prev = vis.imgs[vis.shape], next = vis.imgs[n];
+  if (prev) prev.classList.remove("on");
+  if (next) next.classList.add("on");
+  vis.shape = n;
+  const lab = document.getElementById("visLab");
+  if (lab) lab.textContent = n;
+}
+
+/* text -> a sequence of shapes with weights, then stretched onto the clip. */
+function visBuild(text, durSec) {
+  const seq = [];
+  const push = (sh) => {
+    // the same shape twice running is one longer shape, not a flicker
+    if (seq.length && seq[seq.length - 1].sh === sh) seq[seq.length - 1].w += VIS_HOLD[sh];
+    else seq.push({ sh, w: VIS_HOLD[sh] });
+  };
+  const src = String(text || "").toLowerCase();
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c >= "a" && c <= "z") push(VIS_OF[c] || "etc");
+    else if (/[.,;:!?]/.test(c)) push("rest");
+    else if (c === " " && seq.length) push("rest");
+  }
+  if (!seq.length) { vis.seq = null; return; }
+  let tot = 0;
+  for (const s2 of seq) tot += s2.w;
+  const k = (durSec || 1) / tot;
+  let acc = 0;
+  for (const s2 of seq) { s2.t0 = acc; acc += s2.w * k; s2.t1 = acc; }
+  vis.seq = seq;
+  vis.dur = acc;
+  vis.at0 = performance.now();
+}
+
+function visFrame() {
+  if (!vis.on || !vis.el) return;
+  if (!ttsPlaying || !vis.seq) { visShow("rest"); return; }
+  const t = (performance.now() - vis.at0) / 1000;
+  if (t > vis.dur) { visShow("rest"); return; }
+  /* The level closes it in the gaps. A written sentence has no silences in it
+     -- the pauses a person actually leaves are between the words, not in the
+     spelling -- so a purely text-driven mouth keeps shaping through them. */
+  if (tts.scale < 0.06) { visShow("rest"); return; }
+  let lo = 0, hi = vis.seq.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (vis.seq[m].t1 < t) lo = m + 1; else hi = m; }
+  visShow(vis.seq[lo].sh);
+}
+function visSet(on) {
+  vis.on = on ? 1 : 0;
+  if (on) visLoad();
+  const w = document.getElementById("visWrap");
+  if (w) w.className = on ? "on" : "";
+  if (!on) visShow("rest");
+}
+
 /* ---------------- the boom box ----------------
 
    One model, four meshes, one blend shape called `speakers` on each of them --
@@ -970,7 +1099,7 @@ const BOX = {
      picture. Standing it further BACK is what brings it in, because perspective
      does the work: at side 0.38 and back 0.6 the whole thing sits inside 0.72
      and it looks like it is in the room rather than pressed against the lens. */
-  height: 0.21, side: 0.38, back: -0.60,
+  height: 0.46, side: 0.44, back: -0.72,
   gain: 1.8, fall: 5.5      // how hard the cones move, and how fast they relax
 };
 function boomBox() {
@@ -1802,6 +1931,9 @@ async function playReply(text) {
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
+    /* The one moment both halves are known: the words, and exactly how long
+       saying them is going to take. */
+    if (vis.on) visBuild(text, audio.duration);
     /* Only the clip that is actually playing gets to say the talking has
        stopped. Interrupting one -- which happens whenever a second line starts
        before the first has finished -- fires the OLD source's onended, and that
@@ -6626,6 +6758,7 @@ function updateWorld(dt, now) {
   }
 }
 function worldReset() {
+  visSet(0);
   world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
   world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
   world.pose = 0; world.groundMin = 1e30; world.turning = 0; world.turnOnly = 0;
@@ -7725,6 +7858,13 @@ function heardSentence(heard) {
      Safe to put ahead of it because the stop branch in there needs the word
      music, song, track or tune as well as the word stop. A bare "stop" still
      falls through to here and still means what it always meant. */
+  /* The mouth test, before the ways out claim "stop". */
+  if (/\b(mouth|mouths|lip ?sync|phoneme|phonemes|viseme|visemes)\b/.test(flat)) {
+    const off = /\b(hide|close|stop|off|no more|done with)\b/.test(flat);
+    visSet(!off);
+    caption(null, off ? "mouth test off" : "mouth test \u00b7 say something");
+    return "visemes";
+  }
   if (musicSay(flat)) { caption(heard, ""); return "music"; }
   if (brief && HOME_SAID.test(flat)) {
     goHome(""); caption(heard, ""); localTook = 0; echoSeen = 0; lastLive = "";
