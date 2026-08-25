@@ -8014,6 +8014,16 @@ function heardSentence(heard) {
      Safe to put ahead of it because the stop branch in there needs the word
      music, song, track or tune as well as the word stop. A bare "stop" still
      falls through to here and still means what it always meant. */
+  /* The 3D head, before the image mouth test -- otherwise "3d lip sync" matches
+     the flat cards first, which is exactly the confusion this is fixing. The
+     two tests share every word except the one that distinguishes them. */
+  if (/\b(face test|head test)\b/.test(flat)
+      || (/\b(3 ?d|three ?d)\b/.test(flat) && !/\bscene\b/.test(flat)
+          && /\b(lip ?sync|mouth|face|head|viseme|visemes|talk|talking|test)\b/.test(flat))) {
+    caption(null, "opening the 3D head test");
+    setTimeout(() => { location.href = "face-test.html"; }, 350);
+    return "facetest";
+  }
   /* The mouth test, before the ways out claim "stop". */
   if (/\b(mouth|mouths|lip ?sync|phoneme|phonemes|viseme|visemes)\b/.test(flat)) {
     const off = /\b(hide|close|stop|off|no more|done with)\b/.test(flat);
