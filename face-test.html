@@ -57,6 +57,7 @@
     <button id="pose">shapes</button>
     <button id="mime">mime</button>
     <button id="wire">wire</button>
+    <button id="dots">dots</button>
     <button id="dbg">log</button>
   </div>
 </div>
@@ -447,6 +448,8 @@ async function load(file) {
         if (o.morphTargetInfluences && o.morphTargetInfluences.length) meshes.push(o);
       }
     });
+    if (dots) { root.remove(dots); dots.geometry.dispose(); dots = null; }
+    if (DOTS.on) setTimeout(() => dotsSet(true), 0);
     if (wire) model.traverse((o) => {
       if (!o.isMesh && !o.isSkinnedMesh) return;
       for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
@@ -557,6 +560,197 @@ function buildSliders(r) {
     };
     d.appendChild(s); box.appendChild(d);
   });
+}
+
+/* ---- his face, made of the orb ----
+
+   The particles do not sit at fixed points in space; each one is bound to a
+   vertex of the head and recomputed every frame through the same morphs and the
+   same skinning the solid mesh uses. So the dots ARE the face: the jaw swings
+   and they swing with it, a viseme fires and the ones around the mouth move.
+
+   Which is also the answer to the thing that made sculpting feel expensive.
+   The shapes stay on the mesh, and the mesh can be invisible -- the particles
+   only need somewhere to live. Any character with a head becomes a Glorb by
+   pointing this at it.
+
+   Bound to vertices rather than sampled across triangles on purpose. A vertex
+   already carries its skin weights and its morph deltas, so following it is a
+   lookup; a point on a triangle would have to interpolate all of that every
+   frame for no visible gain at this density. */
+const DOTS = {
+  want: 4200,      // how many, before the head decides how many it actually has
+  size: 0.0042,    // world units, so it scales with the model
+  ease: 0.30,      // how hard a dot chases its vertex. 1 = welded, 0 = ignores it
+  drift: 0.0011,   // how far it wanders off the skin, so the surface breathes
+};
+let dots = null, dotSrc = [], dotPhase = null;
+const _dv = new THREE.Vector3();
+
+function dotSprite() {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const x = c.getContext("2d");
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(190,255,215,0.75)");
+  g.addColorStop(1, "rgba(140,240,180,0)");
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* Which vertices are the face? The rig already knows. Anything weighted mostly
+   to the head, jaw, tongue or teeth is the head; everything below the neck is
+   not. No coordinates, no guessing where a face is on an unfamiliar mesh. */
+function faceVerts(mesh) {
+  const want = new Set();
+  mesh.skeleton.bones.forEach((b, i) => {
+    if (/head|jaw|tongue|teeth|eye|nose|lip|cheek|brow/i.test(b.name)
+        && !/neck/i.test(b.name)) want.add(i);
+  });
+  const si = mesh.geometry.attributes.skinIndex, sw = mesh.geometry.attributes.skinWeight;
+  if (!si || !sw) return [];
+  const out = [], C = ["getX", "getY", "getZ", "getW"];
+  for (let i = 0; i < si.count; i++) {
+    let w = 0;
+    for (const c of C) if (want.has(si[c](i))) w += sw[c](i);
+    if (w > 0.6) out.push(i);
+  }
+  return out;
+}
+
+function dotsBuild() {
+  if (dots) { root.remove(dots); dots.geometry.dispose(); dots = null; }
+  dotSrc = [];
+  if (!model) return "no model";
+
+  /* Every skinned mesh with head vertices, not just the biggest -- the teeth
+     and tongue belong in this too, and they are exactly what you want to see
+     when the jaw drops.
+
+     But they cannot be shared out by vertex count. The teeth are 6362 vertices
+     ALL weighted to teeth bones, so counting alone hands them more particles
+     than the entire face and builds a floating set of dentures. Share by how
+     much room each one takes up instead: the head is enormous next to a row of
+     teeth, and that is the ratio that looks right. */
+  const found = [];
+  const bb = new THREE.Box3(), v = new THREE.Vector3(), sz = new THREE.Vector3();
+  model.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const idx = faceVerts(o);
+    if (!idx.length) return;
+    const pos = o.geometry.attributes.position;
+    bb.makeEmpty();
+    for (let i = 0; i < idx.length; i += Math.max(1, idx.length >> 7))
+      bb.expandByPoint(v.fromBufferAttribute(pos, idx[i]));
+    bb.getSize(sz);
+    found.push({ mesh: o, idx, room: Math.max(sz.x, sz.y, sz.z) });
+  });
+  if (!found.length) return "no skinned head found -- dots need a rig";
+
+  const total = found.reduce((a, f) => a + f.room, 0);
+  let n = 0;
+  for (const f of found) {
+    const share = Math.max(24, Math.round(DOTS.want * f.room / total));
+    // thin evenly rather than taking the first N, which is one patch of scalp
+    const step = Math.max(1, f.idx.length / share), take = [];
+    for (let i = 0; i < f.idx.length; i += step) take.push(f.idx[Math.floor(i)]);
+    dotSrc.push({ mesh: f.mesh, idx: take, at: n });
+    n += take.length;
+  }
+
+  dotPhase = new Float32Array(n);
+  for (let i = 0; i < n; i++) dotPhase[i] = (i * 2.399963) % 6.283185;   // golden angle
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  dots = new THREE.Points(g, new THREE.PointsMaterial({
+    map: dotSprite(), size: DOTS.size, sizeAttenuation: true,
+    transparent: true, depthWrite: false, depthTest: true,
+    blending: THREE.AdditiveBlending, color: 0xbfffd6, opacity: 0.95 }));
+  dots.frustumCulled = false;
+  root.add(dots);
+  dotsFrame(1e6);         // one huge step so they start on the face, not at the origin
+  return n + " dots: " + dotSrc.map((d) => d.idx.length + " on " + d.mesh.name).join(", ");
+}
+
+/* Timed, and reported once, because the honest answer to "will this run on a
+   phone" is a number measured on a phone. A software rasteriser in a container
+   says nothing: with the mesh drawing depth only, the whole frame actually got
+   FASTER with the particles on, which measures the renderer, not this loop. */
+let dotMs = 0, dotN = 0;
+function dotsFrame(dt) {
+  if (!dots || !dotSrc.length) return;
+  const t0 = performance.now();
+  const arr = dots.geometry.attributes.position.array;
+  const k = Math.min(1, 1 - Math.pow(1 - DOTS.ease, dt / 16.67));
+  const t = performance.now() * 0.001, d = DOTS.drift;
+  for (const src of dotSrc) {
+    const mesh = src.mesh, geo = mesh.geometry, pos = geo.attributes.position;
+    const mt = geo.morphAttributes.position || [];
+    const infl = mesh.morphTargetInfluences || [];
+    const rel = geo.morphTargetsRelative;
+    // only the handful of shapes actually on right now, not all sixty
+    const act = [];
+    for (let i = 0; i < infl.length; i++) if (infl[i] > 0.002 && mt[i]) act.push(mt[i], infl[i]);
+    const mw = mesh.matrixWorld, idx = src.idx;
+    for (let n = 0; n < idx.length; n++) {
+      const i = idx[n];
+      _dv.fromBufferAttribute(pos, i);
+      for (let a = 0; a < act.length; a += 2) {
+        const at = act[a], w = act[a + 1];
+        if (rel) { _dv.x += at.getX(i) * w; _dv.y += at.getY(i) * w; _dv.z += at.getZ(i) * w; }
+        else {
+          _dv.x += (at.getX(i) - pos.getX(i)) * w;
+          _dv.y += (at.getY(i) - pos.getY(i)) * w;
+          _dv.z += (at.getZ(i) - pos.getZ(i)) * w;
+        }
+      }
+      mesh.applyBoneTransform(i, _dv);
+      _dv.applyMatrix4(mw);
+      const g = src.at + n, p = dotPhase[g], o = g * 3;
+      arr[o]     += (_dv.x + Math.sin(t * 1.7 + p) * d - arr[o]) * k;
+      arr[o + 1] += (_dv.y + Math.sin(t * 2.3 + p * 1.7) * d - arr[o + 1]) * k;
+      arr[o + 2] += (_dv.z + Math.sin(t * 1.3 + p * 2.9) * d - arr[o + 2]) * k;
+    }
+  }
+  dots.geometry.attributes.position.needsUpdate = true;
+  dotMs += performance.now() - t0;
+  if (++dotN === 90) {
+    line("dots: " + (dotMs / dotN).toFixed(2) + " ms a frame to move "
+         + dots.geometry.attributes.position.count + " of them"
+         + (dotMs / dotN > 6 ? "  -- heavy; lower DOTS.want" : ""));
+    dotMs = 0; dotN = 0;
+  }
+}
+
+/* The head has to keep hiding its own back.
+
+   Hiding the mesh entirely and drawing additive points was wrong in a specific
+   way: with nothing to occlude them, the teeth glowed straight through closed
+   lips as a permanent grin, and the back of the skull showed through the face.
+   So the mesh stays, drawing nothing but depth. You see only the particles that
+   are actually facing you, the teeth appear when the jaw opens and not before,
+   and it costs one invisible pass. polygonOffset pushes that depth a hair back
+   so the dots sitting exactly ON the surface are not eaten by it. */
+const DOT_MASK = new THREE.MeshBasicMaterial({
+  colorWrite: false, polygonOffset: true,
+  polygonOffsetFactor: 4, polygonOffsetUnits: 4 });
+
+function dotsSet(on) {
+  DOTS.on = on;
+  if (on && !dots) line(dotsBuild());
+  if (dots) dots.visible = on;
+  if (model) model.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return;
+    if (on) {
+      if (!o.userData.skin) o.userData.skin = o.material;
+      o.material = DOT_MASK;
+    } else if (o.userData.skin) {
+      o.material = o.userData.skin; o.userData.skin = null;
+    }
+  });
+  $("dots").textContent = on ? "solid" : "dots";
 }
 
 /* ---- the timeline, identical in shape to the app's ---- */
@@ -749,6 +943,7 @@ function tick() {
     jawBone.quaternion.copy(jawRest).multiply(new THREE.Quaternion()
       .setFromAxisAngle(JAW_AXIS[JAW.axis], JAW.sign * jawNow * JAW.deg * Math.PI / 180));
   }
+  if (DOTS.on) dotsFrame(dt);
   R.render(scene, cam);
 }
 tick();
@@ -802,6 +997,7 @@ $("wire").onclick = () => {
   });
   $("wire").textContent = wire ? "solid" : "wire";
 };
+$("dots").onclick = () => dotsSet(!DOTS.on);
 $("dbg").onclick = () => logEl.classList.toggle("on");
 
 /* Try each candidate until one loads, so whatever it ends up being called just
