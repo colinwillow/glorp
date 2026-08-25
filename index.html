@@ -3681,6 +3681,23 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
    dust, which read as the head being backwards. It never was: the features
    were always on the near side, just small. The light was the liar. */
 const FIG_L = [-0.34, -0.30, -0.89];
+/* Most of a particle's size, and the only part of it that is not a measurement
+   of the head. hash(i) is the same per-particle constant the field uses for its
+   own lotteries, so a dot keeps its character frame to frame instead of
+   flickering between sizes. */
+const figSpread = (i, now, ft) => {
+  const h = hash(i);
+  let w = FIG_DOT.lo + (FIG_DOT.hi - FIG_DOT.lo) * Math.pow(h, FIG_DOT.gamma);
+  /* Except on the features, which opt out of the lottery. A random spread is
+     what makes a cloud, and a cloud is exactly what a nose is not: with every
+     dot taking its own ticket the eyes and the mouth were as likely to draw
+     small as large and the face disappeared into the texture. They converge on
+     one size, a little above average, so they read as a drawn line through the
+     scatter rather than as more of it. */
+  if (ft > 0) w += (FIG_DOT.feat - w) * ft;
+  return w * (1 + FIG_DOT.pulse * (1 - ft * 0.7)
+                  * Math.sin(now * 0.001 * FIG_DOT.rate + h * 44.3));
+};
 const figLit = (i) => {
   const d = fnx[i] * FIG_L[0] + fny[i] * FIG_L[1] + fnz[i] * FIG_L[2];
   return d > 0 ? d : 0;
@@ -3694,6 +3711,23 @@ const figLit = (i) => {
    the back of the model" complaint once the near/far sign was fixed: not the
    wrong side facing us, just both sides arriving at once. */
 const FIG_CULL = 0.94;
+/* What makes the orb look like a cloud and the head look like a stipple.
+
+   In the field a dot's radius comes from |size|, and size sweeps from about
+   -90 out at the rim to +40 in the core -- crossing zero on the way, so some
+   dots vanish entirely while others are enormous. That spread IS the look: fat
+   neighbours merge into a soft mass, the small ones sit in the gaps, and the
+   trail smears the whole thing together. The portrait had none of it. Depth and
+   light modulated the radius by a few tens of a percent and every dot came out
+   the same size, which is a halftone screen, not a cloud.
+
+   So the spread is put back, per particle, from the lottery ticket every
+   particle already has. gamma biases it hard toward the small end -- a uniform
+   spread just makes everything medium -- so most dots stay small and a few are
+   several times the size of their neighbours, which is the ratio the field
+   runs. pulse breathes them on their own phases, because in the orb a dot's
+   size changes as it moves and a frozen spread reads as noise instead. */
+const FIG_DOT = { lo: 0.30, hi: 2.05, gamma: 2.1, feat: 1.30, pulse: 0.34, rate: 0.7 };
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
    and rotation happens once, at draw, which is why nothing upstream had to
    learn about it. */
@@ -7403,8 +7437,21 @@ const POSE = { ix: 0, xdeg: 90, ydeg: 180 };
    rotations and a lift, all slow, all small, none sharing a period with any
    other so the loop never visibly repeats. Angles in radians, lift in
    formation units (the head is about one unit tall). */
-const BOB = { y: 0.020, pitch: 0.045, roll: 0.035, yaw: 0.10,
-              und: 0.007 };   // und: per-particle wander, the wisp the trail catches
+/* He only ever LIFTED before -- one vertical offset and three rotations, which
+   from the front reads as a nod rather than as something floating. x and z are
+   the sway and the drift toward and away from you, and with all three running
+   on periods that do not divide into each other the head never repeats a
+   position. Amplitudes roughly doubled: at 0.020 the lift was smaller than the
+   per-particle wander sitting on top of it, so the head was jittering more
+   than it was moving. */
+/* Translation generous, rotation restrained, and the split matters. Sway is
+   the head moving THROUGH space, which reads as floating; yaw is the head
+   turning, and past about six degrees it stops facing you and the face stops
+   being a face. The first pass ran yaw at 0.17 -- ten degrees -- and caught
+   frames where the mouth had swung visibly off the midline. */
+const BOB = { y: 0.055, x: 0.035, z: 0.060,
+              pitch: 0.075, roll: 0.050, yaw: 0.105,
+              und: 0.012 };   // und: per-particle wander, the wisp the trail catches
 
 /* Eyes, made of particles, because the mesh has none -- the eyeballs were cut
    for size and only the sockets remain, which read as a skull. The eye BONES
@@ -7765,7 +7812,7 @@ function portraitBasis(R) {
    mesh's own vertices were biased toward the face and hid that. Measured on
    screen, not reasoned about: the first pass at 3400 came out visibly sparser
    than the vertex build it replaced. */
-const SAMP_N = 5200;
+const SAMP_N = 4400;
 function rigSamples(R, want) {
   const T = R.dec.T, P = R.dec.P, nt = T.length / 3;
   if (!nt) return null;
@@ -8114,8 +8161,14 @@ function updateFigure(dt, now) {
   const port = rig.portrait;
   let M = port ? rig.pose : null;
   const tSec = now * 0.001;
-  let bobY = 0;
-  if (M) { M = bobMatrix(M, tSec); bobY = Math.sin(tSec * 0.55) * BOB.y; }
+  let bobY = 0, bobX = 0, bobZ = 0;
+  if (M) {
+    M = bobMatrix(M, tSec);
+    // three incommensurate periods, so the drift never lands twice
+    bobY = Math.sin(tSec * 0.55) * BOB.y;
+    bobX = Math.sin(tSec * 0.37 + 2.1) * BOB.x;
+    bobZ = Math.sin(tSec * 0.23 + 4.3) * BOB.z;
+  }
   const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
   const S = rig.samp, pn = rig.pn != null ? rig.pn : R.dec.n;
   let bXL = 1e30, bXH = -1e30, bYL = 1e30, bYH = -1e30, bZL = 1e30, bZH = -1e30;
@@ -8165,9 +8218,9 @@ function updateFigure(dt, now) {
          wander is small and the spring pulls home, and the ghost happens
          because the canvas remembers where the dot just was. */
       const ph = i * 2.399963;
-      fx += Math.sin(tSec * 1.3 + ph) * BOB.und;
+      fx += bobX + Math.sin(tSec * 1.3 + ph) * BOB.und;
       fy += bobY + Math.sin(tSec * 1.7 + ph * 1.31) * BOB.und;
-      fz += Math.sin(tSec * 1.1 + ph * 2.17) * BOB.und;
+      fz += bobZ + Math.sin(tSec * 1.1 + ph * 2.17) * BOB.und;
     }
     if (M) {
       if (fx < bXL) bXL = fx; if (fx > bXH) bXH = fx;
@@ -8208,9 +8261,9 @@ function updateFigure(dt, now) {
     const toForm = (b2) => {
       const v = b2.getWorldPosition(rig.eyeV).applyMatrix4(rig.eyeInv).applyMatrix4(rig.toGroup);
       const ax = (v.x - f.c[0]) * f.k, ay = -(v.y - f.c[1]) * f.k, az = -(v.z - f.c[2]) * f.k;
-      return [M[0]*ax + M[1]*ay + M[2]*az,
+      return [M[0]*ax + M[1]*ay + M[2]*az + bobX,
               M[3]*ax + M[4]*ay + M[5]*az + bobY,
-              M[6]*ax + M[7]*ay + M[8]*az];
+              M[6]*ax + M[7]*ay + M[8]*az + bobZ];
     };
     const span = (bXH - bXL) || 1;
     /* Both bones first, because "wider" has to mean wider. Which of the two is
@@ -10653,6 +10706,7 @@ function loop() {
     const figNear = figZK
       ? Math.sqrt(Math.max(0, Math.min(1, (figZ0 - formZ[i]) * figZK)))
       : 0.5;
+    const ft = rig.feat ? rig.feat[i] : 0;
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     /* On a portrait the colour carries depth too. Normally the LUT index rides
        the split-size, which scatters green and purple with no regard for where
@@ -10689,7 +10743,6 @@ function loop() {
          the field has always had doing the one job the depth ramp cannot.
          They keep their near SIZE: big magenta on small green is what makes
          them read as features rather than as the far side showing through. */
-      const ft = rig.feat ? rig.feat[i] : 0;
       if (ft > 0) s2 = s2 * (1 - ft) + LUT_LO * 0.62 * ft;
       li = ((s2 - LUT_LO) / span * (LUT_N - 1)) | 0;
     }
@@ -10734,8 +10787,9 @@ function loop() {
               /* sqrt on the nearness, so the falloff is gentle across the face
                  and steep only at the silhouette -- linear made everything
                  behind the nose tip dwindle and the head went to dust again. */
-              ? sizeHiPx * cfg.dot * 0.55 * (0.66 + 0.34 * figLit(i))
+              ? sizeHiPx * cfg.dot * 0.80 * (0.66 + 0.34 * figLit(i))
                 * (0.66 + 0.30 * figNear)
+                * figSpread(i, now, ft)
                 * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
