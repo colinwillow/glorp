@@ -7379,8 +7379,14 @@ const BOB = { y: 0.020, pitch: 0.045, roll: 0.035, yaw: 0.10,
    so the sockets' true positions are known without guessing: each eye is a
    little disc of dots parked on its bone, facing the camera, riding the same
    pose and bob as everything else. */
+/* Where he is looking. One gaze for both eyes -- eyes are conjugate -- eased
+   toward a target that is either your finger, while it is on the screen, or a
+   slow wander with the occasional return to centre. The wander is what makes
+   him read as thinking rather than staring. */
+const gaze = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
+
 const EYE = { dots: 16, size: 1.35,
-              down: 0.465,   // how far down the head the sockets sit, 0 = crown
+              down: 0.505,   // how far down the head the sockets sit, 0 = crown
               apart: 0.20,   // half the distance between them, as a fraction of width
               r: 0.070 };    // eye radius as a fraction of head width
 
@@ -7603,7 +7609,7 @@ async function showFigure(src) {
     rig.isEye = new Uint8Array(MAX);
     for (let i = 0; i < rig.ord.length; i++) {
       const k = rig.ord[i] - R.dec.n;
-      if (k >= 0 && k < EYE.dots * 2) { rig.eyeSlot[k] = i; rig.isEye[i] = 1; }
+      if (k >= 0 && k < EYE.dots * 2) { rig.eyeSlot[k] = i; rig.isEye[i] = k < EYE.dots ? 1 : 2; }
     }
   }
   // height up the body, from the bind pose, per particle
@@ -10015,6 +10021,9 @@ function loop() {
 
   const span = LUT_HI - LUT_LO;
   const shaped = cfg.splitShape > 0.001;
+  const eyeAcc = rig.on && rig.portrait && rig.isEye
+    ? [{ x: 0, y: 0, n: 0, lo: 1e9, hi: -1e9 }, { x: 0, y: 0, n: 0, lo: 1e9, hi: -1e9 }]
+    : null;
 
   /* One rotation and one divide per particle, and both are the identity while
      z is zero -- which is every frame that is not holding a model. FOC is far
@@ -10320,6 +10329,11 @@ function loop() {
     }
     radA[i] = rad;
     const sx = cx + rx * persp, sy = cy + ry * persp;
+    if (eyeAcc && rig.isEye && rig.isEye[i]) {
+      const A2 = eyeAcc[rig.isEye[i] - 1];
+      A2.x += sx; A2.y += sy; A2.n++;
+      if (sx < A2.lo) A2.lo = sx; if (sx > A2.hi) A2.hi = sx;
+    }
     if (wireT > 0.002 || solidT > 0.002) {
       sxA[i] = sx; syA[i] = sy; szA[i] = rz; visA[i] = hidden || !held ? 0 : 1;
       /* The vertices thin as the mesh comes in. They do not go: a wireframe
@@ -10330,6 +10344,46 @@ function loop() {
       ctx.beginPath();
       ctx.arc(sx, sy, rad, 0, 6.2832);
       ctx.fill();
+    }
+  }
+
+  /* The eyeballs. Flat circles on purpose -- a pale disc and a black pupil
+     read as an eye at any size, where a cluster of dots reads as a glowing
+     patch. They sit at the centre of each eye's own particles, so everything
+     already true of the particles (the pose, the bob, the springs, the wisp)
+     is true of the eyes without any of it being recomputed. The particles
+     underneath stay: they bloom around the disc as a soft green halo. */
+  if (eyeAcc && eyeAcc[0].n && eyeAcc[1].n && formT > 0.55) {
+    // the gaze: your finger while it is down, a slow wander when it is not
+    const midX = (eyeAcc[0].x / eyeAcc[0].n + eyeAcc[1].x / eyeAcc[1].n) / 2;
+    const midY = (eyeAcc[0].y / eyeAcc[0].n + eyeAcc[1].y / eyeAcc[1].n) / 2;
+    if (mx > -9000) {
+      const dx = (mx - midX) / 150, dy = (my - midY) / 150;
+      const L2 = Math.hypot(dx, dy) || 1, cl2 = Math.min(1, L2);
+      gaze.tx = (dx / L2) * cl2; gaze.ty = (dy / L2) * cl2;
+      gaze.next = now + 900;      // let go and he holds your last spot a beat
+    } else if (now > gaze.next) {
+      if (Math.random() < 0.3) { gaze.tx = 0; gaze.ty = 0; }
+      else {
+        const a2 = Math.random() * 6.2832, r2 = 0.25 + Math.random() * 0.6;
+        gaze.tx = Math.cos(a2) * r2; gaze.ty = Math.sin(a2) * r2 * 0.7;
+      }
+      gaze.next = now + 1100 + Math.random() * 2600;
+    }
+    gaze.x += (gaze.tx - gaze.x) * 0.09;
+    gaze.y += (gaze.ty - gaze.y) * 0.09;
+    for (const A2 of eyeAcc) {
+      const ex2 = A2.x / A2.n, ey2 = A2.y / A2.n;
+      const R2 = Math.max(5, (A2.hi - A2.lo) * 0.62);
+      ctx.beginPath(); ctx.arc(ex2, ey2, R2, 0, 6.2832);
+      ctx.fillStyle = "rgba(224,242,206,0.96)"; ctx.fill();
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(59,74,49,0.9)"; ctx.stroke();
+      const pxx = ex2 + gaze.x * R2 * 0.38, pyy = ey2 + gaze.y * R2 * 0.38;
+      ctx.beginPath(); ctx.arc(pxx, pyy, R2 * 0.44, 0, 6.2832);
+      ctx.fillStyle = "#0d0f0a"; ctx.fill();
+      // the glint, which is most of what makes an eye look wet rather than flat
+      ctx.beginPath(); ctx.arc(pxx - R2 * 0.16, pyy - R2 * 0.16, R2 * 0.13, 0, 6.2832);
+      ctx.fillStyle = "rgba(238,248,228,0.9)"; ctx.fill();
     }
   }
 
