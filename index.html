@@ -3565,6 +3565,18 @@ let holoE = null;
 const formOn = new Uint8Array(MAX);
 // surface orientation, when the source had one. A glyph does not.
 const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float32Array(MAX);
+
+/* Lambert off the formation normal, which is already sitting here for every
+   particle because the figure builder writes one. Used for SIZE on a portrait,
+   not just colour: at the handful of particles a face gets, a nose reads
+   because the dots along its lit edge are fatter, not because they are a
+   slightly different green. Light from upper left and slightly in front --
+   formation space has y down and z away, hence the signs. */
+const FIG_L = [-0.52, -0.58, -0.63];
+const figLit = (i) => {
+  const d = fnx[i] * FIG_L[0] + fny[i] * FIG_L[1] + fnz[i] * FIG_L[2];
+  return d > 0 ? d : 0;
+};
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
    and rotation happens once, at draw, which is why nothing upstream had to
    learn about it. */
@@ -6956,8 +6968,13 @@ function updateWorld(dt, now) {
      buys is a subject that fills the frame with the camera near eye level.
      Pulled back this far he was small and looked down on, which reads as a
      diorama rather than as somebody standing in front of you. */
-  formS = rig.fs0 * (1 - ROOM.back * world.on);
-  formTilt = 0.05 + ROOM.down * world.on;
+  /* A portrait does not get the room's camera. The room looks slightly DOWN at
+     somebody standing in it -- 0.05 plus ROOM.down, about eight degrees -- which
+     is right for a figure and puts a face at the floor. This line runs every
+     frame, so setting formTilt once when the head was built did nothing at all:
+     it was overwritten before the next draw. */
+  formS = rig.fs0 * (1 - (rig.portrait ? 0 : ROOM.back) * world.on);
+  formTilt = rig.portrait ? 0 : 0.05 + ROOM.down * world.on;
   if (!want) return;
 
   if (world.turnOnly) {
@@ -7194,12 +7211,33 @@ async function bakeRigTexture(R) {
    wrong side and nobody would be able to say why the figure looked off. The z
    flip was missing while the 2D renderer was the only consumer, because with
    nothing to compare against, a mirrored figure is just a figure. */
+/* A portrait's own orientation, applied here and nowhere else.
+
+   Three attempts at baking this into the asset each looked plausible and each
+   came out wrong, because the only check was a screenshot of a smooth grey head
+   and a smooth grey head looks much the same from several directions. Rotating
+   here instead means one place decides, it is two numbers, and changing them
+   costs a reload rather than a ninety-second re-export -- so it can actually be
+   checked rather than reasoned about.
+
+   Pitch first, then yaw, both about the formation axes: x right, y DOWN, z
+   away. */
+const POSE = { pitch: -0.32, yaw: Math.PI };
+function poseXform(x, y, z, o, at) {
+  const cp = Math.cos(POSE.pitch), sp = Math.sin(POSE.pitch);
+  const y1 = y * cp - z * sp, z1 = y * sp + z * cp;
+  const cy = Math.cos(POSE.yaw), sy = Math.sin(POSE.yaw);
+  o[at] = x * cy + z1 * sy; o[at + 1] = y1; o[at + 2] = -x * sy + z1 * cy;
+}
+
 function rigPoint(R, v, o) {
   const f = R.fit, P = R.wp, N = R.wn;
-  o[0] = (P[v * 3] - f.c[0]) * f.k;
-  o[1] = -(P[v * 3 + 1] - f.c[1]) * f.k;
-  o[2] = -(P[v * 3 + 2] - f.c[2]) * f.k;
-  o[3] = N[v * 3]; o[4] = -N[v * 3 + 1]; o[5] = -N[v * 3 + 2];
+  const x = (P[v * 3] - f.c[0]) * f.k;
+  const y = -(P[v * 3 + 1] - f.c[1]) * f.k;
+  const z = -(P[v * 3 + 2] - f.c[2]) * f.k;
+  const nx = N[v * 3], ny = -N[v * 3 + 1], nz = -N[v * 3 + 2];
+  if (rig.portrait) { poseXform(x, y, z, o, 0); poseXform(nx, ny, nz, o, 3); }
+  else { o[0] = x; o[1] = y; o[2] = z; o[3] = nx; o[4] = ny; o[5] = nz; }
 }
 
 async function showFigure(src) {
@@ -7274,7 +7312,7 @@ function figStop() {
 function figClear() {
   mini.set = 0;
   worldReset();
-  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
+  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0; rig.portrait = 0;
   gl.ready = 0;
   figChooser(0);
 }
@@ -7403,18 +7441,32 @@ function updateFigure(dt, now) {
   const f = R.fit, P = R.wp, N = R.wn, ord = rig.ord;
   const n = Math.min(formN, ord.length);
   // and where he is standing, which the render applies to its own root
-  const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
+  /* THIS is the loop that decides which way he faces, not rigPoint -- that one
+     builds the point list once and this overwrites it every frame. Patching the
+     wrong one is why two opposite yaw values rendered pixel for pixel the same.
+
+     A portrait stands nowhere. world.yaw and world.x/y/z place a figure in the
+     room and walk him about in it, which is exactly right for a body and is
+     what was turning a face away from you. POSE replaces them: two numbers, one
+     place, checkable in a reload. */
+  const port = rig.portrait;
+  const wy = port ? POSE.yaw : world.yaw;
+  const cw = Math.cos(wy), sw = Math.sin(wy);
+  const wx = port ? 0 : world.x, wyy = port ? 0 : world.y, wz = port ? 0 : world.z;
+  const cp = Math.cos(port ? POSE.pitch : 0), sp = Math.sin(port ? POSE.pitch : 0);
   for (let i = 0; i < n; i++) {
     const v = ord[i] * 3;
     const x = P[v] - f.c[0], y = P[v + 1] - f.c[1], z = P[v + 2] - f.c[2];
     const rx = x * cw + z * sw, rz = -x * sw + z * cw;
-    formX[i] = (rx + world.x) * f.k;
-    formY[i] = -(y + world.y) * f.k;
-    formZ[i] = -(rz + world.z) * f.k;
+    const fx = (rx + wx) * f.k;
+    let fy = -(y + wyy) * f.k, fz = -(rz + wz) * f.k;
+    if (port) { const y1 = fy * cp - fz * sp; fz = fy * sp + fz * cp; fy = y1; }
+    formX[i] = fx; formY[i] = fy; formZ[i] = fz;
     const nx = N[v], nz = N[v + 2];
     fnx[i] = nx * cw + nz * sw;
     fny[i] = -N[v + 1];
     fnz[i] = -(-nx * sw + nz * cw);
+    if (port) { const a = fny[i] * cp - fnz[i] * sp; fnz[i] = fny[i] * sp + fnz[i] * cp; fny[i] = a; }
   }
   /* The split. The last arc of the ring does not trace him: it lifts off and
      becomes the orb, hovering over the source machine. GPU only -- the 2D
@@ -8166,8 +8218,14 @@ function heardSentence(heard) {
        timer, which is right for showing off a model and wrong here: ask for the
        PARTICLE face and thirty seconds later you are looking at a solid white
        bust. Asking for particles should get particles and keep them. */
+    /* Set BEFORE the load, not after it. rigPoint runs while showFigure is
+       building the point list, so a flag set in the .then() arrives after every
+       point has already been placed -- which is why the pose transform below
+       had no effect at all and two opposite yaw values rendered pixel for pixel
+       the same. */
+    rig.portrait = 1;
     showFigure("toon_head").then((ok) => {
-      if (ok === false) return;
+      if (ok === false) { rig.portrait = 0; return; }
       figPick("dots");
       /* Straight on, whatever the tune sliders say. formTilt null means "use
          cfg.tilt", and cfg.tilt is a slider somebody set while looking at a
@@ -8921,7 +8979,11 @@ function loop() {
      smear; a particle still on the rim wants all of it, or the perimeter freezes
      into a dead circle for as long as the word is up -- which looks worse than
      no perimeter at all. */
-  const hold = 1 - formT;   // audio keeps running, it just stops smearing the shape
+  /* A held formation gags the audio so the shape stays legible. Right for a
+     knot; wrong for a face, which just sat there while he talked. A portrait
+     keeps a third of the reaction -- enough that the dots breathe and flare on
+     his own voice, not enough to shake the face apart. */
+  const hold = rig.portrait ? 1 - formT * 0.66 : 1 - formT;
   /* And it blooms with the sound rather than running flat out. Quiet room, it
      is barely there and the orb is the orb; talk to it and the pattern opens.
      That difference IS the reaction -- without it a muse is a thing that
@@ -9700,6 +9762,15 @@ function loop() {
             : form3d && held && formHasB && formB[i] > HOLO_SHADE + 1
               ? sizeHiPx * cfg.dot * 0.09 * (0.25 + 1.3 * Math.abs(formB[i]))
                 * (1 - fT * 0.15) * (1 - wireT * 0.55)
+            /* A portrait is drawn nearer and with far fewer particles across it
+               than a whole body, so the same dot size that reads at full length
+               is dust on a face. Bigger, and biggest where the light lands --
+               the shading is already computed per particle for colour, so
+               spending it on size as well is free and is what makes a nose look
+               like a nose rather than like slightly paler dots. */
+            : form3d && held && !isOrbD && rig.portrait
+              ? sizeHiPx * cfg.dot * 0.30 * (0.55 + 0.95 * figLit(i))
+                * (1 - fT * 0.15)
             : form3d && held && !isOrbD
               ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
             : Math.abs(size) * 0.5 * cfg.dot * (1 - fT * 0.62)
