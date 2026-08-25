@@ -1040,7 +1040,7 @@ function visBuild(text, durSec) {
     const c = src[i];
     if (c >= "a" && c <= "z") push(VIS_OF[c] || "etc");
     else if (/[.,;:!?]/.test(c)) push("rest");
-    else if (c === " " && seq.length) push("rest");
+    // a space inside a phrase is not a pause -- no rest for it
   }
   if (!seq.length) { vis.seq = null; return; }
   let tot = 0;
@@ -1068,6 +1068,46 @@ function visBuild(text, durSec) {
    fourteen shapes a second, which is faster than a mouth moves and reads as
    flicker rather than speech. */
 const VIS_MIN_HOLD = 0.055;      // seconds; under this a shape cannot be seen
+const VIS_REST_GAP = 0.12;       // a space shorter than this is not a pause
+
+/* A viseme is never worth deleting.
+
+   The old rule dropped any shape shorter than VIS_MIN_HOLD and handed its time to
+   whatever came before it. In a real sentence that is catastrophic for short
+   words: the "I" in "Hello, I am" is one character, maybe 40ms of audio, with a
+   space either side -- so it got absorbed into a rest and the mouth simply did
+   not move. "Hello" survived because it is five characters and 400ms. The face
+   went dead on exactly the words a face should be most alive on.
+
+   Rests are the compressible thing. A 40ms mouth shape still reads as movement;
+   a deleted one reads as a dead face. So: absorb short rests, never short
+   visemes, and when a viseme is too brief, borrow the time it needs from a rest
+   next to it. Total length is untouched, so the audio stays in sync. */
+function visTighten(seq) {
+  const out = [];
+  for (const e of seq) {
+    const prev = out[out.length - 1];
+    if (e.sh === "rest" && e.t1 - e.t0 < VIS_MIN_HOLD && prev) { prev.t1 = e.t1; continue; }
+    out.push({ sh: e.sh, t0: e.t0, t1: e.t1 });
+  }
+  for (let i = 0; i < out.length; i++) {
+    const e = out[i];
+    if (e.sh === "rest" || e.t1 - e.t0 >= VIS_MIN_HOLD) continue;
+    let need = VIS_MIN_HOLD - (e.t1 - e.t0);
+    const nxt = out[i + 1], prv = out[i - 1];
+    if (nxt && nxt.sh === "rest") {
+      const give = Math.min(need, Math.max(0, (nxt.t1 - nxt.t0) - 0.02));
+      e.t1 += give; nxt.t0 += give; need -= give;
+    }
+    if (need > 0 && prv && prv.sh === "rest") {
+      const give = Math.min(need, Math.max(0, (prv.t1 - prv.t0) - 0.02));
+      e.t0 -= give; prv.t1 -= give;
+    }
+    // no rest to borrow from: a short shape beats no shape
+  }
+  return out.filter((e) => e.t1 > e.t0);
+}
+
 function visFromMarks(a) {
   const ch = a.characters || [];
   const t0 = a.character_start_times_seconds || [];
@@ -1076,23 +1116,19 @@ function visFromMarks(a) {
   const seq = [];
   for (let i = 0; i < ch.length; i++) {
     const c = String(ch[i]).toLowerCase();
-    const sh = (c >= "a" && c <= "z") ? (VIS_OF[c] || "etc")
-             : /[.,;:!?]/.test(c) ? "rest"
-             : c === " " ? "rest" : null;
-    if (!sh) continue;
     const s0 = +t0[i], s1 = +(t1[i] != null ? t1[i] : t0[i]);
     if (!(s1 >= s0)) continue;
+    let sh;
+    if (c >= "a" && c <= "z") sh = VIS_OF[c] || "etc";
+    else if (/[.,;:!?]/.test(c)) sh = "rest";
+    // a space inside a phrase is not a pause; only a real gap closes the mouth
+    else if (c === " ") { if (s1 - s0 < VIS_REST_GAP) continue; sh = "rest"; }
+    else continue;
     const last = seq[seq.length - 1];
     if (last && last.sh === sh) last.t1 = s1;      // one sound, however spelt
     else seq.push({ sh, t0: s0, t1: s1 });
   }
-  // absorb anything too brief to register, rather than flashing it
-  const out = [];
-  for (const e of seq) {
-    const prev = out[out.length - 1];
-    if (e.t1 - e.t0 < VIS_MIN_HOLD && prev) { prev.t1 = e.t1; continue; }
-    out.push(e);
-  }
+  const out = visTighten(seq);
   vis.seq = out.length ? out : null;
   vis.dur = out.length ? out[out.length - 1].t1 : 0;
   vis.marked = 1;

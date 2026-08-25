@@ -557,6 +557,46 @@ function buildSliders(r) {
 const vis = { seq:null, at0:0, dur:0, shape:"rest", marked:0, playing:false };
 let manual = false;
 const MIN_HOLD = 0.055;
+const REST_GAP = 0.12;   // a space shorter than this is not a pause
+
+/* A viseme is never worth deleting.
+
+   The old rule dropped any shape shorter than MIN_HOLD and handed its time to
+   whatever came before it. In a real sentence that is catastrophic for short
+   words: the "I" in "Hello, I am" is one character, maybe 40ms of audio, with a
+   space either side -- so it got absorbed into a rest and the mouth simply did
+   not move. "Hello" survived because it is five characters and 400ms. The face
+   went dead on exactly the words a face should be most alive on.
+
+   Rests are the compressible thing. A 40ms mouth shape still reads as movement;
+   a deleted one reads as a dead face. So: absorb short rests, never short
+   visemes, and when a viseme is too brief, borrow the time it needs from a rest
+   next to it. Total length is untouched, so the audio stays in sync. */
+function tighten(seq) {
+  const out = [];
+  for (const e of seq) {
+    const prev = out[out.length - 1];
+    if (e.sh === "rest" && e.t1 - e.t0 < MIN_HOLD && prev) { prev.t1 = e.t1; continue; }
+    out.push({ sh: e.sh, t0: e.t0, t1: e.t1 });
+  }
+  for (let i = 0; i < out.length; i++) {
+    const e = out[i];
+    if (e.sh === "rest" || e.t1 - e.t0 >= MIN_HOLD) continue;
+    let need = MIN_HOLD - (e.t1 - e.t0);
+    const nxt = out[i + 1], prv = out[i - 1];
+    if (nxt && nxt.sh === "rest") {
+      const give = Math.min(need, Math.max(0, (nxt.t1 - nxt.t0) - 0.02));
+      e.t1 += give; nxt.t0 += give; need -= give;
+    }
+    if (need > 0 && prv && prv.sh === "rest") {
+      const give = Math.min(need, Math.max(0, (prv.t1 - prv.t0) - 0.02));
+      e.t0 -= give; prv.t1 -= give;
+    }
+    // no rest to borrow from: a short shape beats no shape
+  }
+  return out.filter((e) => e.t1 > e.t0);
+}
+
 function fromMarks(a) {
   const ch = a.characters || [], t0 = a.character_start_times_seconds || [],
         t1 = a.character_end_times_seconds || [];
@@ -564,20 +604,21 @@ function fromMarks(a) {
   const seq = [];
   for (let i = 0; i < ch.length; i++) {
     const c = String(ch[i]).toLowerCase();
-    const sh = (c >= "a" && c <= "z") ? (VIS_OF[c] || "etc")
-             : /[.,;:!?]/.test(c) ? "rest" : c === " " ? "rest" : null;
-    if (!sh) continue;
     const a0 = +t0[i], a1 = +(t1[i] != null ? t1[i] : t0[i]);
     if (!(a1 >= a0)) continue;
+    let sh;
+    if (c >= "a" && c <= "z") sh = VIS_OF[c] || "etc";
+    else if (/[.,;:!?]/.test(c)) sh = "rest";
+    /* A space inside a phrase is not a pause. Nobody shuts their mouth between
+       "I" and "am" -- letting every space close it made him chew the sentence.
+       Only a space long enough to be a real gap gets a rest; shorter ones are
+       skipped and the shape before simply holds through them. */
+    else if (c === " ") { if (a1 - a0 < REST_GAP) continue; sh = "rest"; }
+    else continue;
     const last = seq[seq.length - 1];
     if (last && last.sh === sh) last.t1 = a1; else seq.push({ sh, t0:a0, t1:a1 });
   }
-  const out = [];
-  for (const e of seq) {
-    const prev = out[out.length - 1];
-    if (e.t1 - e.t0 < MIN_HOLD && prev) { prev.t1 = e.t1; continue; }
-    out.push(e);
-  }
+  const out = tighten(seq);
   return out.length ? out : null;
 }
 function fromText(text, dur) {
@@ -588,7 +629,7 @@ function fromText(text, dur) {
   };
   for (const c of String(text).toLowerCase()) {
     if (c >= "a" && c <= "z") push(VIS_OF[c] || "etc");
-    else if (/[.,;:!?]/.test(c) || c === " ") push("rest");
+    else if (/[.,;:!?]/.test(c)) push("rest");   // punctuation pauses; a space does not
   }
   if (!seq.length) return null;
   let tot = 0; seq.forEach((s) => tot += s.w);
@@ -658,16 +699,22 @@ function tick() {
 
   if (mapped && !manual) {
     const target = RIG[vis.shape] || RIG.rest;
-    const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
+    /* Asymmetric, because mouths are. A viseme can be 40ms long, and at one
+       rate for both directions it only ever got about half way to its shape
+       before the next one started -- every consonant a mumble. Opening fast and
+       closing slower is also just what a real mouth does. */
+    const kUp = 1 - Math.pow(1 - 0.50, dt / 16.67);
+    const kDn = 1 - Math.pow(1 - 0.28, dt / 16.67);
     for (const p of mapped) for (const name in p.map) {
       const i = p.map[name];
       const wantV = (target[name] || 0) * GAIN;
-      p.mesh.morphTargetInfluences[i] += (wantV - p.mesh.morphTargetInfluences[i]) * k;
+      const cur = p.mesh.morphTargetInfluences[i];
+      p.mesh.morphTargetInfluences[i] += (wantV - cur) * (wantV > cur ? kUp : kDn);
     }
     if (!manual) jawWant = VIS_JAW[vis.shape] != null ? VIS_JAW[vis.shape] : 0;
   }
   if (jawBone && jawRest) {
-    const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
+    const k = 1 - Math.pow(1 - (jawWant > jawNow ? 0.50 : 0.28), dt / 16.67);
     jawNow += (jawWant - jawNow) * k;
     jawBone.quaternion.copy(jawRest).multiply(new THREE.Quaternion()
       .setFromAxisAngle(JAW_AXIS[JAW.axis], JAW.sign * jawNow * JAW.deg * Math.PI / 180));
