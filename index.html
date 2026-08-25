@@ -8052,10 +8052,18 @@ function heardSentence(heard) {
      falls through to here and still means what it always meant. */
   /* The 3D head, before the image mouth test -- otherwise "3d lip sync" matches
      the flat cards first, which is exactly the confusion this is fixing. The
-     two tests share every word except the one that distinguishes them. */
+     two tests share every word except the one that distinguishes them.
+
+     Matched against flatN, for the reason written twenty lines up and then
+     promptly ignored when this branch was added: `flat` has replaced every
+     non-letter with a space, so "3-D lip sync" -- which is how a dictation
+     engine writes it -- arrives here as "d lip sync" with the 3 gone. The
+     branch could never fire, and every attempt fell through to the 2D cards.
+     Reusing SCENE_SAID rather than a second copy of the same pattern, so there
+     is only one place that knows how people say "3D". */
   if (/\b(face test|head test)\b/.test(flat)
-      || (/\b(3 ?d|three ?d)\b/.test(flat) && !/\bscene\b/.test(flat)
-          && /\b(lip ?sync|mouth|face|head|viseme|visemes|talk|talking|test)\b/.test(flat))) {
+      || (SCENE_SAID.test(flatN) && !/\b(scene|sandbox|room)\b/.test(flatN)
+          && /\b(lip ?sync|lipsync|mouth|face|head|viseme|visemes|talk|talking|test)\b/.test(flat))) {
     caption(null, "opening the 3D head test");
     setTimeout(() => { location.href = "face-test.html"; }, 350);
     return "facetest";
