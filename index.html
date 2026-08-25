@@ -6076,6 +6076,9 @@ function glLoad(buf, src, R) {
       gl.group.add(g.scene);
       if (!gl.ground) gl.ground = makeGround(T);
       if (gl.ground.parent !== gl.stage) gl.stage.add(gl.ground);
+      // gl.stage, emphatically not gl.root: these exist to NOT move with him
+      if (!gl.motes) gl.motes = makeMotes(T);
+      if (gl.motes.parent !== gl.stage) gl.stage.add(gl.motes);
       // under root, not stage: the pool is his, and it walks when he does
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
@@ -6227,6 +6230,20 @@ function glFrame(K, FOC) {
     gl.ground.scale.setScalar(figH1() * WALK.floor);
     gl.ground.material.opacity = world.on * 0.9 * gFade;
   }
+  if (gl.motes) {
+    /* No pitch gate. The grid has one because a lattice needs to be looked
+       down on to read as a plane; a scattering of points does not, and this is
+       the only stationary thing on the floor at the angle the room is
+       actually shot at. */
+    const H2 = figH1();
+    gl.motes.visible = world.on > 0.01;
+    gl.motes.position.y = f.lo[1] - f.c[1];
+    gl.motes.scale.setScalar(H2 * MOTE.r);
+    // size is in the disc's own scaled units, so it cancels back out to a
+    // constant fraction of his height however far the room is zoomed
+    gl.motes.material.size = MOTE.size / MOTE.r;
+    gl.motes.material.opacity = world.on * 0.95;
+  }
   if (gl.pool) {
     gl.pool.visible = world.on > 0.01;
     /* Under HIM, not under the root. A clip is free to walk him away from the
@@ -6238,6 +6255,22 @@ function glFrame(K, FOC) {
     let sx = 0, sz = 0, sn = 0;
     const wp = rig.R && rig.R.wp;
     if (wp) for (let v = 0; v < wp.length; v += 48) { sx += wp[v]; sz += wp[v + 2]; sn++; }
+    /* Eased, because a dance clip carries no root motion and his centre of mass
+       still swings through one -- measured, the pool slid 0.026 across and
+       0.052 forward over six seconds while world.x and world.z were exactly
+       zero. A light pool sliding under a man standing on the spot is the second
+       half of the floor looking untethered. Slow enough to ignore a beat, quick
+       enough to keep up when he actually walks somewhere. */
+    if (sn) {
+      const tx = sx / sn, tz = sz / sn;
+      if (!gl.poolS) gl.poolS = { x: tx, z: tz };
+      // 0.045 was measured doing almost nothing -- 0.028 of sway became 0.021.
+      // This is about a two-second constant: a beat cannot move it, a walk can.
+      const kp = 1 - Math.pow(1 - 0.009, (gl.dt || 16.67) / 16.67);
+      gl.poolS.x += (tx - gl.poolS.x) * kp;
+      gl.poolS.z += (tz - gl.poolS.z) * kp;
+      sx = gl.poolS.x * sn; sz = gl.poolS.z * sn;
+    }
     // minus world.y: the pool belongs to the floor, and the root it hangs from
     // is the thing that just moved down to meet it
     gl.pool.position.set(sn ? sx / sn - f.c[0] : 0,
@@ -6519,6 +6552,58 @@ function makePool(T) {
                               depthWrite: false, blending: T.AdditiveBlending,
                               fog: false }));
   m.rotation.x = -Math.PI / 2;      // flat on the floor
+  m.frustumCulled = false;
+  return m;
+}
+
+/* ---------------- the floor, as something you can actually see ----------------
+
+   The room had no stationary reference frame, and that is the whole of the
+   "everything moves with him" complaint.
+
+   Measured: gl.ground is a grid, and its gate needs view.pitch past 0.20 before
+   it fades in at all. In the dancing scene the pitch is 0.135 -- so the grid
+   never draws, not once, and the only thing on the floor is the pool of light,
+   which is parented to gl.root and therefore walks when he does. The floor WAS
+   moving with him, because the floor was him. The boom box sits in gl.stage and
+   stays put, so half the scene was pinned to the room and half to the man, and
+   that reads exactly as wrong as it looked.
+
+   The grid was right to be gated -- at eight degrees a lattice is a stack of
+   horizontal rules and reads as an artefact. Points do not have that problem:
+   a dot on a plane is a dot on a plane at any angle, and as he walks past them
+   they slide, which is the parallax that tells you who is moving. Same language
+   as everything else here, and they cost one draw call.
+
+   Scattered on a golden-angle spiral rather than at random, so there are no
+   clumps and no bald patches, and by sqrt of the index so the density is even
+   across the disc instead of piling up at the middle. */
+/* r is in his heights, and 3.4 was too far. The room is shot at about eight
+   degrees, so a wide disc projects almost to the horizon -- which sits above
+   his head -- and the far half of it scattered across the top of the screen as
+   what reads like dust in the air rather than marks on a floor. Kept close
+   enough that every mote lands below him and the fog takes the back edge. */
+const MOTE = { n: 520, r: 1.9, size: 0.038 };
+function makeMotes(T) {
+  const N = MOTE.n;
+  const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const rr = Math.sqrt((i + 0.5) / N), a = i * 2.399963;
+    pos[i * 3] = Math.cos(a) * rr;
+    pos[i * 3 + 1] = 0;
+    pos[i * 3 + 2] = Math.sin(a) * rr;
+    // the field's own two ends, mostly green with the odd magenta among it
+    const h = hash(i + 77), g2 = h < 0.68, d = 0.62 + 0.38 * hash(i + 311);
+    col[i * 3]     = (g2 ? 0.42 : 0.62) * d;
+    col[i * 3 + 1] = (g2 ? 0.80 : 0.26) * d;
+    col[i * 3 + 2] = (g2 ? 0.34 : 0.95) * d;
+  }
+  const geo = new T.BufferGeometry();
+  geo.setAttribute("position", new T.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new T.BufferAttribute(col, 3));
+  const m = new T.Points(geo, new T.PointsMaterial({
+    vertexColors: true, sizeAttenuation: true, transparent: true,
+    depthWrite: false, fog: true }));
   m.frustumCulled = false;
   return m;
 }
