@@ -126,6 +126,17 @@
     border-radius:14px;padding:11px 12px;backdrop-filter:blur(9px);
     font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9FB98B}
   #mus.on{display:block}
+  #songCard{position:fixed;left:50%;top:calc(17% + env(safe-area-inset-top));
+    transform:translateX(-50%) translateY(6px) scale(.97);opacity:0;pointer-events:none;
+    z-index:8;max-width:min(88vw,420px);background:rgba(11,11,11,.92);
+    border:1px solid #3B4A31;border-radius:14px;padding:13px 18px;text-align:center;
+    backdrop-filter:blur(9px);box-shadow:0 0 22px rgba(139,47,214,.25);
+    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+    transition:opacity .35s ease,transform .35s ease}
+  #songCard.on{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
+  #songCard .t{color:#D8EFC2;font-size:15px;letter-spacing:.02em;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #songCard .a{color:#9C6BD6;font-size:11px;margin-top:3px}
   #mus .now{color:#D8EFC2;font-size:13px;margin-bottom:2px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #mus .sub{color:#6E8560;margin-bottom:9px}
@@ -213,6 +224,7 @@
 <div id="fig"></div>
 <div id="panel"></div>
 <div id="mus"></div>
+<div id="songCard"><div class="t"></div><div class="a"></div></div>
 <div id="visWrap"><div id="vis"></div><div id="visLab">rest</div></div>
 
 <!-- Vendored, not from a CDN, and resolved by the browser's own import map
@@ -1862,6 +1874,27 @@ function musicLocalList() {
    that has now cost us three rounds in three other guises. */
 const musEl = () => document.getElementById("mus");
 let musOn = 0;
+/* The song card: the answer to "what is this song", as a thing you can read.
+   The caption already says it out of the corner of its mouth, but a caption is
+   subtitles -- gone with the next thing anybody says. This hangs centre stage
+   for a few seconds in the player's own palette and gets out of the way. */
+let songCardAt = 0;
+function songCard() {
+  const e = document.getElementById("songCard");
+  if (!e) return;
+  const t = (music.list || [])[music.i];
+  e.querySelector(".t").textContent = music.playing
+    ? "\u266a  " + (music.title || "?") : "nothing playing";
+  e.querySelector(".a").textContent = music.playing
+    ? ((music.artist ? music.artist + "  \u00b7  " : "")
+       + (t && t.from === "audius" ? "audius" : "local")
+       + (music.bpm ? "  \u00b7  " + Math.round(music.bpm) + " bpm" : ""))
+    : "say \u201cplay\u201d and a name";
+  e.className = "on";
+  clearTimeout(songCardAt);
+  songCardAt = setTimeout(() => { e.className = ""; }, 5200);
+}
+
 function musicPanel(on) {
   const e = musEl();
   if (!e) return;
@@ -6836,10 +6869,35 @@ function sandboxMove(flat) {
 function musicSay(flat) {
   /* Closing first. "Close the music player" contains "music player", so the
      opener matched it and opened what was being dismissed. */
-  if (/\b(hide|close|dismiss|get rid of)\b/.test(flat) && /\b(music|player)\b/.test(flat)) {
+  if (/\b(hide|close|dismiss|get rid of)\b/.test(flat)
+      && /\b(music|player|playlist|selector|picker|song list|track list)\b/.test(flat)) {
     musicPanel(0); caption(null, "closed"); return "closed";
   }
-  if (/\b(music player|show the music|what('| i)?s playing|now playing)\b/.test(flat)) {
+  /* "What is this song" is a question about the SONG, answered with the card
+     -- not a request for the whole player. Before the opener, because several
+     of its phrasings mention music. */
+  if (/\b(what|whats|name|who)\b/.test(flat)
+      && /\b(song|track|tune|playing|sings|singer|artist|band)\b/.test(flat)
+      && !/\b(player|selector|playlist|list|have|got)\b/.test(flat)) {
+    songCard();
+    caption(null, music.playing
+      ? "\u266a " + music.title + (music.artist ? " \u00b7 " + music.artist : "")
+      : "nothing playing");
+    return "song card";
+  }
+  /* Scrolling the selector by voice, while it is up. */
+  if (musOn && /\b(scroll|page)\b/.test(flat)) {
+    const e = musEl(), ol = e && e.querySelector("ol");
+    if (ol) {
+      const up = /\b(up|back|top)\b/.test(flat);
+      if (/\b(top|start|beginning)\b/.test(flat)) ol.scrollTo({ top: 0, behavior: "smooth" });
+      else if (/\b(bottom|end)\b/.test(flat)) ol.scrollTo({ top: 1e6, behavior: "smooth" });
+      else ol.scrollBy({ top: (up ? -1 : 1) * ol.clientHeight * 0.8, behavior: "smooth" });
+      caption(null, up ? "\u2191" : "\u2193");
+      return "scrolled";
+    }
+  }
+  if (/\b(music player|music selector|song selector|music selection|song selection|playlist|play list|song list|track list|music list|music picker|song picker|show the music|now playing)\b/.test(flat)) {
     musicPanel(1);
     if (!music.list) musicLocalList().then(() => musicPanel(-1)); else musicPanel(-1);
     caption(null, music.playing ? "\u266a " + music.title : "music player");
