@@ -7222,7 +7222,18 @@ async function bakeRigTexture(R) {
 
    Pitch first, then yaw, both about the formation axes: x right, y DOWN, z
    away. */
-const POSE = { ix: 0 };
+const POSE = { ix: 0, xdeg: 90 };
+function poseRotX(M, deg) {
+  const t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  const R = [1, 0, 0, 0, c, -s, 0, s, c];
+  const out = new Float64Array(9);
+  for (let r = 0; r < 3; r++) for (let k = 0; k < 3; k++) {
+    let v = 0;
+    for (let j = 0; j < 3; j++) v += R[r * 3 + j] * M[j * 3 + k];
+    out[r * 3 + k] = v;
+  }
+  return out;
+}
 try { POSE.ix = +(localStorage.getItem("orbPoseIx") || 0) || 0; } catch (e) {}
 
 /* The 24 ways round you can hold a thing, as signed axis permutations. Stepping
@@ -7332,6 +7343,13 @@ function portraitBasis(R) {
      that is not fooled, so "turn him" steps through the 24 axis-aligned
      orientations and remembers the one you stop on. Tell me the number and it
      becomes the default. */
+  /* Ninety degrees about X, because you looked at it and said so.
+
+     The derived basis lands him tipped onto his back, so the camera is looking
+     up through the neck -- which is the one thing all my tests agreed was fine,
+     since an open neck is tall and the teeth really are nearer from under the
+     chin. One rotation about the screen's horizontal axis stands him back up. */
+  if (POSE.xdeg) M = poseRotX(M, POSE.xdeg);
   if (POSE.ix) M = poseSpin(M, POSE.ix);
   setTimeout(() => console.log("orb portrait camera: view.pitch " + view.pitch.toFixed(3)
     + "  view.yaw " + view.yaw.toFixed(3) + "  view.turn " + view.turn.toFixed(3)
