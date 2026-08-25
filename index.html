@@ -8699,7 +8699,13 @@ function setFormation(spec, seconds) {
 }
 
 function updateFormation(dt) {
-  if (formWant && !formHold && performance.now() > formUntil) formWant = 0;
+  /* A portrait never expires. Everything else the field can hold is a DISPLAY --
+     a word, a shell, a glyph -- and displays time out so the orb comes back.
+     A face is not a display, it is a form he is in: he stays in it, talks in
+     it, and leaves it when you tell him to. Letting the timer take it meant
+     that talking to him dropped him back to the ring mid-conversation, which
+     is the opposite of the point. goHome and figStop still end it. */
+  if (formWant && !formHold && !rig.portrait && performance.now() > formUntil) formWant = 0;
   /* Ease both ways; a formation that snaps in reads as a glitch, not a gesture.
      But the ease is a fixed fraction per frame, which takes about a second to
      arrive -- fine for a shape that then stands there, useless for a word meant
