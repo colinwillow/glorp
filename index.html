@@ -3632,7 +3632,11 @@ const fnx = new Float32Array(MAX), fny = new Float32Array(MAX), fnz = new Float3
    because the dots along its lit edge are fatter, not because they are a
    slightly different green. Light from upper left and slightly in front --
    formation space has y down and z away, hence the signs. */
-const FIG_L = [-0.52, -0.58, -0.63];
+/* Aimed mostly AT the face now. From upper left it lit the crown -- up-facing
+   normals won the size boost, so the skull wore the big dots and the face wore
+   dust, which read as the head being backwards. It never was: the features
+   were always on the near side, just small. The light was the liar. */
+const FIG_L = [-0.34, -0.30, -0.89];
 const figLit = (i) => {
   const d = fnx[i] * FIG_L[0] + fny[i] * FIG_L[1] + fnz[i] * FIG_L[2];
   return d > 0 ? d : 0;
@@ -7311,6 +7315,14 @@ const POSE = { ix: 0, xdeg: 90 };
 const BOB = { y: 0.020, pitch: 0.045, roll: 0.035, yaw: 0.10,
               und: 0.007 };   // und: per-particle wander, the wisp the trail catches
 
+/* Eyes, made of particles, because the mesh has none -- the eyeballs were cut
+   for size and only the sockets remain, which read as a skull. The eye BONES
+   survived the cut though (CC_Base_L_Eye / R_Eye ride along in every CC skin),
+   so the sockets' true positions are known without guessing: each eye is a
+   little disc of dots parked on its bone, facing the camera, riding the same
+   pose and bob as everything else. */
+const EYE = { dots: 16, r: 0.055, size: 1.35 };
+
 function bobMatrix(M0, t) {
   const rx = Math.sin(t * 0.45) * BOB.pitch;
   const ry = Math.sin(t * 0.19 + 0.6) * BOB.yaw;
@@ -7513,6 +7525,25 @@ async function showFigure(src) {
      position of THAT vertex into THAT particle. Get it wrong and the figure is
      a bag of confetti that moves in time. */
   rig.ord = formOrd ? formOrd.slice() : Int32Array.from({ length: R.dec.n }, (_, i) => i);
+  /* The eye slots live PAST the figure's own points, claimed straight off the
+     formation arrays rather than fed through setFormation -- the permutation in
+     there orders points by angle, and an eye shuffled into an arbitrary slot
+     would then be overwritten every frame by some vertex of the cheek. Slots
+     beyond ord.length are skipped by the vertex loop, which is exactly what
+     makes them safe to own by hand. */
+  rig.eyeFrom = null; rig.eyeBones = null;
+  if (rig.portrait) {
+    const extra = EYE.dots * 2;
+    if (formN + extra <= MAX) {
+      rig.eyeFrom = formN;
+      for (let i = formN; i < formN + extra; i++) {
+        formOn[i] = 1; figH[i] = 0.5; formB[i] = 0;
+        formX[i] = 0; formY[i] = 0; formZ[i] = 0;
+        fnx[i] = 0; fny[i] = 0; fnz[i] = -1;
+      }
+      formN += extra;
+    }
+  }
   // height up the body, from the bind pose, per particle
   const P = R.dec.P;
   let lo = 1e30, hi = -1e30;
@@ -7733,6 +7764,40 @@ function updateFigure(dt, now) {
     }
     formX[i] = fx; formY[i] = fy; formZ[i] = fz;
     fnx[i] = gx; fny[i] = gy; fnz[i] = gz;
+  }
+  /* The eyes, placed from their bones each frame so they ride the head, the
+     pose and the bob exactly like the mesh does. Nothing here guesses where a
+     socket is. If the bones are missing or parked on top of each other (a
+     future export that drops them), the slots just stay parked at the origin
+     of the face -- visible failure, not a crash. */
+  if (port && M && rig.eyeFrom != null && gl.mesh && gl.mesh.skeleton) {
+    const T = window.THREE, sk = gl.mesh.skeleton;
+    if (!rig.eyeBones) {
+      rig.eyeBones = [
+        sk.bones.find((b) => /l_eye/i.test(b.name)) || null,
+        sk.bones.find((b) => /r_eye/i.test(b.name)) || null,
+      ];
+      rig.eyeV = new T.Vector3();
+      console.log("orb eyes:", rig.eyeBones.map((b) => b ? b.name : "missing").join(", "));
+    }
+    let slot = rig.eyeFrom;
+    for (const eb of rig.eyeBones) {
+      if (!eb) { slot += EYE.dots; continue; }
+      const v = eb.getWorldPosition(rig.eyeV).applyMatrix4(rig.toGroup);
+      const ax = (v.x - f.c[0]) * f.k, ay = -(v.y - f.c[1]) * f.k, az = -(v.z - f.c[2]) * f.k;
+      const ex = M[0]*ax + M[1]*ay + M[2]*az;
+      const ey = M[3]*ax + M[4]*ay + M[5]*az + bobY;
+      const ez = M[6]*ax + M[7]*ay + M[8]*az;
+      for (let k2 = 0; k2 < EYE.dots; k2++) {
+        const ang = k2 * 2.399963, rr = EYE.r * Math.sqrt((k2 + 0.5) / EYE.dots);
+        const i2 = slot + k2;
+        formX[i2] = ex + Math.cos(ang) * rr;
+        formY[i2] = ey + Math.sin(ang) * rr * 0.85;   // an eye is a touch wider than tall
+        formZ[i2] = ez - 0.02;                        // proud of the socket, not inside it
+        fnx[i2] = 0; fny[i2] = 0; fnz[i2] = -1;       // square at the camera: lit and fat
+      }
+      slot += EYE.dots;
+    }
   }
   /* The split. The last arc of the ring does not trace him: it lifts off and
      becomes the orb, hovering over the source machine. GPU only -- the 2D
@@ -10065,6 +10130,7 @@ function loop() {
             : form3d && held && !isOrbD && rig.portrait
               ? sizeHiPx * cfg.dot * 0.46 * (0.55 + 0.95 * figLit(i))
                 * (0.35 + 0.85 * Math.max(0, -fnz[i]))
+                * (rig.eyeFrom != null && i >= rig.eyeFrom ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
               ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
