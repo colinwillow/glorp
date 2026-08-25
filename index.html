@@ -3685,6 +3685,15 @@ const figLit = (i) => {
   const d = fnx[i] * FIG_L[0] + fny[i] * FIG_L[1] + fnz[i] * FIG_L[2];
   return d > 0 ? d : 0;
 };
+/* How much of the far surface a portrait throws away. cfg.solid is 0.08, which
+   is right for a whole body seen at a distance -- a hint of solidity on
+   something small enough that its far side is a few dots -- and hopeless on a
+   head filling the frame: 92% of the back of the skull survived and printed
+   straight through the face, so the nose and the mouth were drawn on top of the
+   inside of the cranium. That is what was left of the "we must be looking at
+   the back of the model" complaint once the near/far sign was fixed: not the
+   wrong side facing us, just both sides arriving at once. */
+const FIG_CULL = 0.94;
 /* The camera orbits; the world does not. Physics runs in an unrotated frame
    and rotation happens once, at draw, which is why nothing upstream had to
    learn about it. */
@@ -7396,20 +7405,32 @@ const BOB = { y: 0.020, pitch: 0.045, roll: 0.035, yaw: 0.10,
    him read as thinking rather than staring. */
 const gaze = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
 
+/* down and apart are OFFSETS now, and default to nothing. They used to be the
+   placement itself -- how far down the head the sockets sit, how far apart, as
+   fractions of the head's width -- because I had decided the eye bones were
+   unusable and was estimating from bounds. The bones work; the estimate is
+   gone, and so is the reason for these to carry a value.
+
+   They stay as a trim, because a dial that has been steering a wrong answer
+   should not silently stop responding once the answer is right: "eyes down" has
+   to keep moving the eyes. Both are fractions of head width, signed, and zero
+   means exactly where the model puts them. */
 const EYE = { dots: 16, size: 1.35,
-              down: 0.505,   // how far down the head the sockets sit, 0 = crown
-              apart: 0.20,   // half the distance between them, as a fraction of width
+              down: 0,       // + moves them down the face
+              apart: 0,      // + spreads them
               r: 0.070 };    // eye radius as a fraction of head width
-/* Your eye beats my screenshot. Placement guessed here and judged over a
-   commit-and-reload loop has missed twice, so the numbers are yours to move,
-   out loud, while looking at him: "eyes down", "eyes up", "eyes wider", "eyes
-   closer", "eyes bigger", "eyes smaller". Saved locally so they stick. */
+/* Your eye beats my screenshot, so the trim is yours to move out loud while
+   looking at him: "eyes down", "eyes up", "eyes wider", "eyes closer", "eyes
+   bigger", "eyes smaller". Saved locally so they stick -- under a new key,
+   because anything saved before this meant the old absolute placement and would
+   now throw them off the head. */
 try {
-  const e0 = JSON.parse(localStorage.getItem("orbEye") || "0");
-  if (e0 && e0.down) { EYE.down = e0.down; EYE.apart = e0.apart; EYE.r = e0.r; }
+  const e0 = JSON.parse(localStorage.getItem("orbEyeTrim") || "0");
+  if (e0) { EYE.down = e0.down || 0; EYE.apart = e0.apart || 0;
+            EYE.r = e0.r || EYE.r; }
 } catch (e) {}
 function eyeSave() {
-  try { localStorage.setItem("orbEye",
+  try { localStorage.setItem("orbEyeTrim",
     JSON.stringify({ down: EYE.down, apart: EYE.apart, r: EYE.r })); } catch (e) {}
 }
 
@@ -7887,36 +7908,64 @@ function updateFigure(dt, now) {
      socket is. If the bones are missing or parked on top of each other (a
      future export that drops them), the slots just stay parked at the origin
      of the face -- visible failure, not a crash. */
-  if (port && M && rig.eyeSlot && bXH > bXL) {
-    /* Placed from the head's own measured bounds, each frame. The eye BONES
-       looked perfect for this and are a trap: they survived the export but the
-       dance clip carries no tracks for them, so at runtime they sit parked at
-       the armature origin -- which put both eyes in a neat pile at the bottom
-       of the screen. The bounds move rigidly with the pose and the bob, so
-       proportional placement stays glued to the face. */
-    const W = bXH - bXL, H = bYH - bYL, D = bZH - bZL;
-    // smoothed, so a frame where the wisp stretches a bound does not twitch the eyes
-    if (!rig.eb) rig.eb = { w: W, h: H, x: (bXL + bXH) / 2, y: bYL, z: bZL, d: D };
-    const B2 = rig.eb, k2s = 0.25;
-    B2.w += (W - B2.w) * k2s; B2.h += (H - B2.h) * k2s;
-    B2.x += ((bXL + bXH) / 2 - B2.x) * k2s; B2.y += (bYL - B2.y) * k2s;
-    B2.z += (bZL - B2.z) * k2s; B2.d += (D - B2.d) * k2s;
-    const ey0 = B2.y + B2.h * EYE.down, ez0 = B2.z + B2.d * 0.10;
-    const rr0 = B2.w * EYE.r;
+  if (port && M && rig.eyeSlot && gl.mesh && gl.mesh.skeleton) {
+    /* Placed from the EYE BONES, which turned out to be there all along.
+
+       I wrote them off as parked at the armature origin after a first attempt
+       put both eyes in a pile at the bottom of the screen, and placed them by
+       head proportion instead -- which is why they have sat on his ears
+       through two rounds of nudging. The bones were fine. The transform was
+       not: getWorldPosition returns SCENE space, and rig.toGroup expects
+       MESH-LOCAL, which is what applyBoneTransform hands it for every vertex.
+       Feeding it a world position put the eyes four times too far out.
+
+       Through the mesh's inverse first, and they land in the sockets the model
+       actually has -- no proportions, no nudging, and correct on any head. */
+    const T = window.THREE, sk = gl.mesh.skeleton;
+    if (!rig.eyeBones) {
+      rig.eyeBones = [
+        sk.bones.find((b2) => /l_eye/i.test(b2.name)) || null,
+        sk.bones.find((b2) => /r_eye/i.test(b2.name)) || null,
+      ];
+      rig.eyeV = new T.Vector3(); rig.eyeInv = new T.Matrix4();
+      console.log("orb eyes:", rig.eyeBones.map((b2) => b2 ? b2.name : "missing").join(", "));
+    }
+    rig.eyeInv.copy(gl.mesh.matrixWorld).invert();
+    const toForm = (b2) => {
+      const v = b2.getWorldPosition(rig.eyeV).applyMatrix4(rig.eyeInv).applyMatrix4(rig.toGroup);
+      const ax = (v.x - f.c[0]) * f.k, ay = -(v.y - f.c[1]) * f.k, az = -(v.z - f.c[2]) * f.k;
+      return [M[0]*ax + M[1]*ay + M[2]*az,
+              M[3]*ax + M[4]*ay + M[5]*az + bobY,
+              M[6]*ax + M[7]*ay + M[8]*az];
+    };
+    const span = (bXH - bXL) || 1;
+    /* Both bones first, because "wider" has to mean wider. Which of the two is
+       on the left of the SCREEN depends on the pose matrix and on which way the
+       export faces, so a hard-coded sign would have spread them on one model
+       and crossed them on the next. Pushing each away from the midpoint between
+       them cannot get that wrong. */
+    const EP = [rig.eyeBones[0] && toForm(rig.eyeBones[0]),
+                rig.eyeBones[1] && toForm(rig.eyeBones[1])];
+    const midX = EP[0] && EP[1] ? (EP[0][0] + EP[1][0]) / 2 : 0;
     for (let e = 0; e < 2; e++) {
-      const ex0 = B2.x + (e ? 1 : -1) * B2.w * EYE.apart;
+      const P2 = EP[e];
+      if (!P2) continue;
+      // the spoken trim, in head-widths, on top of wherever the bone is
+      P2[0] += (P2[0] < midX ? -1 : 1) * span * EYE.apart;
+      P2[1] += span * EYE.down;
+      const rr0 = span * EYE.r;
       for (let k2 = 0; k2 < EYE.dots; k2++) {
         const i2 = rig.eyeSlot[e * EYE.dots + k2];
         if (i2 < 0) continue;
         const ang = k2 * 2.399963, rr = rr0 * Math.sqrt((k2 + 0.5) / EYE.dots);
-        formX[i2] = ex0 + Math.cos(ang) * rr;
-        formY[i2] = ey0 + Math.sin(ang) * rr * 0.85;
-        formZ[i2] = ez0;
+        formX[i2] = P2[0] + Math.cos(ang) * rr;
+        formY[i2] = P2[1] + Math.sin(ang) * rr * 0.85;
+        formZ[i2] = P2[2];
         fnx[i2] = 0; fny[i2] = 0; fnz[i2] = -1;
       }
     }
-    // the draw reads these for its depth cue; smoothed with the same ease
-    rig.zLo = B2.z; rig.zHi = B2.z + B2.d;
+    // the draw reads these for its depth cue
+    rig.zLo = bZL; rig.zHi = bZH;
   }
   /* The split. The last arc of the ring does not trace him: it lifts off and
      becomes the orb, hovering over the source machine. GPU only -- the 2D
@@ -8658,16 +8707,19 @@ function heardSentence(heard) {
      is only one place that knows how people say "3D". */
   /* The eyes, steered by the person looking at them. */
   if (rig.on && rig.portrait && /\beyes?\b/.test(flat)
-      && /\b(down|up|lower|higher|raise|wider|apart|closer|together|bigger|larger|smaller)\b/.test(flat)) {
-    if (/\b(down|lower)\b/.test(flat)) EYE.down = Math.min(0.8, EYE.down + 0.02);
-    if (/\b(up|higher|raise)\b/.test(flat)) EYE.down = Math.max(0.2, EYE.down - 0.02);
-    if (/\b(wider|apart)\b/.test(flat)) EYE.apart = Math.min(0.35, EYE.apart + 0.012);
-    if (/\b(closer|together)\b/.test(flat)) EYE.apart = Math.max(0.08, EYE.apart - 0.012);
+      && /\b(down|up|lower|higher|raise|wider|apart|closer|together|bigger|larger|smaller|centre|center|reset|default)\b/.test(flat)) {
+    // a trim on top of the bones, so the range is small and centred on zero
+    if (/\b(down|lower)\b/.test(flat)) EYE.down = Math.min(0.14, EYE.down + 0.012);
+    if (/\b(up|higher|raise)\b/.test(flat)) EYE.down = Math.max(-0.14, EYE.down - 0.012);
+    if (/\b(wider|apart)\b/.test(flat)) EYE.apart = Math.min(0.10, EYE.apart + 0.008);
+    if (/\b(closer|together)\b/.test(flat)) EYE.apart = Math.max(-0.10, EYE.apart - 0.008);
     if (/\b(bigger|larger)\b/.test(flat)) EYE.r = Math.min(0.14, EYE.r * 1.18);
     if (/\b(smaller)\b/.test(flat)) EYE.r = Math.max(0.03, EYE.r / 1.18);
+    // "centre"/"reset" puts them back on the bones, which is where they belong
+    if (/\b(centre|center|reset|default)\b/.test(flat)) { EYE.down = 0; EYE.apart = 0; }
     eyeSave();
-    caption(null, "eyes \u00b7 down " + EYE.down.toFixed(2) + " \u00b7 apart "
-      + EYE.apart.toFixed(2) + " \u00b7 r " + EYE.r.toFixed(3));
+    caption(null, "eyes \u00b7 trim " + EYE.down.toFixed(3) + " / "
+      + EYE.apart.toFixed(3) + " \u00b7 r " + EYE.r.toFixed(3));
     return "eyes";
   }
 
@@ -10111,8 +10163,19 @@ function loop() {
      so a 30Hz phone shrinks at the same rate as a 120Hz laptop. */
   const radEase = 1 - Math.pow(1 - 0.055, dt / 16.67);
   if (form3d) radTail = now + 900;
-  const culling = formHasN && deep && cfg.solid > 0.001 && formT > 0.02;
-  const cullK = cfg.solid * formT;
+  const portCull = rig.portrait && rig.on;
+  const culling = formHasN && deep && formT > 0.02 && (portCull || cfg.solid > 0.001);
+  const cullK = (portCull ? FIG_CULL : cfg.solid) * formT;
+  /* The depth ramp is centred on what SURVIVES the cull, not on the head. Once
+     the far surface is gone every remaining dot sits in the front half, so
+     mapping across the full front-to-back span squeezed the whole face into the
+     green end and the shading went flat -- a green mask with nothing modelling
+     it. Zero lands a little past the middle, which is roughly where the
+     silhouette turns away, so the face keeps the full sweep of the palette and
+     the outline takes the magenta. Rim light, for free, out of the depth we
+     were already carrying. */
+  const figZ0 = rig.zLo + (rig.zHi - rig.zLo) * 0.42;
+  const figZK = figZ0 > rig.zLo ? 1 / (figZ0 - rig.zLo) : 0;
 
   for (let q2 = 0; q2 < n; q2++) {
     const i = deep ? ord[q2] : q2;
@@ -10129,7 +10192,9 @@ function loop() {
        is a presence behind the cards that moves when you talk. */
     const backT = dock.on && !held ? 1 - (1 - DOCK.dim) * formT : 1;
     let hidden = false;
-    if (culling && held) {
+    // an eyeball is placed, not sampled: it carries no meaningful normal, so a
+    // hard cull would throw half of each eye away at random
+    if (culling && held && !(rig.isEye && rig.isEye[i])) {
       const nzv = fny[i] * spt + (-fnx[i] * syw + fnz[i] * cyw) * cpt;
       // facing the camera is nzv < 0, since near is -z after projection
       // hash(i), not Math.random(): a fresh draw every frame makes the soft
@@ -10232,15 +10297,45 @@ function loop() {
       } else want2 = -0.30 * sizeHiPx;
       size += (want2 - size) * fT;
     }
+    /* How near this particle is to the camera, 0 at the back of the head and 1
+       at the tip of the nose. Computed once because the colour and the dot size
+       both ride it, and when they were written out separately they drifted:
+       both said (formZ - zLo) / (zHi - zLo), and both had it backwards.
+
+       formZ is the FORMATION z, and the projection sends it straight through to
+       pz -- measured, corr(formZ, rotated depth) is exactly 1.0000. Rotated
+       depth counts NEAR as negative, which is the convention the back-surface
+       cull and the painter's sort have always used. So a LARGE formZ is FAR,
+       and calling it near painted the back of the skull bright green and fat
+       while the face in front of it went small and magenta.
+
+       Which is why this looked like an orientation bug and was not. The
+       painter's sort was correct the whole time -- it draws far first, so the
+       dots that landed on top genuinely were the near ones. They were simply
+       wearing the far colour. Nothing was ever backwards but this subtraction. */
+    const figNear = figZK
+      ? Math.sqrt(Math.max(0, Math.min(1, (figZ0 - formZ[i]) * figZK)))
+      : 0.5;
     let li = ((size - LUT_LO) / span * (LUT_N - 1)) | 0;
     /* On a portrait the colour carries depth too. Normally the LUT index rides
        the split-size, which scatters green and purple with no regard for where
        a dot IS -- so the far side of the head wore the bright green as often as
-       the near, and the face read backwards. Near maps to the bright green end,
-       far to the dim purple end; the same reversal the size makes. */
-    if (rig.portrait && rig.on && held && fT > 0.5 && rig.zHi > rig.zLo) {
-      const near = Math.sqrt(Math.max(0, Math.min(1, (formZ[i] - rig.zLo) / (rig.zHi - rig.zLo))));
-      li = ((rig.isEye && rig.isEye[i] ? 0.98 : 0.10 + 0.85 * near) * (LUT_N - 1)) | 0;
+       the near. Near maps to the bright green end, far to the dim purple end;
+       the same reversal the size makes.
+
+       Through a SIZE, not straight at an index. The palette's neutral point is
+       not the middle of the table -- it is wherever size crosses zero, which
+       with LUT_LO near -90 and LUT_HI near 30 sits about three quarters of the
+       way along. Picking the index by hand as 0.10 + 0.85 * near therefore
+       aimed the whole face at the grey, and it came out as a pale mask with a
+       magenta outline. Feeding a size in and letting the existing conversion
+       place it keeps the crossover where the palette actually puts it, and it
+       stays right when the field retunes LUT_LO under a loud room. */
+    if (rig.portrait && rig.on && held && fT > 0.5 && figZK) {
+      const sFar = LUT_LO * 0.45;
+      const s2 = rig.isEye && rig.isEye[i] ? LUT_HI
+               : sFar + figNear * (LUT_HI - sFar);
+      li = ((s2 - LUT_LO) / span * (LUT_N - 1)) | 0;
     }
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
     ctx.fillStyle = lut[li];
@@ -10283,10 +10378,8 @@ function loop() {
               /* sqrt on the nearness, so the falloff is gentle across the face
                  and steep only at the silhouette -- linear made everything
                  behind the nose tip dwindle and the head went to dust again. */
-              ? sizeHiPx * cfg.dot * 0.62 * (0.66 + 0.34 * figLit(i))
-                * (0.38 + 0.85 * Math.sqrt(rig.zHi > rig.zLo
-                    ? Math.max(0, Math.min(1, (formZ[i] - rig.zLo) / (rig.zHi - rig.zLo)))
-                    : 0.5))
+              ? sizeHiPx * cfg.dot * 0.78 * (0.66 + 0.34 * figLit(i))
+                * (0.46 + 0.85 * figNear)
                 * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
