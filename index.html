@@ -1190,13 +1190,88 @@ const VIS_RIG = {
    wearing the same deltas moves proportionally less. */
 const VIS_RIG_GAIN = 1.0;
 
+/* Reallusion's own visemes, and the eight of a purpose-sculpted mesh.
+
+   The ARKit set above has to reconstruct a vowel out of a jaw angle plus a
+   pucker plus two stretches. A CC mesh ships shapes that ARE the vowels,
+   sculpted one per mouth position, and toon_head carries exactly those. Which
+   rig a mesh gets is decided by what the mesh actually has, so a head with
+   neither still falls back to ARKit and still works. */
+const VIS_RIG_CC = {
+  rest: {},
+  // V_Explosive is the smallest-displacement shape on the whole mesh -- it
+  // refines a closure rather than making one, so Mouth_Close does the pressing
+  MBP:  { V_Explosive: 1.00, Mouth_Close: 0.60, Mouth_Press_L: 0.40, Mouth_Press_R: 0.40 },
+  FV:   { V_Dental_Lip: 1.00 },
+  E:    { V_Wide: 0.88 },
+  AI:   { V_Open: 0.90, V_Lip_Open: 0.35 },
+  O:    { V_Tight_O: 0.92 },
+  U:    { V_Tight_O: 0.55, V_Tight: 0.60 },
+  WQ:   { V_Tight: 0.95 },
+  L:    { V_Lip_Open: 0.50, V_Tongue_Raise: 0.70, V_Tongue_Out: 0.20 },
+  etc:  { V_Affricate: 0.80 }
+};
+const VIS_RIG_MIN = {
+  rest: {}, MBP: { viseme_MBP: 1 }, FV: { viseme_FV: 1 }, E: { viseme_E: 1 },
+  AI: { viseme_AI: 1 }, O: { viseme_O: 1 }, U: { viseme_U: 1 }, WQ: { viseme_U: 1 },
+  L: { viseme_L: 1 }, etc: { viseme_etc: 1 }
+};
+
+/* The jaw is a bone, not a shape. Jaw_Open exists on the CC mesh and moves
+   nearly five thousand vertices, but opening it changes the render by 0.2%:
+   it tidies lips and cheeks around a jaw that CC_Base_JawRoot is supposed to
+   swing. Axis and sign were measured rather than assumed -- 21 degrees about
+   each of the bone's local axes, watching where the chin landed. Local Z is
+   the hinge; the other two swing it sideways. 21 degrees is the model's own
+   authored range, rest to open. */
+const VIS_JAW_DEG = 21;
+const VIS_JAW = { rest:0.02, MBP:0, FV:0.06, E:0.30, AI:0.85, O:0.55, U:0.22,
+                  WQ:0.14, L:0.45, etc:0.28 };
+let visJawNow = 0;
+
+const visCanon = (x) => x.toLowerCase().replace(/[^a-z]/g, "")
+                         .replace(/left$/, "l").replace(/right$/, "r");
+
+/* Which vocabulary does this mesh speak? Sculpted eight first, then CC's
+   visemes, then ARKit parts -- best fit to worst, decided once per mesh. */
+function visRigPick(mesh) {
+  if (mesh.__visRig) return mesh.__visRig;
+  const have = Object.keys(mesh.morphTargetDictionary || {}).map(visCanon);
+  const score = (rig) => {
+    const want = new Set();
+    for (const sh in rig) for (const k in rig[sh]) want.add(visCanon(k));
+    let hit = 0;
+    for (const w of want) if (have.some((h) => h === w || h.includes(w))) hit++;
+    return { hit, of: want.size };
+  };
+  const a = score(VIS_RIG_MIN), b = score(VIS_RIG_CC);
+  const rig = a.hit >= a.of - 1 ? VIS_RIG_MIN : b.hit >= b.of - 2 ? VIS_RIG_CC : VIS_RIG;
+  console.log("orb visemes:", rig === VIS_RIG_MIN ? "sculpted eight"
+    : rig === VIS_RIG_CC ? "Character Creator" : "ARKit",
+    "(sculpted " + a.hit + "/" + a.of + ", CC " + b.hit + "/" + b.of + ")");
+  mesh.__visRig = rig;
+  return rig;
+}
+
+function visJawBone(mesh) {
+  if (mesh.__visJaw !== undefined) return mesh.__visJaw;
+  let hit = null;
+  const sk = mesh.skeleton;
+  if (sk) hit = sk.bones.find((b) => /jaw/i.test(b.name) && !/upper/i.test(b.name)) || null;
+  mesh.__visJaw = hit;
+  mesh.__visJawRest = hit ? hit.quaternion.clone() : null;
+  if (hit) console.log("orb jaw bone:", hit.name);
+  return hit;
+}
+
 function visRigFind(mesh) {
   if (mesh.__visMap) return mesh.__visMap;
   const dict = mesh.morphTargetDictionary || {};
   const keys = Object.keys(dict);
   const map = {};
   const want = new Set();
-  for (const sh of Object.keys(VIS_RIG)) for (const k of Object.keys(VIS_RIG[sh])) want.add(k);
+  const RIG = visRigPick(mesh);
+  for (const sh of Object.keys(RIG)) for (const k of Object.keys(RIG[sh])) want.add(k);
   /* Canonicalised on both sides, and the Left/Right suffix is the reason.
      ARKit writes mouthStretchLeft; Character Creator writes mouthStretch_L;
      some exporters write mouthStretch.L. Comparing raw names matched six of
@@ -1230,12 +1305,26 @@ function visRig(dt) {
   const mesh = gl.mesh;
   if (!mesh || !mesh.morphTargetInfluences || !mesh.morphTargetInfluences.length) return;
   const map = visRigFind(mesh);
-  const target = (vis.on ? VIS_RIG[vis.shape] : null) || VIS_RIG.rest;
-  const k = 1 - Math.pow(1 - 0.30, dt / 16.67);
+  const RIG = visRigPick(mesh);
+  const shape = vis.on ? vis.shape : "rest";
+  const target = RIG[shape] || RIG.rest;
+  /* Closing your lips is a movement, not a relaxation. Opening fast and closing
+     slow reads well for a face relaxing, and badly for an M: the jaw was still
+     degrees open when the closure was over and the lips never met. Any
+     commanded shape is reached fast; only the drift back to neutral is lazy. */
+  const k = 1 - Math.pow(1 - (shape === "rest" ? 0.28 : 0.50), dt / 16.67);
   for (const name in map) {
     const i = map[name];
     const want = (target[name] || 0) * VIS_RIG_GAIN;
     mesh.morphTargetInfluences[i] += (want - mesh.morphTargetInfluences[i]) * k;
+  }
+  const jaw = visJawBone(mesh);
+  if (jaw && window.THREE) {
+    const jw = VIS_JAW[shape] != null ? VIS_JAW[shape] : 0;
+    visJawNow += (jw - visJawNow) * k;
+    jaw.quaternion.copy(mesh.__visJawRest).multiply(new window.THREE.Quaternion()
+      .setFromAxisAngle(new window.THREE.Vector3(0, 0, 1),
+                        visJawNow * VIS_JAW_DEG * Math.PI / 180));
   }
 }
 
@@ -8061,14 +8150,16 @@ function heardSentence(heard) {
      branch could never fire, and every attempt fell through to the 2D cards.
      Reusing SCENE_SAID rather than a second copy of the same pattern, so there
      is only one place that knows how people say "3D". */
-  /* The particle head, which is the same page opened straight into dots mode.
-     Ahead of the plain face test so "particle face" does not stop at the solid
-     one, and matched on flat, not flatN -- there are no digits in any of it. */
+  /* The particle head, formed HERE out of the orb rather than on another page.
+     It is the same machinery that builds any figure -- the mesh handed to it
+     just happens to be a head, trimmed to the neck so the orb does not spend
+     most of its particles on a torso nobody is looking at. Which means it is
+     his voice, his colours and his reactions, not a separate mode with a text
+     box in it. */
   if (/\b(particles?|dots?|dotted)\b/.test(flat)
       && /\b(face|head|mode|version|him|talk|talking|lip ?sync|mouth)\b/.test(flat)) {
-    caption(null, "opening the particle head");
-    setTimeout(() => { location.href = "face-test.html#dots"; }, 350);
-    return "facetest";
+    showFigure("toon_head");
+    return "figure";
   }
   if (/\b(face test|head test)\b/.test(flat)
       || (SCENE_SAID.test(flatN) && !/\b(scene|sandbox|room)\b/.test(flatN)

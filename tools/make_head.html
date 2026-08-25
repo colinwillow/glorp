@@ -1,0 +1,111 @@
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { DRACOLoader } from "./vendor/DRACOLoader.js";
+import { GLTFExporter } from "./vendor/GLTFExporter.js";
+const L = new GLTFLoader(); const d = new DRACOLoader();
+d.setDecoderPath("./vendor/draco/"); d.setDecoderConfig({type:"wasm"}); L.setDRACOLoader(d);
+
+const KEEP = ["V_Open","V_Explosive","V_Dental_Lip","V_Tight_O","V_Tight","V_Wide",
+  "V_Affricate","V_Lip_Open","V_Tongue_Raise","V_Tongue_Out","V_Tongue_up",
+  "Mouth_Close","Mouth_Press_L","Mouth_Press_R","Jaw_Open"];
+const log = [];
+
+/* Cut everything below the neck. The orb spends a fixed number of particles on
+   whatever it is given, so handing it a whole body puts most of them in a torso
+   that is off screen when you are looking at a face. Trimming here means the
+   app needs to know nothing about heads: it decimates what it is given, and
+   what it is given is a head. */
+function trimToHead(mesh, boneOk) {
+  const geo = mesh.geometry, pos = geo.attributes.position, ix = geo.index;
+  const si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
+  const C = ["getX","getY","getZ","getW"];
+  const keepV = new Uint8Array(pos.count);
+  for (let i = 0; i < pos.count; i++) {
+    let w = 0;
+    for (const c of C) if (boneOk.has(si[c](i))) w += sw[c](i);
+    if (w > 0.55) keepV[i] = 1;
+  }
+  const nTri = (ix ? ix.count : pos.count) / 3;
+  const tris = [];
+  for (let t = 0; t < nTri; t++) {
+    const a = ix ? ix.getX(t*3) : t*3, b = ix ? ix.getX(t*3+1) : t*3+1, c = ix ? ix.getX(t*3+2) : t*3+2;
+    if (keepV[a] && keepV[b] && keepV[c]) tris.push(a, b, c);
+  }
+  if (!tris.length) return null;
+  const map = new Map(), order = [];
+  const li = (g) => { let k = map.get(g); if (k === undefined) { k = order.length; map.set(g, k); order.push(g); } return k; };
+  const idx = tris.map(li);
+  const n = order.length;
+  const g2 = new THREE.BufferGeometry();
+  const copy = (name, size, Arr) => {
+    const a = geo.attributes[name]; if (!a) return;
+    const out = new Arr(n * size);
+    for (let k = 0; k < n; k++) for (let c = 0; c < size; c++) out[k*size+c] = a.array[order[k]*a.itemSize + c];
+    g2.setAttribute(name, new THREE.BufferAttribute(out, size, a.normalized));
+  };
+  copy("position", 3, Float32Array); copy("normal", 3, Float32Array);
+  copy("uv", 2, Float32Array);
+  copy("skinIndex", 4, Uint16Array); copy("skinWeight", 4, Float32Array);
+  g2.setIndex(idx);
+  const src = geo.morphAttributes.position || [];
+  const dict = mesh.morphTargetDictionary || {};
+  const keepAttrs = [], names = [], newDict = {};
+  for (const nm of KEEP) {
+    const i = dict[nm]; if (i == null || !src[i]) continue;
+    const a = src[i], out = new Float32Array(n * 3);
+    for (let k = 0; k < n; k++) { const o = order[k]*3;
+      out[k*3] = a.array[o]; out[k*3+1] = a.array[o+1]; out[k*3+2] = a.array[o+2]; }
+    newDict[nm] = keepAttrs.length; names.push(nm);
+    keepAttrs.push(new THREE.BufferAttribute(out, 3));
+  }
+  g2.morphAttributes.position = keepAttrs;
+  g2.morphTargetsRelative = geo.morphTargetsRelative;
+  g2.userData.targetNames = names;
+  log.push(mesh.name + ": " + pos.count + " verts -> " + n + ", " + (tris.length/3) + " tris, "
+    + Object.keys(dict).length + " shapes -> " + names.length);
+  mesh.geometry = g2;
+  mesh.morphTargetDictionary = newDict;
+  mesh.morphTargetInfluences = new Array(keepAttrs.length).fill(0);
+  return n;
+}
+
+L.load("models/toon_base.glb", (g) => {
+  let sk = null;
+  g.scene.traverse(o => { if (o.isSkinnedMesh && !sk) sk = o.skeleton; });
+  const ok = new Set();
+  sk.bones.forEach((b, i) => {
+    if (/head|jaw|tongue|teeth|eye|nose|lip|cheek|brow/i.test(b.name) && !/neck/i.test(b.name)) ok.add(i);
+  });
+  const meshes = [];
+  g.scene.traverse(o => { if (o.isMesh || o.isSkinnedMesh) meshes.push(o); });
+  for (const m of meshes) {
+    /* Teeth go. 6362 vertices, more than the trimmed head itself, all of them
+       inside a mouth that is shut most of the time -- and the orb spends a
+       fixed budget on whatever it is handed, so keeping them would put more
+       than half the particles somewhere you cannot see. */
+    if (/teeth/i.test(m.name)) { m.parent.remove(m); log.push("dropped " + m.name); continue; }
+    if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals();
+    if (!trimToHead(m, ok)) { m.parent.remove(m); log.push("dropped " + m.name); }
+  }
+  /* Turned to face the camera, here, once, in the asset -- not in the app.
+     The orb's fit negates y and z on the way into formation space, so which way
+     a head ends up pointing is a property of the file it came from. Baking it
+     means the app needs no special case for this model, and any future head
+     exported the same way lands the same way round. */
+  const rootNode = g.scene.children.find(c => c.children.length) || g.scene.children[0];
+  // premultiply, not rotateY: the armature's own local axes are the Z-up bone
+  // space, so a local spin tips the head over instead of turning it round
+  rootNode.quaternion.premultiply(
+    new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
+  rootNode.updateMatrixWorld(true);
+  log.push("turned " + rootNode.name + " 180 to face front");
+
+  new GLTFExporter().parse(g.scene, (buf) => {
+    window.__glb = Array.from(new Uint8Array(buf));
+    window.__log = log.join("\n") + "\nexported " + (buf.byteLength/1e6).toFixed(2) + " MB";
+  }, (e) => { window.__log = "EXPORT FAIL " + e; },
+  { binary: true, onlyVisible: false });
+}, null, (e) => { window.__log = "LOAD FAIL " + e; });
+</script>
