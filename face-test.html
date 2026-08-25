@@ -1140,7 +1140,12 @@ $("dbg").onclick = () => logEl.classList.toggle("on");
     if (ok) here[i] = c; else { o.textContent = c + " — not there"; o.disabled = true; }
   }));
   const first = here.find(Boolean);
-  if (first) { sel.value = first; await load(first); return; }
+  if (first) {
+    sel.value = first; await load(first);
+    // #dots in the URL so the app can hand you the particle head directly
+    if (/dots|particles?/i.test(location.hash)) dotsSet(true);
+    return;
+  }
   say("no model found. Drop one in models/ named any of: " + CANDIDATES.join(", "), "bad");
 })();
 </script>

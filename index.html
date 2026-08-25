@@ -8061,6 +8061,15 @@ function heardSentence(heard) {
      branch could never fire, and every attempt fell through to the 2D cards.
      Reusing SCENE_SAID rather than a second copy of the same pattern, so there
      is only one place that knows how people say "3D". */
+  /* The particle head, which is the same page opened straight into dots mode.
+     Ahead of the plain face test so "particle face" does not stop at the solid
+     one, and matched on flat, not flatN -- there are no digits in any of it. */
+  if (/\b(particles?|dots?|dotted)\b/.test(flat)
+      && /\b(face|head|mode|version|him|talk|talking|lip ?sync|mouth)\b/.test(flat)) {
+    caption(null, "opening the particle head");
+    setTimeout(() => { location.href = "face-test.html#dots"; }, 350);
+    return "facetest";
+  }
   if (/\b(face test|head test)\b/.test(flat)
       || (SCENE_SAID.test(flatN) && !/\b(scene|sandbox|room)\b/.test(flatN)
           && /\b(lip ?sync|lipsync|mouth|face|head|viseme|visemes|talk|talking|test)\b/.test(flat))) {
