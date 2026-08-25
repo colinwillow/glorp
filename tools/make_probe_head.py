@@ -3,10 +3,21 @@
 # models that have no shapes at all -- which proves nothing about the driver.
 import json, struct, math, os
 
-NAMES = ["jawOpen","mouthClose","mouthPucker","mouthFunnel","mouthShrugUpper",
-         "mouthSmileLeft","mouthSmileRight","mouthStretchLeft","mouthStretchRight",
-         "mouthPressLeft","mouthPressRight","mouthLowerDownLeft","mouthLowerDownRight",
-         "tongueOut"]
+import sys
+# Two fixtures, because the page has two rigs worth proving. "arkit" exercises
+# the fallback that reconstructs a mouth from parts; "eight" exercises the
+# purpose-sculpted set -- which matters most before anyone spends a weekend
+# sculpting into it, since a fixture is a lot cheaper than a re-sculpt.
+MODE = sys.argv[1] if len(sys.argv) > 1 else "arkit"
+SETS = {
+ "arkit": (["jawOpen","mouthClose","mouthPucker","mouthFunnel","mouthShrugUpper",
+            "mouthSmileLeft","mouthSmileRight","mouthStretchLeft","mouthStretchRight",
+            "mouthPressLeft","mouthPressRight","mouthLowerDownLeft","mouthLowerDownRight",
+            "tongueOut"], "_probe.glb"),
+ "eight": (["viseme_AI","viseme_E","viseme_O","viseme_U",
+            "viseme_MBP","viseme_FV","viseme_L","viseme_etc"], "_probe8.glb"),
+}
+NAMES, OUTNAME = SETS[MODE]
 
 RS, RT = 28, 20           # a UV sphere: rings, stacks
 verts, idx = [], []
@@ -36,6 +47,10 @@ DIR = {
  "mouthPressLeft":(-.34,.20,-.26), "mouthPressRight":(.34,.20,-.26),
  "mouthLowerDownLeft":(-.24,-.62,0), "mouthLowerDownRight":(.24,-.62,0),
  "tongueOut":(0,-.22,.95),
+ # the eight, each a plainly different mouth so a wrong mapping is obvious
+ "viseme_AI":(0,-.85,.10), "viseme_E":(-.55,-.20,0), "viseme_O":(0,-.30,.70),
+ "viseme_U":(0,-.05,.90),  "viseme_MBP":(0,.30,-.24), "viseme_FV":(0,-.45,-.15),
+ "viseme_L":(0,-.30,.85),  "viseme_etc":(0,-.35,.15),
 }
 
 def pack_f32(rows):  return b"".join(struct.pack("<3f", *r) for r in rows)
@@ -91,6 +106,6 @@ j += b" " * ((-len(j)) % 4)
 out = struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(j) + 8 + len(buf))
 out += struct.pack("<II", len(j), 0x4E4F534A) + j
 out += struct.pack("<II", len(buf), 0x004E4942) + buf
-p = os.path.join(os.path.dirname(__file__), "..", "models", "_probe.glb")
+p = os.path.join(os.path.dirname(__file__), "..", "models", OUTNAME)
 open(p, "wb").write(out)
 print("wrote", p, len(out), "bytes,", len(NAMES), "shapes,", len(verts), "verts")

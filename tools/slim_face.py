@@ -19,8 +19,20 @@ which shapes are dead weight that move nothing at all.
 
 import sys, os, re
 
-# the fourteen the rig drives, spelled the ARKit way (see VIS_RIG in face-test.html)
+# Everything any of the three rigs in face-test.html can drive. All three,
+# not just one: the page picks a vocabulary per mesh, and a slimmer that only
+# knows about ARKit will happily delete a mesh's entire viseme set and leave
+# behind fourteen shapes the page has decided not to use. That is not a
+# hypothetical -- an earlier version of this list did exactly that to the CC
+# toon base, dropping nine of the ten shapes the rig had just chosen.
 WANT = [
+    # the eight, if you sculpted them yourself
+    "viseme_AI", "viseme_E", "viseme_O", "viseme_U",
+    "viseme_MBP", "viseme_FV", "viseme_L", "viseme_etc",
+    # Reallusion's own visemes, which ship on every CC mesh
+    "V_Open", "V_Explosive", "V_Dental_Lip", "V_Tight_O", "V_Tight", "V_Wide",
+    "V_Affricate", "V_Lip_Open", "V_Tongue_Raise", "V_Tongue_Out",
+    # ARKit parts, the fallback when a mesh has neither of the above
     "jawOpen", "mouthClose", "mouthPucker", "mouthFunnel", "mouthShrugUpper",
     "mouthSmileLeft", "mouthSmileRight", "mouthStretchLeft", "mouthStretchRight",
     "mouthPressLeft", "mouthPressRight", "mouthLowerDownLeft", "mouthLowerDownRight",

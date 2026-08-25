@@ -124,7 +124,35 @@ const VIS_RIG_CC = {
   L:    { V_Lip_Open: 0.50, V_Tongue_Raise: 0.70, V_Tongue_Out: 0.20 },
   etc:  { V_Affricate: 0.80 }
 };
+/* The eight, for a mesh sculpted on purpose.
+
+   This is the set to author if you are sculpting shapes yourself rather than
+   inheriting a rig: one shape per mouth position, and nothing else. Reallusion
+   arrived at almost exactly this list independently, which is a decent sign it
+   is the right size. Sixty shapes exist to drive a whole face -- brows, eyes,
+   cheeks, emotions. A mouth needs eight.
+
+   Sculpt them with the JAW SHUT. These are lip shapes; the bone does the
+   opening, and it takes the teeth and tongue with it, which no morph can. If
+   you sculpt the jaw open into viseme_AI as well you will get twice the drop.
+   VIS_JAW below is what says how far the jaw goes for each one.
+
+   WQ reuses U, and rest is the neutral mesh, so eight shapes cover all ten. */
+const VIS_RIG_MIN = {
+  rest: {},
+  MBP:  { viseme_MBP: 1.0 },
+  FV:   { viseme_FV: 1.0 },
+  E:    { viseme_E: 1.0 },
+  AI:   { viseme_AI: 1.0 },
+  O:    { viseme_O: 1.0 },
+  U:    { viseme_U: 1.0 },
+  WQ:   { viseme_U: 1.0 },
+  L:    { viseme_L: 1.0 },
+  etc:  { viseme_etc: 1.0 }
+};
+
 let RIG = VIS_RIG;
+let rigName = "";
 let GAIN = 1.0;
 
 /* The jaw is a bone, not a shape.
@@ -442,18 +470,24 @@ async function load(file) {
       buildSliders([]);
       return;
     }
-    /* Which vocabulary does this mesh speak? Count how many of CC's own viseme
-       shapes are present; if most of them are, use them. */
+    /* Which vocabulary does this mesh speak? Purpose-sculpted eight first, then
+       Reallusion's visemes, then ARKit parts -- best fit to worst. */
     const have = new Set();
     meshes.forEach((m) => Object.keys(m.morphTargetDictionary || {})
       .forEach((k) => have.add(canon(k))));
-    const ccWant = new Set();
-    for (const sh in VIS_RIG_CC) for (const k in VIS_RIG_CC[sh]) ccWant.add(canon(k));
-    let ccHit = 0;
-    for (const w of ccWant) if ([...have].some((h) => h === w || h.includes(w))) ccHit++;
-    RIG = ccHit >= ccWant.size - 2 ? VIS_RIG_CC : VIS_RIG;
-    line("rig: " + (RIG === VIS_RIG_CC ? "Character Creator visemes" : "ARKit shapes")
-         + " (" + ccHit + " of " + ccWant.size + " CC viseme shapes present)");
+    const score = (rig) => {
+      const want = new Set();
+      for (const sh in rig) for (const k in rig[sh]) want.add(canon(k));
+      let hit = 0;
+      for (const w of want) if ([...have].some((h) => h === w || h.includes(w))) hit++;
+      return { hit, of: want.size };
+    };
+    const sMin = score(VIS_RIG_MIN), sCC = score(VIS_RIG_CC), sAR = score(VIS_RIG);
+    if (sMin.hit >= sMin.of - 1) { RIG = VIS_RIG_MIN; rigName = "the eight"; }
+    else if (sCC.hit >= sCC.of - 2) { RIG = VIS_RIG_CC; rigName = "Character Creator visemes"; }
+    else { RIG = VIS_RIG; rigName = "ARKit shapes"; }
+    line("rig: " + rigName + "  (sculpted " + sMin.hit + "/" + sMin.of
+         + ", CC " + sCC.hit + "/" + sCC.of + ", ARKit " + sAR.hit + "/" + sAR.of + ")");
 
     const r = buildMap();
     buildSliders(r);
@@ -464,7 +498,15 @@ async function load(file) {
       say(file + ": " + r.total + " shapes, " + r.found + " of " + r.want
         + " mapped. Missing " + r.missing.join(", "), "warn");
     } else {
-      say(file + ": " + r.total + " shapes, all " + r.want + " mapped. Say something.", "ok");
+      say(file + ": " + r.total + " shapes, all " + r.want + " mapped via "
+          + rigName + ". Say something.", "ok");
+    }
+    if (RIG !== VIS_RIG_MIN && r.missing.length) {
+      const eight = [];
+      for (const sh in VIS_RIG_MIN) for (const k in VIS_RIG_MIN[sh])
+        if (!eight.includes(k)) eight.push(k);
+      line("sculpting your own? Author exactly these eight, jaw shut, and this "
+           + "page will find them: " + eight.join(", "));
     }
     line(file + " meshes with morphs: " + meshes.map((m) => m.name).join(", "));
   } catch (e) {
@@ -642,7 +684,7 @@ tick();
    is fine and the export dropped its blend shapes. */
 const CANDIDATES = ["toon_base.glb","toon_base_opt.glb","face.glb","head.glb","cc_base.glb","cc_tune.glb","tune.glb",
                     "base.glb","colin_face.glb","test_head.glb","colin_slim.glb",
-                    "_probe.glb"];
+                    "_probe.glb", "_probe8.glb"];
 const sel = $("model");
 CANDIDATES.forEach((c) => { const o = document.createElement("option");
   o.value = c; o.textContent = c; o.dataset.name = c; sel.appendChild(o); });
