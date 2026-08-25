@@ -7428,7 +7428,12 @@ const gaze = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
    should not silently stop responding once the answer is right: "eyes down" has
    to keep moving the eyes. Both are fractions of head width, signed, and zero
    means exactly where the model puts them. */
-const EYE = { dots: 16, size: 1.35,
+/* Off for now, at your call -- the discs read as a costume rather than as part
+   of him. Everything they need is still here and still correct: the bones are
+   still found, the sockets are still measured, and the feature mask still uses
+   both to know where the eyes are. One flag brings them back. */
+const EYE = { on: 0,
+              dots: 16, size: 1.35,
               down: 0,       // + moves them down the face
               apart: 0,      // + spreads them
               r: 0.070 };    // eye radius as a fraction of head width
@@ -7479,6 +7484,10 @@ function figFeatures(EP, sep) {
   const R = rig.R;
   if (!R || !EP[0] || !EP[1] || !gl.mesh) return null;
   const dn = R.dec.n, REP = R.dec.REP, F = new Float32Array(MAX);
+  // a particle is a sample now, so a per-vertex quantity is read across the
+  // triangle it landed on rather than straight out of the array
+  const S = rig.samp, pn = rig.pn != null ? rig.pn : dn;
+  const at = (arr, k) => (S ? sampAt(S, k, arr) : arr[k]);
   const sm = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
 
   // MOUTH -- straight off the blend shapes
@@ -7521,8 +7530,8 @@ function figFeatures(EP, sep) {
   let mx2 = 0, my2 = 0, mz2 = 0, mn = 0;
   for (let i = 0; i < rig.ord.length; i++) {
     const vv = rig.ord[i];
-    if (vv >= dn) continue;
-    const w2 = sm((disp[vv] / dmax - FEAT.lo) / (FEAT.hi - FEAT.lo));
+    if (vv >= pn) continue;
+    const w2 = sm((at(disp, vv) / dmax - FEAT.lo) / (FEAT.hi - FEAT.lo));
     if (w2 > 0) { F[i] = w2; if (w2 > 0.5) { mx2 += formX[i]; my2 += formY[i]; mz2 += formZ[i]; mn++; } }
     for (let e = 0; e < 2; e++) {
       const d = sub([formX[i], formY[i], formZ[i]], EP[e]);
@@ -7543,7 +7552,7 @@ function figFeatures(EP, sep) {
     let pLo = 1e30, pHi = -1e30;
     const lat = [], along = [], out2 = [];
     for (let i = 0; i < rig.ord.length; i++) {
-      if (rig.ord[i] >= dn) { lat[i] = 1e9; continue; }
+      if (rig.ord[i] >= pn) { lat[i] = 1e9; continue; }
       const d = sub([formX[i], formY[i], formZ[i]], midE);
       lat[i] = Math.abs(dot(d, u));
       along[i] = dot(d, v2);
@@ -7554,7 +7563,7 @@ function figFeatures(EP, sep) {
     }
     const depth = (pHi - pLo) || 1, cut = pHi - depth * FEAT.noseZ;
     for (let i = 0; i < rig.ord.length; i++) {
-      if (rig.ord[i] >= dn || lat[i] > halfW) continue;
+      if (rig.ord[i] >= pn || lat[i] > halfW) continue;
       if (along[i] < 0 || along[i] > len) continue;
       // fading at the cheeks and at the back of the band, so the nose has an
       // edge rather than a rectangle around it
@@ -7731,6 +7740,99 @@ function portraitBasis(R) {
   return M;
 }
 
+/* ---------------- surface sampling ----------------
+
+   A particle used to BE a vertex, and a face is not modelled at a constant
+   vertex density -- a Character Creator head packs them around the mouth and
+   the eyes and spreads them thin across the forehead and the crown. So the
+   dots inherited the topology: the lips arrived as a solid merged mass with no
+   lips in it while the brow was a loose scatter, and every attempt to fix that
+   by changing the dot size traded one of those failures for the other.
+
+   Points scattered over the TRIANGLES instead, proportional to area, so the
+   density is whatever we ask for and the mesh's own tessellation stops showing
+   through. Each sample is a triangle and three barycentric weights; its
+   position each frame is the same lerp across three already-skinned vertices,
+   so this rides the bones, the morphs, the pose and the bob without any of
+   them knowing it happened.
+
+   Deterministic, and stratified rather than random: the triangle is picked by
+   walking a cumulative-area table at even intervals, so the samples are spread
+   by construction instead of by luck, and rebuilding the same head twice gives
+   the same face rather than a reshuffle you can see. */
+/* 5200, not the 2959 vertices it replaces, because a sampled head spends about
+   half its points on the far surface that the cull then throws away -- the
+   mesh's own vertices were biased toward the face and hid that. Measured on
+   screen, not reasoned about: the first pass at 3400 came out visibly sparser
+   than the vertex build it replaced. */
+const SAMP_N = 5200;
+function rigSamples(R, want) {
+  const T = R.dec.T, P = R.dec.P, nt = T.length / 3;
+  if (!nt) return null;
+  const cum = new Float64Array(nt + 1);
+  for (let t = 0; t < nt; t++) {
+    const a = T[t * 3] * 3, b = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    const cxp = uy * vz - uz * vy, cyp = uz * vx - ux * vz, czp = ux * vy - uy * vx;
+    cum[t + 1] = cum[t] + Math.hypot(cxp, cyp, czp) * 0.5;
+  }
+  const total = cum[nt];
+  if (!(total > 0)) return null;
+  const n = Math.max(64, Math.min(want, MAX - 32));
+  const A = new Int32Array(n), B = new Int32Array(n), C = new Int32Array(n);
+  const WA = new Float32Array(n), WB = new Float32Array(n), WC = new Float32Array(n);
+  // radical inverse in two coprime bases: an even sprinkle inside each triangle
+  const ri = (i, base) => { let f = 1 / base, r = 0, x = i;
+    while (x > 0) { r += (x % base) * f; x = (x / base) | 0; f /= base; } return r; };
+  let t = 0;
+  for (let k = 0; k < n; k++) {
+    const target = ((k + 0.5) / n) * total;
+    while (t < nt - 1 && cum[t + 1] < target) t++;
+    const r1 = ri(k + 1, 2), r2 = ri(k + 1, 3);
+    const su = Math.sqrt(r1);
+    const wb = 1 - su, wc = r2 * su;
+    A[k] = T[t * 3] * 3; B[k] = T[t * 3 + 1] * 3; C[k] = T[t * 3 + 2] * 3;
+    WA[k] = 1 - wb - wc; WB[k] = wb; WC[k] = wc;
+  }
+  console.log("orb surface:", n, "samples over", nt, "triangles",
+              "(was " + R.dec.n + " vertices)");
+  return { n, A, B, C, WA, WB, WC };
+}
+
+/* One sample's skinned position and normal, in the same six numbers rigPoint
+   hands back for a vertex. The three reads are the whole cost of sampling. */
+function rigSamplePN(R, S, k, o) {
+  const P = R.wp, N = R.wn;
+  const a = S.A[k], b = S.B[k], c = S.C[k];
+  const wa = S.WA[k], wb = S.WB[k], wc = S.WC[k];
+  o[0] = wa * P[a] + wb * P[b] + wc * P[c];
+  o[1] = wa * P[a + 1] + wb * P[b + 1] + wc * P[c + 1];
+  o[2] = wa * P[a + 2] + wb * P[b + 2] + wc * P[c + 2];
+  let nx = wa * N[a] + wb * N[b] + wc * N[c];
+  let ny = wa * N[a + 1] + wb * N[b + 1] + wc * N[c + 1];
+  let nz = wa * N[a + 2] + wb * N[b + 2] + wc * N[c + 2];
+  const L = Math.hypot(nx, ny, nz) || 1;
+  o[3] = nx / L; o[4] = ny / L; o[5] = nz / L;
+}
+// the same six numbers rigPoint produces, for a sample rather than a vertex
+const sampTmp = [0, 0, 0, 0, 0, 0];
+function rigSampleFit(R, S, k, o) {
+  rigSamplePN(R, S, k, sampTmp);
+  const f = R.fit;
+  const x = (sampTmp[0] - f.c[0]) * f.k;
+  const y = -(sampTmp[1] - f.c[1]) * f.k;
+  const z = -(sampTmp[2] - f.c[2]) * f.k;
+  const nx = sampTmp[3], ny = -sampTmp[4], nz = -sampTmp[5];
+  if (rig.portrait) { poseXform(x, y, z, o, 0); poseXform(nx, ny, nz, o, 3); }
+  else { o[0] = x; o[1] = y; o[2] = z; o[3] = nx; o[4] = ny; o[5] = nz; }
+}
+
+// any per-vertex quantity, read at a sample
+function sampAt(S, k, arr) {
+  return S.WA[k] * arr[S.A[k] / 3] + S.WB[k] * arr[S.B[k] / 3] + S.WC[k] * arr[S.C[k] / 3];
+}
+
 function rigPoint(R, v, o) {
   const f = R.fit, P = R.wp, N = R.wn;
   const x = (P[v * 3] - f.c[0]) * f.k;
@@ -7776,16 +7878,24 @@ async function showFigure(src, portrait) {
 
   if (gl.ready) { skinGL(R); skinPoints(R); } else { rigPose(R, 0); rigSkin(R, R.wp, R.wn); }
   rig.pose = rig.portrait ? portraitBasis(R) : null;
-  const pts = new Array(R.dec.n);
+  /* Sampled for a portrait, vertex-bound for everything else. A whole body is
+     seen small enough that its tessellation never shows; a head fills the
+     frame and its does. Cached on the rig, because a sample list is a property
+     of the mesh and re-showing the same head should not reshuffle his face. */
+  const S = rig.portrait ? (R.samp || (R.samp = rigSamples(R, SAMP_N))) : null;
+  rig.samp = S;
+  const pn = S ? S.n : R.dec.n;
+  const pts = new Array(pn);
   const o = [0, 0, 0, 0, 0, 0];
-  for (let v = 0; v < R.dec.n; v++) { rigPoint(R, v, o); pts[v] = o.slice(); }
+  if (S) for (let k = 0; k < pn; k++) { rigSampleFit(R, S, k, o); pts[k] = o.slice(); }
+  else for (let v = 0; v < pn; v++) { rigPoint(R, v, o); pts[v] = o.slice(); }
   /* The eyes are POINTS IN THE LIST, not extra slots bolted on after. The
      first attempt claimed slots past the formation and nothing ever drew
      them: the field sizes its particle pool to pts.length, so targets beyond
      it are targets with no particles. If the eyes are not in the list before
      setFormation runs, they do not exist. Positions are placeholders here;
      updateFigure parks them on the eye bones every frame. */
-  if (rig.portrait) {
+  if (rig.portrait && EYE.on) {
     for (let k = 0; k < EYE.dots * 2; k++) pts.push([0, 0, 0, 0, 0, -1]);
   }
 
@@ -7803,11 +7913,12 @@ async function showFigure(src, portrait) {
   /* The permutation scattered the eye points into arbitrary particle slots --
      which is fine, as long as we know which slot holds which eye point. */
   rig.eyeBones = null; rig.eyeSlot = null; rig.isEye = null; rig.feat = null;
-  if (rig.portrait) {
+  rig.pn = pn;
+  if (rig.portrait && EYE.on) {
     rig.eyeSlot = new Int32Array(EYE.dots * 2).fill(-1);
     rig.isEye = new Uint8Array(MAX);
     for (let i = 0; i < rig.ord.length; i++) {
-      const k = rig.ord[i] - R.dec.n;
+      const k = rig.ord[i] - pn;
       if (k >= 0 && k < EYE.dots * 2) { rig.eyeSlot[k] = i; rig.isEye[i] = k < EYE.dots ? 1 : 2; }
     }
   }
@@ -7820,7 +7931,9 @@ async function showFigure(src, portrait) {
   for (let i = 0; i < rig.ord.length; i++) {
     const vv = rig.ord[i];
     // an eye point has no bind-pose height; mid-body means the wipe covers it early
-    figH[i] = vv >= R.dec.n ? 0.5 : (P[vv * 3 + 1] - lo) / sp;
+    figH[i] = vv >= pn ? 0.5
+            : ((S ? S.WA[vv] * P[S.A[vv] + 1] + S.WB[vv] * P[S.B[vv] + 1] + S.WC[vv] * P[S.C[vv] + 1]
+                  : P[vv * 3 + 1]) - lo) / sp;
   }
 
   // no beat before the lines: the wipe schedule owns their timing now
@@ -8004,27 +8117,45 @@ function updateFigure(dt, now) {
   let bobY = 0;
   if (M) { M = bobMatrix(M, tSec); bobY = Math.sin(tSec * 0.55) * BOB.y; }
   const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
-  const decN = R.dec.n;
+  const S = rig.samp, pn = rig.pn != null ? rig.pn : R.dec.n;
   let bXL = 1e30, bXH = -1e30, bYL = 1e30, bYH = -1e30, bZL = 1e30, bZH = -1e30;
   for (let i = 0; i < n; i++) {
-    if (ord[i] >= decN) continue;          // an eye slot; its writer runs below
-    const v = ord[i] * 3;
-    const x = P[v] - f.c[0], y = P[v + 1] - f.c[1], z = P[v + 2] - f.c[2];
+    if (ord[i] >= pn) continue;            // an eye slot; its writer runs below
+    /* A sample is three vertices and three weights. Everything below is
+       unchanged -- it reads a position and a normal and does not care that
+       they came off a triangle rather than off a corner of one. */
+    let px2, py2, pz2, nx2, ny2, nz2;
+    if (S) {
+      const k2 = ord[i], a = S.A[k2], b = S.B[k2], c = S.C[k2];
+      const wa = S.WA[k2], wb = S.WB[k2], wc = S.WC[k2];
+      px2 = wa * P[a] + wb * P[b] + wc * P[c];
+      py2 = wa * P[a + 1] + wb * P[b + 1] + wc * P[c + 1];
+      pz2 = wa * P[a + 2] + wb * P[b + 2] + wc * P[c + 2];
+      nx2 = wa * N[a] + wb * N[b] + wc * N[c];
+      ny2 = wa * N[a + 1] + wb * N[b + 1] + wc * N[c + 1];
+      nz2 = wa * N[a + 2] + wb * N[b + 2] + wc * N[c + 2];
+      const L2 = Math.hypot(nx2, ny2, nz2) || 1;
+      nx2 /= L2; ny2 /= L2; nz2 /= L2;
+    } else {
+      const v = ord[i] * 3;
+      px2 = P[v]; py2 = P[v + 1]; pz2 = P[v + 2];
+      nx2 = N[v]; ny2 = N[v + 1]; nz2 = N[v + 2];
+    }
+    const x = px2 - f.c[0], y = py2 - f.c[1], z = pz2 - f.c[2];
     let fx, fy, fz, gx, gy, gz;
     if (M) {
       const ax = x * f.k, ay = -y * f.k, az = -z * f.k;
       fx = M[0]*ax + M[1]*ay + M[2]*az;
       fy = M[3]*ax + M[4]*ay + M[5]*az;
       fz = M[6]*ax + M[7]*ay + M[8]*az;
-      const bx = N[v], by = -N[v + 1], bz = -N[v + 2];
+      const bx = nx2, by = -ny2, bz = -nz2;
       gx = M[0]*bx + M[1]*by + M[2]*bz;
       gy = M[3]*bx + M[4]*by + M[5]*bz;
       gz = M[6]*bx + M[7]*by + M[8]*bz;
     } else {
       const rx = x * cw + z * sw, rz = -x * sw + z * cw;
       fx = (rx + world.x) * f.k; fy = -(y + world.y) * f.k; fz = -(rz + world.z) * f.k;
-      const nx = N[v], nz = N[v + 2];
-      gx = nx * cw + nz * sw; gy = -N[v + 1]; gz = -(-nx * sw + nz * cw);
+      gx = nx2 * cw + nz2 * sw; gy = -ny2; gz = -(-nx2 * sw + nz2 * cw);
     }
     if (M) {
       /* The wisp. Each particle wanders a little off its post on its own
@@ -8051,7 +8182,7 @@ function updateFigure(dt, now) {
      socket is. If the bones are missing or parked on top of each other (a
      future export that drops them), the slots just stay parked at the origin
      of the face -- visible failure, not a crash. */
-  if (port && M && rig.eyeSlot && gl.mesh && gl.mesh.skeleton) {
+  if (port && M && gl.mesh && gl.mesh.skeleton) {
     /* Placed from the EYE BONES, which turned out to be there all along.
 
        I wrote them off as parked at the armature origin after a first attempt
@@ -8095,7 +8226,7 @@ function updateFigure(dt, now) {
       rig.feat = figFeatures(EP, Math.abs(EP[0][0] - EP[1][0]) || span * 0.4);
     for (let e = 0; e < 2; e++) {
       const P2 = EP[e];
-      if (!P2) continue;
+      if (!P2 || !EYE.on || !rig.eyeSlot) continue;
       // the spoken trim, in head-widths, on top of wherever the bone is
       P2[0] += (P2[0] < midX ? -1 : 1) * span * EYE.apart;
       P2[1] += span * EYE.down;
@@ -9519,7 +9650,7 @@ function loop() {
      right for a mesh whose lines are a suggestion under a cloud of dots and
      invisible when the lines are the whole thing you are being shown -- the
      lines step of the build did not read at all until this. */
-  const wireWant = formE && formWant && now > wireAt ? (rig.on || formHasB ? 1 : cfg.wire) : 0;
+  const wireWant = (formE || rig.samp) && formWant && now > wireAt ? (rig.on || formHasB ? 1 : cfg.wire) : 0;
   wireT += (wireWant - wireT) * (1 - Math.pow(1 - 0.030, dt / 16.67));
   /* The picture comes up, and the drawing that announced it stands down. Both
      are eased, and they overlap: for about a second you can see the dots
@@ -10603,7 +10734,7 @@ function loop() {
               /* sqrt on the nearness, so the falloff is gentle across the face
                  and steep only at the silhouette -- linear made everything
                  behind the nose tip dwindle and the head went to dust again. */
-              ? sizeHiPx * cfg.dot * 0.46 * (0.66 + 0.34 * figLit(i))
+              ? sizeHiPx * cfg.dot * 0.55 * (0.66 + 0.34 * figLit(i))
                 * (0.66 + 0.30 * figNear)
                 * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
