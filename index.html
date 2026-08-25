@@ -3536,6 +3536,24 @@ const bx = new Float32Array(MAX), by = new Float32Array(MAX);
    the projection is the identity and the distance is the old distance. It only
    becomes non-zero when something 3D asks for it. */
 const pz = new Float32Array(MAX), vz = new Float32Array(MAX);
+/* How far across a particle is from being the field to being the orb: 0 all
+   the way to 1, per particle, eased.
+
+   Membership itself is still a boundary -- above rig.orbFrom you belong to the
+   orb -- and that boundary has to move, because the block grows as he is drawn
+   and shrinks as he leaves. What could not stay is the boundary deciding a
+   particle's POSITION. Crossing it swapped the centre a dot is contained by
+   from the middle of the screen to a point behind his head, and the wall then
+   found it far outside itself and projected it onto the ellipse: a teleport,
+   measured at 280px on a field whose median frame moves 4.6px.
+
+   So the wall travels to meet it instead. Every centre and radius that decides
+   where a particle is pulled is a lerp on this number, which means a dot half
+   way across is contained by an ellipse half way across, and there is nowhere
+   left to jump to. Exactly the trick the orb's own lift already used to get
+   itself out of the field without a jolt -- two frames converging -- applied
+   one level down, to each dot rather than to the block. */
+const orbW = new Float32Array(MAX);
 const zbuf = new Float32Array(MAX);
 // where each particle actually landed on screen, kept so the edges can be drawn
 // between them afterwards rather than projected a second time
@@ -6545,7 +6563,12 @@ const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 
    divide on top came out as a 17px orb against the big one's 78. And y of 1.95
    put its centre at screen y=13, where the field's containment wall squashed
    the whole thing into a 30px vertical smear. */
-const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.5, share: 0.13, full: 0.55 };
+/* rate: how much of the field can change hands in one frame, as a fraction of
+   it, at 60fps. 0.010 is 32 particles at 3200, so the full 55% share takes
+   about nine tenths of a second to peel off -- slow enough to read as a stream
+   of dots leaving him, fast enough that it is over before the build is. */
+const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.5,
+              share: 0.13, full: 0.55, rate: 0.010 };
 // where it is on screen this frame, and how big -- see the physics loop
 let orbCX = 0, orbCY = 0, orbK = 1, orbT = 1;
 // normalised distance from the orb's centre: 0 in the middle, 1 on the ring
@@ -8110,6 +8133,7 @@ async function showFigure(src, portrait) {
   rig.fs0 = FIG_FS;
   rig.R = R; rig.src = src; rig.on = 1; rig.out = 0;
   rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
+  rig.orbN = 0; rig.oH = null;
   rig.wipe = [0, 0, 0, 0];
   solidWant = 1;
   figChooser(1);
@@ -8124,6 +8148,7 @@ function figStop() {
 }
 function figClear() {
   mini.set = 0;
+  rig.orbN = 0; rig.oH = null;
   // his body is gone, so the orb has the microphone back
   brain.persona = "";
   worldReset();
@@ -8435,7 +8460,39 @@ function updateFigure(dt, now) {
   /* The same number, kept for the renderer. It is how far the orb has lifted
      away from the field -- see the placement block. */
   rig.built = built;
-  const orbN = gl.ready && world.on > 0.30 ? Math.round(n * shareNow) : 0;
+  /* The hand-off SLIDES. It used to step, and that is the choppiness.
+
+     Membership is a boundary -- a particle below rig.orbFrom belongs to the
+     field, one above it belongs to the orb -- and crossing it changes the
+     centre a particle is driven toward from the middle of the screen to a
+     point behind his head. The containment wall then finds it far outside
+     itself and projects it onto the ellipse, which is a teleport. One particle
+     doing that is invisible. Hundreds on the same frame is the thing you saw.
+
+     Measured across a build and a teardown, at 3200 particles: the median
+     frame moves the worst particle 4.6px. Three frames moved it 284, 306 and
+     285, and each one is a step in the boundary -- 1389 particles reassigned
+     on a single frame when world.on crossed 0.30, then 615 and 2685 on the way
+     out. Nothing else in the sequence came close.
+
+     Two causes, two fixes. world.on > 0.30 was a STEP: below it no orb at all,
+     above it every particle the share calls for, arriving at a centre that has
+     already finished lifting away. It ramps now, so the block grows from
+     nothing while the orb is still sitting in the field where its particles
+     are indistinguishable from their neighbours.
+
+     And the count itself is rate-limited, in both directions and per second
+     rather than per frame, so however fast `built` or `world.on` move, the
+     boundary cannot cross more than a fixed slice of the field in one frame.
+     That is what turns a teleport into him drawing something. */
+  const gOn = Math.max(0, Math.min(1, (world.on - 0.16) / 0.30));
+  const gate = gOn * gOn * (3 - 2 * gOn);
+  const wantN = gl.ready ? Math.round(n * shareNow * gate) : 0;
+  if (rig.orbN == null) rig.orbN = 0;
+  const cap = Math.max(4, n * ORB.rate * (dt / 16.67));
+  rig.orbN += Math.max(-cap, Math.min(cap, wantN - rig.orbN));
+  if (rig.orbN < 0) rig.orbN = 0; else if (rig.orbN > n) rig.orbN = n;
+  const orbN = Math.round(rig.orbN);
   rig.orbFrom = orbN ? n - orbN : 1e9;
   // the surface only exists once its own wipe has started climbing
   solidWant = rig.wipe[2] > 0.001 ? 1 : 0;
@@ -10017,7 +10074,22 @@ function loop() {
        teleport. Measured at the deconstruct it was 235 px on one frame, in the
        middle of the transition the whole thing is judged on. With the two
        frames converging as the hand-off happens there is nowhere to jump to. */
-    const oH = rig.built || 0;
+    /* Eased, and asymmetrically. `built` is the texture wipe's own number and
+       it runs DOWN much faster than it climbed: measured on a teardown, the
+       orb's centre travelled 170px in three frames while it collapsed from
+       0.63 to 0.00, dragging every particle anchored to it along for the ride
+       -- 277px on the worst frame, against a 4px median.
+
+       Quick to lift, because the orb arriving is the punctuation on him being
+       finished, and slow to come home, because that is the half you actually
+       watch: he has stopped being drawn and the dots are wandering back. The
+       wipe still decides WHEN; this decides how fast the ball is allowed to
+       travel once it has. */
+    const bWant = rig.built || 0;
+    if (rig.oH == null) rig.oH = bWant;
+    rig.oH += (bWant - rig.oH) *
+      (1 - Math.pow(1 - (bWant > rig.oH ? 0.075 : 0.022), (gl.dt || 16.67) / 16.67));
+    const oH = rig.oH;
     orbCX = cx + rx3 * pp3 * oH; orbCY = cy + ry3 * pp3 * oH;
     orbK = 1 + (ORB.k * pp3 - 1) * oH;
     // and its clock eases in with it, so that while the block is still sitting
@@ -10025,6 +10097,14 @@ function loop() {
     orbT = 1 + (ORB.tempo / orbK - 1) * oH;
   }
   else orbT = 1;
+  /* Per physics STEP, not per frame -- and the difference is not pedantic.
+     The loop below is a fixed-timestep accumulator that runs up to four
+     substeps in one frame, so a rate derived from dt gets applied four times
+     over: measured, a weight meant to take a third of a second went from 0 to
+     0.946 on a single frame, which is the teleport it was written to prevent
+     wearing a disguise. Each substep is STEP of physics time and takes exactly
+     one step of the ease. */
+  const orbWK = 1 - Math.pow(1 - 0.075, STEP / 16.67);
   const membNow = cfg.membrane + drive.scale * cfg.membGain;
   const membFree = membNow * pull, memb = membFree * hold;
 
@@ -10047,6 +10127,16 @@ function loop() {
          stays `held`, though, so it does not join the arch the free ones make
          around a shape. */
       const isOrb = orbK > 0 && i >= rig.orbFrom;
+      /* About a third of a second to cross, in seconds rather than frames so a
+         30Hz phone hands over at the same rate as a 120Hz laptop. Long enough
+         that the trail draws the journey as a streak; short enough that the
+         dot has arrived before anyone looks for it. */
+      {
+        const wWant = isOrb ? 1 : 0;
+        orbW[i] += (wWant - orbW[i]) * orbWK;
+        if (orbW[i] < 0.0005) orbW[i] = 0; else if (orbW[i] > 0.9995) orbW[i] = 1;
+      }
+      const oW = orbW[i];
       const fT = isOrb ? 0 : held ? (rig.on ? formT * figGate(i, 0) : formT) : 0;
       /* Index IS angle in this field -- particle i sits at i/n of the way round
          -- and the orb is a contiguous block of indices at the end. Taken as
@@ -10152,8 +10242,8 @@ function loop() {
       const sq = 1 - bl + bl * (0.6 * Math.sin(frame / cfg.rateX * sw + jit) +
                                 0.4 * Math.sin(frame / cfg.rateY * sw * 1.7 + jit * 1.31));
       const sqx = sq, sqy = sq;
-      const oCx = isOrb ? orbCX : cx, oCy = isOrb ? orbCY : cy;
-      const oRk = isOrb ? orbK : 1;
+      const oCx = cx + (orbCX - cx) * oW, oCy = cy + (orbCY - cy) * oW;
+      const oRk = 1 + (orbK - 1) * oW;
       /* The orb stays ROUND. ex and ey are the mouth: ey carries a jaw term
          that doubles the vertical extent at full level, and ecc spreads or
          rounds the lips by spectral centroid -- all of which is why the big orb
@@ -10166,7 +10256,7 @@ function loop() {
          frequency band, and the membrane and the kick pushing along the radius.
          Those are radial in every direction, so it swells and breathes instead
          of gaping. */
-      const oEx = isOrb ? 1 : ex, oEy = isOrb ? 1 : ey;
+      const oEx = ex + (1 - ex) * oW, oEy = ey + (1 - ey) * oW;
       let tx = oCx + ux * ringR * oRk * sqx * oEx;
       let ty = oCy + uy * ringR * oRk * sqy * oEy;
       /* The free particles part rather than surround. A ring big enough to
@@ -10444,17 +10534,17 @@ function loop() {
          loudest particles sailing off, and without it the shell went to a few
          enormous purple blobs a long way out. Same ellipse, moved onto the orb
          and scaled with it. */
-      const wcx = isOrb ? orbCX : cx, wcy = isOrb ? orbCY : cy;
-      const wek = isOrb ? orbK : 1;
+      const wcx = cx + (orbCX - cx) * oW, wcy = cy + (orbCY - cy) * oW;
+      const wek = 1 + (orbK - 1) * oW;
       /* And a round wall, for the same reason. The field's ellipse is fitted to
          the viewport so a phone gets its full height -- 1:2 on this screen --
          and a 1:2 wall around a round orb is a bias with nothing to justify it:
          a stray leaving sideways is caught at half the distance of one leaving
          upward. The narrow axis, applied to both. */
-      const wxh = hx * bi * wek, wyh = (isOrb ? hx : hy) * bi * wek;
+      const wxh = hx * bi * wek, wyh = (hy + (hx - hy) * oW) * bi * wek;
       const qx = (px[i] - wcx) / wxh, qy = (py[i] - wcy) / wyh;
       const q = Math.sqrt(qx * qx + qy * qy);
-      if ((walled || isOrb) && q > containNow) {
+      if ((walled || oW > 0.02) && q > containNow) {
         const wx = px[i] - wcx, wy = py[i] - wcy;
         const wd = Math.sqrt(wx * wx + wy * wy) || 0.0001;
         const wnx = wx / wd, wny = wy / wd;
@@ -10536,11 +10626,18 @@ function loop() {
         oq[q] = ii;
       }
       oq.sort((a, b) => zbufOrb[b - rig.orbFrom] - zbufOrb[a - rig.orbFrom]);
-      const fRad0 = falloffPx * orbK;
       for (let q = 0; q < oq.length; q++) {
         const i = oq[q];
-        const dx0 = px[i] - orbCX, dy0 = py[i] - orbCY;
-        const sz0 = (1 - Math.sqrt(dx0 * dx0 + dy0 * dy0) / fRad0) * sizeHiPx;
+        /* Against its OWN travelling centre, not the orb's. A dot still on
+           its way is hundreds of pixels from where the orb ended up, and
+           measured from there its size comes out enormously negative -- it
+           would arrive as a giant magenta blob and shrink, which is the jump
+           made visible in a second way. */
+        const w0 = orbW[i];
+        const c0x = cx + (orbCX - cx) * w0, c0y = cy + (orbCY - cy) * w0;
+        const r0d = falloffPx * (1 + (orbK - 1) * w0);
+        const dx0 = px[i] - c0x, dy0 = py[i] - c0y;
+        const sz0 = (1 - Math.sqrt(dx0 * dx0 + dy0 * dy0) / r0d) * sizeHiPx;
         /* Dots do NOT scale with the orb. Scaling both, so that the small one
            is a true uniform copy, is the obvious thing and it looks worse: at
            0.57 the dots stop overlapping and the shell breaks into separate
@@ -10723,9 +10820,11 @@ function loop() {
        colour and its dot size: the same crossing-zero-at-the-boundary rule the
        field has always used, so it cannot help but look like the field. */
     const isOrbD = orbK > 0 && i >= rig.orbFrom;
-    const dcx = isOrbD ? orbCX : cx, dcy = isOrbD ? orbCY : cy;
-    const dRad = isOrbD ? fRad * orbK : fRad;
-    const dox = isOrbD ? px[i] - orbCX : ox, doy = isOrbD ? py[i] - orbCY : oy;
+    // the same lerp the physics uses, so colour and size cross with position
+    const oWD = rig.on ? orbW[i] : 0;
+    const dcx = cx + (orbCX - cx) * oWD, dcy = cy + (orbCY - cy) * oWD;
+    const dRad = fRad * (1 + (orbK - 1) * oWD);
+    const dox = px[i] - dcx, doy = py[i] - dcy;
     const ndx = dox / (dRad * fex), ndy = doy / (dRad * fey), ndz = oz / dRad;
     let size = (1 - Math.sqrt(ndx * ndx + ndy * ndy + ndz * ndz)) * sizeHiPx;
 
