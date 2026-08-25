@@ -2874,7 +2874,11 @@ say.addEventListener("keydown", (e) => {
     caption(null, "showing: " + (what || "?"));
     return;
   }
-  ensureTtsCtx(); ask(text);
+  /* Typed text goes through the SAME table speech does, rather than straight to
+     the brain. Otherwise half the commands only exist if you say them out loud,
+     which makes them untestable anywhere quiet and made "particle face" look
+     broken when typed. heardSentence falls through to ask() on its own. */
+  ensureTtsCtx(); heardSentence(text);
 });
 sgrp.appendChild(say);
 
@@ -8158,7 +8162,20 @@ function heardSentence(heard) {
      box in it. */
   if (/\b(particles?|dots?|dotted)\b/.test(flat)
       && /\b(face|head|mode|version|him|talk|talking|lip ?sync|mouth)\b/.test(flat)) {
-    showFigure("toon_head");
+    /* Held at dots. The figure stages run dots -> lines -> fill -> texture on a
+       timer, which is right for showing off a model and wrong here: ask for the
+       PARTICLE face and thirty seconds later you are looking at a solid white
+       bust. Asking for particles should get particles and keep them. */
+    showFigure("toon_head").then((ok) => {
+      if (ok === false) return;
+      figPick("dots");
+      /* Straight on, whatever the tune sliders say. formTilt null means "use
+         cfg.tilt", and cfg.tilt is a slider somebody set while looking at a
+         whole body from above -- which is why this arrived as a head pointing
+         at the floor for you and dead level for me. A face you are talking to
+         faces you; it does not inherit a camera angle chosen for a torso. */
+      formTilt = 0; formSpin = 0;
+    });
     return "figure";
   }
   if (/\b(face test|head test)\b/.test(flat)
@@ -8207,7 +8224,15 @@ function heardSentence(heard) {
     const kp = pageSaid(flat);
     if (kp >= 0) { pageOpen(kp); caption(heard, ""); return "page"; }
   }
-  if (formWant && (menuOn || form3d)) { caption(heard, ""); return "owned"; }
+  /* A menu owns what you say; a FIGURE does not.
+
+     This swallowed every sentence whenever a 3D formation was up -- captioned
+     it and dropped it, never asked the brain. That was right when a 3D
+     formation meant a knot or a hologram you were poking at. It is exactly
+     wrong for a head: ask for the particle face, talk to it, and it captions
+     your words and says nothing back, which reads as broken and was. A menu is
+     genuinely modal. A face is the thing you came to talk to. */
+  if (formWant && (menuOn || (form3d && !rig.on))) { caption(heard, ""); return "owned"; }
   if (echoMode === 1) { caption(heard, ""); return "echo"; }   // no brain, no wait
   ask(heard);
   return "brain";
