@@ -7382,7 +7382,20 @@ async function bakeRigTexture(R) {
 
    Pitch first, then yaw, both about the formation axes: x right, y DOWN, z
    away. */
-const POSE = { ix: 0, xdeg: 90 };
+/* ydeg finishes what xdeg started, and the two belong together.
+
+   The derived basis aims the face down formation -Z, which is at the camera,
+   and it is right. Then xdeg turns the whole head ninety degrees about the
+   screen's horizontal to stand him up -- and that rotation does not spare the
+   direction he is looking in. Worked through: the face is pointing along +Y
+   while he is on his back, and ninety about X carries +Y to +Z, which is
+   straight away from the viewer. Standing him up turned him round.
+
+   Measured rather than argued this time: the eye bones, which are on the front
+   of a head by definition, were sitting 68% of the way from the nearest point
+   of the head to the farthest. Half a turn about the vertical puts them back on
+   the near side, where a face goes. */
+const POSE = { ix: 0, xdeg: 90, ydeg: 180 };
 
 /* The float. A head hanging dead still in space reads as a statue; the same
    head easing up and down with a slow rock reads as something ALIVE and held
@@ -7454,7 +7467,13 @@ function bobMatrix(M0, t) {
 }
 function poseRotX(M, deg) {
   const t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
-  const R = [1, 0, 0, 0, c, -s, 0, s, c];
+  return poseMul([1, 0, 0, 0, c, -s, 0, s, c], M);
+}
+function poseRotY(M, deg) {
+  const t = deg * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+  return poseMul([c, 0, s, 0, 1, 0, -s, 0, c], M);
+}
+function poseMul(R, M) {
   const out = new Float64Array(9);
   for (let r = 0; r < 3; r++) for (let k = 0; k < 3; k++) {
     let v = 0;
@@ -7579,6 +7598,8 @@ function portraitBasis(R) {
      since an open neck is tall and the teeth really are nearer from under the
      chin. One rotation about the screen's horizontal axis stands him back up. */
   if (POSE.xdeg) M = poseRotX(M, POSE.xdeg);
+  // ...and then half a turn, because standing him up also turned him around
+  if (POSE.ydeg) M = poseRotY(M, POSE.ydeg);
   if (POSE.ix) M = poseSpin(M, POSE.ix);
   setTimeout(() => console.log("orb portrait camera: view.pitch " + view.pitch.toFixed(3)
     + "  view.yaw " + view.yaw.toFixed(3) + "  view.turn " + view.turn.toFixed(3)
@@ -10378,8 +10399,8 @@ function loop() {
               /* sqrt on the nearness, so the falloff is gentle across the face
                  and steep only at the silhouette -- linear made everything
                  behind the nose tip dwindle and the head went to dust again. */
-              ? sizeHiPx * cfg.dot * 0.78 * (0.66 + 0.34 * figLit(i))
-                * (0.46 + 0.85 * figNear)
+              ? sizeHiPx * cfg.dot * 0.70 * (0.66 + 0.34 * figLit(i))
+                * (0.52 + 0.55 * figNear)
                 * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
