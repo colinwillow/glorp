@@ -129,6 +129,36 @@ from deleting that variable. Do not add `ORB_PERSONA` to `wrangler.toml` — the
 file would then win over the dashboard on every deploy, which is exactly the
 thing being avoided.
 
+### More than one character
+
+The orb is not the only one who talks. When the avatar's body is on screen the
+page sends `persona: "colin"` with the turn, and the Worker looks that id up in
+`CASTS` to find two dashboard variables:
+
+| Variable | What it holds |
+| --- | --- |
+| `ORB_PERSONA_COLIN` | his character file — same plain text field as `ORB_PERSONA`, same few thousand characters |
+| `ELEVEN_VOICE_COLIN` | the ElevenLabs voice id he speaks in (a cloned voice, say). `GET /voices` lists the account's |
+
+Both are optional. An unset persona falls back to the orb's, an unset voice to
+`ELEVEN_VOICE_ID` — so a character can be added with a voice before he has been
+written, or written before he has a voice, and neither state is an error.
+
+Adding another character is a row in `CASTS` plus two variables. That row is
+the only part that needs a deploy; the writing and the voice never do.
+
+**The page sends an ID, never a prompt.** The site is public, so every field in
+the request is something a stranger can set to anything. An id is a key into a
+table — the worst a forged one can do is pick a character that already exists,
+or miss and get the orb. If the page could send prompt text, anyone with the
+endpoint could run whatever system prompt they liked on this account's
+Anthropic and ElevenLabs credits.
+
+The voice resolves in four steps, most specific first: an explicit `voice` in
+the request (the tuning panel, so auditioning a voice is never overruled by
+whoever is on screen), then the character's own, then `ELEVEN_VOICE_ID`, then a
+stock id so a fresh deploy makes a sound.
+
 ### Deploying: already automatic
 
 **This Worker is connected to the repo and deploys itself.** Workers & Pages →

@@ -559,11 +559,34 @@ const standalone = window.navigator.standalone === true ||
 const DEFAULT_BRAIN = "https://orb-brain.colinwillowtree.workers.dev";
 const stored = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 
+/* Which character is talking, as an ID rather than as a prompt.
+
+   More than one of them shares the brain now: the orb, and the avatar. They
+   differ in who they are and what they sound like, and both of those are
+   looked up in the Worker from this id. Deliberately not the text: this page
+   is served from GitHub Pages, so every field in the request is something a
+   stranger can set to anything, and an id is a key into a table -- the worst a
+   forged one does is pick a character that exists, or miss and get the orb.
+   Send the system prompt from here instead and anyone with the endpoint could
+   run whatever prompt they liked on the account's credits.
+
+   Empty means the orb, which is the default and always will be. */
+const CAST_OF = {
+  // his own body. When his head lands with blend shapes on it, add that
+  // model's name here and the particle face speaks in his voice too.
+  colin_slim: "colin", colin_dance: "colin", colin_animations: "colin",
+};
+
 const brain = {
   url: stored("orbBrain") === null ? DEFAULT_BRAIN : stored("orbBrain"),
-  // left blank on purpose: the Worker already defaults to the chosen voice, and
-  // one source of truth beats two that can disagree. Set it here to override.
+  /* Left blank on purpose, and the blank is load-bearing. The Worker resolves
+     a voice in four steps -- this field, then the character's own voice, then
+     the account default, then a stock id -- so anything set HERE is a manual
+     override that outranks the character. That is what the tuning panel is
+     for; filling it in by default would mean the avatar could never have a
+     voice of his own. */
   voice: stored("orbVoice") || "",
+  persona: "",
   history: [],
   busy: false
 };
@@ -741,6 +764,8 @@ async function ask(text) {
          localStorage, not in the twenty messages the proxy is sent -- so it has
          to travel with every turn or the model forgets it mid-conversation. */
       body: JSON.stringify({ messages: brain.history, images: imageList || [],
+                             // who is speaking; the Worker maps it to a persona
+                             persona: brain.persona || undefined,
                              guest: guest.name || "",
                              // one line of who they are, when it is somebody it knows
                              about: (profileOf(guest.name) || {}).is || "",
@@ -2228,6 +2253,7 @@ async function playReply(text) {
       // marks whenever anything on screen has a mouth: they cost a third more
       // bytes and are the difference between lip sync and a guess
       body: JSON.stringify({ text, voice: brain.voice || undefined,
+                             persona: brain.persona || undefined,
                              marks: visLive() ? 1 : undefined })
     });
     if (!res.ok) {
@@ -7984,6 +8010,10 @@ function rigPoint(R, v, o) {
    them any more. Defaulting to off means no route can inherit it. */
 async function showFigure(src, portrait) {
   rig.portrait = portrait ? 1 : 0;
+  /* Whose body is on screen is who is talking. Set before the load rather than
+     after it, so a sentence answered while he is still assembling is already
+     answered by him. */
+  brain.persona = CAST_OF[String(src || "").trim().toLowerCase()] || "";
   if (!rig.portrait) {
     rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null;
     rig.feat = null; rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
@@ -8094,6 +8124,8 @@ function figStop() {
 }
 function figClear() {
   mini.set = 0;
+  // his body is gone, so the orb has the microphone back
+  brain.persona = "";
   worldReset();
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
   rig.portrait = 0; rig.pose = null;

@@ -13,6 +13,13 @@ export interface Env {
   /** Who the orb is. Set it in the dashboard to change the personality with
    *  no deploy and no computer; unset falls back to PERSONA below. */
   ORB_PERSONA?: string;
+  /* One variable per character, named ORB_PERSONA_<ID>. The page sends an ID,
+     never the text -- see personaFor(). Add a character by adding a variable
+     and a row in CASTS; no deploy needed for the writing, only for the row. */
+  ORB_PERSONA_COLIN?: string;
+  /** The ElevenLabs voice each character speaks in, when it is not the
+   *  default. Voice ids are not secrets; the API key is. */
+  ELEVEN_VOICE_COLIN?: string;
   /** Which model answers. Dashboard variable for the same reason: it is the
    *  one knob worth trying against your own ear, and it wants no deploy. */
   ORB_MODEL?: string;
@@ -129,8 +136,40 @@ Use it sparingly. Showing costs something: the particles cannot be a word and be
 
 Show a word only when somebody asks you to show, spell, draw or display something, or when the whole reply turns on one word and that word is worth seeing on its own -- a name, a number, a colour, a single answer to a direct question. If you could not say which word the reply turns on, it does not turn on one.`;
 
-function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = ""): string {
-  const custom = (env.ORB_PERSONA ?? "").trim();
+/* ---------------- the cast ----------------
+
+   More than one character shares this brain: the orb, and the avatar of the
+   person who built it, and whatever comes next. They differ in exactly two
+   things -- who they are, and what they sound like -- and both are looked up
+   HERE, from an id the page sends, rather than sent by the page.
+
+   That distinction is the whole security model. The page is served from
+   GitHub Pages, so every field in the request body is something any stranger
+   can set to anything. An id is a key into a table: the worst a forged one
+   can do is pick a character that already exists, or miss and get the orb. If
+   the page sent the prompt TEXT instead, anyone with the endpoint could point
+   a script at it and spend the account's Anthropic and ElevenLabs credits
+   running whatever system prompt they liked.
+
+   Unknown ids fall back rather than fail. A page deployed before a character
+   was added, or after one was removed, should still talk to somebody. */
+const CASTS: Record<string, { persona: keyof Env; voice: keyof Env }> = {
+  colin: { persona: "ORB_PERSONA_COLIN", voice: "ELEVEN_VOICE_COLIN" },
+};
+// an id from an untrusted body: short, lowercase, and nothing that is not a key
+const castId = (v: unknown) =>
+  (typeof v === "string" ? v : "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24);
+const castOf = (id: string) => (id && CASTS[id]) || null;
+
+function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = "",
+                 cast = ""): string {
+  /* The character's own file first, the orb's dashboard override second, the
+     one compiled in last. A character whose variable is empty or unset is not
+     an error -- it is a character that has not been written yet, and the orb
+     is a better answer than an empty system prompt. */
+  const who2 = castOf(cast);
+  const mine = who2 ? String(env[who2.persona] ?? "").trim() : "";
+  const custom = mine || (env.ORB_PERSONA ?? "").trim();
   /* The page knows the name and the proxy does not: it lives in the browser's
      localStorage, not in the twenty messages sent each turn, so it has to be
      restated every time or the model loses it mid-conversation. */
@@ -231,18 +270,29 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   if (!env.ELEVENLABS_API_KEY) {
     return new Response("No ELEVENLABS_API_KEY on this Worker.", { status: 501, headers });
   }
-  let body: { text?: string; voice?: string; marks?: unknown };
+  let body: { text?: string; voice?: string; marks?: unknown; persona?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
   const text = (body.text ?? "").trim();
   if (!text) return new Response("body must be { text: \"...\" }", { status: 400, headers });
 
-  /* The page may name the voice. Voice ids are not secrets and the account is
-     the caller's own, so letting the picker live in the app beats editing a
-     config file and redeploying to audition a voice. The var stays as the
-     default for when the page says nothing. */
-  const voice = (body.voice || env.ELEVEN_VOICE_ID || DEFAULT_VOICE).trim();
+  /* Four places a voice can come from, and the order is the point.
+
+     An explicit `voice` still wins, because that field is the tuning panel --
+     somebody auditioning voices with the endpoint open should not be
+     overruled by whichever character happens to be on screen. Under it, the
+     character's own voice, looked up from the cast table by id: this is how
+     the avatar speaks in a cloned voice while the orb keeps the stock one,
+     with no second endpoint and no second key. Then the account default, then
+     a stock id so a fresh deploy makes a sound.
+
+     Voice ids are not secrets and the account is the caller's own, so letting
+     the picker live in the app beats redeploying a config file to audition
+     one. The API key never leaves here, which is the part that matters. */
+  const spk = castOf(castId(body.persona));
+  const mineV = spk ? String(env[spk.voice] ?? "").trim() : "";
+  const voice = (body.voice || mineV || env.ELEVEN_VOICE_ID || DEFAULT_VOICE).trim();
   const model = (env.ELEVEN_MODEL_ID ?? DEFAULT_TTS_MODEL).trim();
 
   /* WITH TIMESTAMPS when the page asks for them.
@@ -288,7 +338,7 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
   let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown;
-              about?: unknown; memory?: unknown };
+              about?: unknown; memory?: unknown; persona?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -308,6 +358,8 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      to be here. */
   const guest = (typeof body.guest === "string" ? body.guest : "")
     .trim().replace(/[^A-Za-z' -]/g, "").slice(0, 24);
+  // which character is speaking. An id, not a prompt -- see CASTS.
+  const cast = castId(body.persona);
   /* Scrubbed and bounded like everything else that reaches a system prompt --
      but 400 was far too tight for what a profile turned out to be. Measured, it
      was cutting Rowan off mid-sentence and losing half of what it knew about
@@ -474,7 +526,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory, cast), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:
