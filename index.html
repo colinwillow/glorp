@@ -1000,7 +1000,15 @@ const VIS_OF = {
    syllable you can hear; a consonant is mostly the move into it. */
 const VIS_HOLD = { AI: 2.2, E: 2.0, O: 2.2, U: 2.0, WQ: 1.6, L: 1.2,
                    FV: 1.2, MBP: 1.0, etc: 1.0, rest: 1.6 };
-const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: null, marked: 0 };
+const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: null, marked: 0,
+              mime: 0 };
+
+/* Whether anything on screen is a mouth right now. The image cards were the
+   only consumer for a while, so everything downstream gated on vis.on -- the
+   card toggle. Then the particle head arrived, ALSO a mouth, and every one of
+   those gates silently kept it shut: no marks requested, no timeline built, no
+   shape advanced. He replied out loud with a perfectly still face. */
+const visLive = () => vis.on || (rig.on && rig.portrait);
 
 function visLoad() {
   if (vis.el) return;
@@ -1018,11 +1026,11 @@ function visLoad() {
   visShow("rest");
 }
 function visShow(n) {
-  if (!vis.el || vis.shape === n) return;
-  const prev = vis.imgs[vis.shape], next = vis.imgs[n];
+  if (!vis.el || vis.showing === n) return;
+  const prev = vis.imgs[vis.showing], next = vis.imgs[n];
   if (prev) prev.classList.remove("on");
   if (next) next.classList.add("on");
-  vis.shape = n;
+  vis.showing = n;
   const lab = document.getElementById("visLab");
   if (lab) lab.textContent = n + (vis.marked ? "  \u00b7 marks" : "  \u00b7 guessed");
 }
@@ -1136,17 +1144,29 @@ function visFromMarks(a) {
 }
 
 function visFrame() {
-  if (!vis.on || !vis.el) return;
-  if (!ttsPlaying || !vis.seq) { visShow("rest"); return; }
-  const t = (performance.now() - vis.at0) / 1000;
-  if (t > vis.dur) { visShow("rest"); return; }
-  /* The level closes it in the gaps. A written sentence has no silences in it
-     -- the pauses a person actually leaves are between the words, not in the
-     spelling -- so a purely text-driven mouth keeps shaping through them. */
-  if (tts.scale < 0.06) { visShow("rest"); return; }
-  let lo = 0, hi = vis.seq.length - 1;
-  while (lo < hi) { const m = (lo + hi) >> 1; if (vis.seq[m].t1 < t) lo = m + 1; else hi = m; }
-  visShow(vis.seq[lo].sh);
+  if (!visLive()) return;
+  /* vis.shape is computed here whether or not the image card exists -- the 3D
+     head reads it too, and routing the shape THROUGH visShow meant no card, no
+     shape, no mouth. The card is one consumer, not the pipeline.
+
+     A mime run substitutes for a playing clip: no audio exists, so the level
+     gate that closes the mouth between words has nothing to read and is
+     skipped. */
+  const miming = performance.now() < vis.mime;
+  let sh = "rest";
+  if ((ttsPlaying || miming) && vis.seq) {
+    const t = (performance.now() - vis.at0) / 1000;
+    /* The level closes it in the gaps. A written sentence has no silences in
+       it -- the pauses a person leaves are between the words, not in the
+       spelling -- so a purely text-driven mouth keeps shaping through them. */
+    if (t <= vis.dur && (miming || tts.scale >= 0.06)) {
+      let lo = 0, hi = vis.seq.length - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (vis.seq[m].t1 < t) lo = m + 1; else hi = m; }
+      sh = vis.seq[lo].sh;
+    }
+  }
+  vis.shape = sh;
+  if (vis.on && vis.el) visShow(sh);
 }
 function visSet(on) {
   vis.on = on ? 1 : 0;
@@ -1306,7 +1326,7 @@ function visRig(dt) {
   if (!mesh || !mesh.morphTargetInfluences || !mesh.morphTargetInfluences.length) return;
   const map = visRigFind(mesh);
   const RIG = visRigPick(mesh);
-  const shape = vis.on ? vis.shape : "rest";
+  const shape = visLive() ? vis.shape : "rest";
   const target = RIG[shape] || RIG.rest;
   /* Closing your lips is a movement, not a relaxation. Opening fast and closing
      slow reads well for a face relaxing, and badly for an M: the jaw was still
@@ -1319,13 +1339,27 @@ function visRig(dt) {
     mesh.morphTargetInfluences[i] += (want - mesh.morphTargetInfluences[i]) * k;
   }
   const jaw = visJawBone(mesh);
-  if (jaw && window.THREE) {
+  if (jaw) {
     const jw = VIS_JAW[shape] != null ? VIS_JAW[shape] : 0;
     visJawNow += (jw - visJawNow) * k;
-    jaw.quaternion.copy(mesh.__visJawRest).multiply(new window.THREE.Quaternion()
-      .setFromAxisAngle(new window.THREE.Vector3(0, 0, 1),
-                        visJawNow * VIS_JAW_DEG * Math.PI / 180));
+    visApplyJaw();
   }
+}
+
+/* Applied twice a frame on purpose. visRig runs early in the frame; the
+   animation mixer runs later (updateWorld) and poses every bone from the dance
+   clip, jaw included -- so by the time skinPoints reads the skeleton the jaw
+   rotation set here has already been stomped. updateFigure calls this again
+   right before it skins, which is after the mixer, which is the write that
+   sticks. */
+function visApplyJaw() {
+  const mesh = gl.mesh;
+  if (!mesh || !window.THREE || !mesh.__visJawRest) return;
+  const jaw = visJawBone(mesh);
+  if (!jaw) return;
+  jaw.quaternion.copy(mesh.__visJawRest).multiply(new window.THREE.Quaternion()
+    .setFromAxisAngle(new window.THREE.Vector3(0, 0, 1),
+                      visJawNow * VIS_JAW_DEG * Math.PI / 180));
 }
 
 /* ---------------- the boom box ----------------
@@ -2160,9 +2194,10 @@ async function playReply(text) {
     const res = await fetch(new URL("/speak", brain.url), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      // marks only while the mouth test is up: they cost a third more bytes
+      // marks whenever anything on screen has a mouth: they cost a third more
+      // bytes and are the difference between lip sync and a guess
       body: JSON.stringify({ text, voice: brain.voice || undefined,
-                             marks: vis.on ? 1 : undefined })
+                             marks: visLive() ? 1 : undefined })
     });
     if (!res.ok) {
       // 501 just means no voice key is set; anything else is worth showing
@@ -2201,7 +2236,7 @@ async function playReply(text) {
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
-    if (vis.on) { if (marks) visFromMarks(marks); else visBuild(text, audio.duration); }
+    if (visLive()) { if (marks) visFromMarks(marks); else visBuild(text, audio.duration); }
     /* Only the clip that is actually playing gets to say the talking has
        stopped. Interrupting one -- which happens whenever a second line starts
        before the first has finished -- fires the OLD source's onended, and that
@@ -2848,6 +2883,31 @@ say.addEventListener("keydown", (e) => {
       // colin_slim is the one with the 36 clips: the room is only a room if he
       // has something to do in it. colin_dance can only dance.
       showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_slim");
+      return;
+    }
+    /* /show mime <text> -- run the mouth with no voice. The one instrument this
+       whole feature lacked: every mouth bug so far shipped because the only way
+       to see the mouth move was a live TTS reply, which the sandbox this gets
+       built in does not have. */
+    if (/^mime\b/i.test(what)) {
+      const line2 = what.replace(/^mime\s*/i, "") || "Paw, oh, wee, moo, five, la.";
+      visBuild(line2, Math.max(1.2, line2.length * 0.07));
+      vis.at0 = performance.now();
+      vis.mime = performance.now() + vis.dur * 1000 + 300;
+      caption(null, "mime: " + (vis.seq ? vis.seq.length : 0) + " shapes over "
+        + vis.dur.toFixed(1) + "s");
+      /* And it reports its own chain while it runs, because every mouth bug so
+         far was invisible: the state can look right while the particles never
+         move. shape says the timeline advanced, jaw says the easing ran, infl
+         says the morphs reached the mesh the particles are skinned from. */
+      let dbgN = 0;
+      const dbg = setInterval(() => {
+        const inf = (gl.mesh && gl.mesh.morphTargetInfluences) || [];
+        let mx = 0; for (const v of inf) if (v > mx) mx = v;
+        console.log("mime dbg: shape " + vis.shape + "  jaw " + visJawNow.toFixed(2)
+          + "  max infl " + mx.toFixed(2) + "  portrait " + (rig.portrait || 0));
+        if (++dbgN > 6) clearInterval(dbg);
+      }, 400);
       return;
     }
     if (key === "list") {
@@ -5358,16 +5418,34 @@ function skinGL(R) {
 function skinPoints(R) {
   const n = R.dec.n, bp = R.dec.P, bn = R.dec.N, REP = R.dec.REP;
   const P2 = R.wp, N2 = R.wn, [va, vb] = rig.v3;
+  /* The morph targets, which this function ignored entirely. The viseme rig
+     drives gl.mesh's influences and the GL render moves -- but in dots mode
+     nobody is looking at the GL render, and the particles were built from the
+     BASE positions plus bones. Every mouth shape landed on a mesh that is not
+     on screen. So: same order as the GPU -- morph the vertex, then skin it.
+     Only the shapes actually up right now cost anything. */
+  const mt = (gl.mesh.geometry.morphAttributes || {}).position || [];
+  const infl = gl.mesh.morphTargetInfluences || [];
+  const act = [];
+  for (let i = 0; i < infl.length; i++) if (infl[i] > 0.002 && mt[i]) act.push(mt[i], infl[i]);
   let low = 1e30;
   for (let v = 0; v < n; v++) {
     const r = REP[v];
     va.set(bp[v * 3], bp[v * 3 + 1], bp[v * 3 + 2]);
+    for (let a = 0; a < act.length; a += 2) {
+      const at2 = act[a], w = act[a + 1];
+      va.x += at2.getX(r) * w; va.y += at2.getY(r) * w; va.z += at2.getZ(r) * w;
+    }
     gl.mesh.applyBoneTransform(r, va);
     va.applyMatrix4(rig.toGroup);
     P2[v * 3] = va.x; P2[v * 3 + 1] = va.y; P2[v * 3 + 2] = va.z;
     if (va.y < low) low = va.y;
     vb.set(bp[v * 3] + bn[v * 3] * 0.05, bp[v * 3 + 1] + bn[v * 3 + 1] * 0.05,
            bp[v * 3 + 2] + bn[v * 3 + 2] * 0.05);
+    for (let a = 0; a < act.length; a += 2) {
+      const at2 = act[a], w = act[a + 1];
+      vb.x += at2.getX(r) * w; vb.y += at2.getY(r) * w; vb.z += at2.getZ(r) * w;
+    }
     gl.mesh.applyBoneTransform(r, vb);
     vb.applyMatrix4(rig.toGroup);
     let nx = vb.x - va.x, ny = vb.y - va.y, nz = vb.z - va.z;
@@ -7562,6 +7640,7 @@ function updateFigure(dt, now) {
        vertex instead of a matrix per joint, which at this count is about a
        millisecond -- and it cannot disagree with the picture, because it IS
        the picture. */
+    if (rig.portrait) visApplyJaw();   // after the mixer's stomp, before the skin
     skinGL(R);
     skinPoints(R);
   } else {
@@ -9929,8 +10008,13 @@ function loop() {
                the shading is already computed per particle for colour, so
                spending it on size as well is free and is what makes a nose look
                like a nose rather than like slightly paler dots. */
+            /* Facing-weighted as well as lit: the head is hollow and additive,
+               so the far side prints straight through the face. Dots looking at
+               you get fatter, dots looking away shrink -- the back of the skull
+               drops to a faint scatter instead of a second face. */
             : form3d && held && !isOrbD && rig.portrait
-              ? sizeHiPx * cfg.dot * 0.30 * (0.55 + 0.95 * figLit(i))
+              ? sizeHiPx * cfg.dot * 0.34 * (0.55 + 0.95 * figLit(i))
+                * (0.35 + 0.85 * Math.max(0, -fnz[i]))
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
               ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
