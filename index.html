@@ -6901,7 +6901,7 @@ function musicSay(flat) {
       && !/\b(player|selector|playlist|list|have|got)\b/.test(flat)) {
     songCard();
     caption(null, music.playing
-      ? "\u266a " + music.title + (music.artist ? " \u00b7 " + music.artist : "")
+      ? music.title + (music.artist ? " \u00b7 " + music.artist : "")
       : "nothing playing");
     return "song card";
   }
@@ -6920,7 +6920,7 @@ function musicSay(flat) {
   if (/\b(music player|music selector|song selector|music selection|song selection|playlist|play list|song list|track list|music list|music picker|song picker|show the music|now playing)\b/.test(flat)) {
     musicPanel(1);
     if (!music.list) musicLocalList().then(() => musicPanel(-1)); else musicPanel(-1);
-    caption(null, music.playing ? "\u266a " + music.title : "music player");
+    caption(null, music.playing ? music.title : "music player");
     return "music player";
   }
 
@@ -6933,13 +6933,13 @@ function musicSay(flat) {
      a bare "play" while paused means carry on rather than start something. */
   if (/\b(resume|unpause|carry on|keep going|continue|play it)\b/.test(flat) ||
       (music.paused && /^\s*play\s*$/.test(flat))) {
-    if (musicResume()) { caption(null, "\u266a " + music.title); return "resume"; }
+    if (musicResume()) { caption(null, music.title); return "resume"; }
   }
   if (/\b(pause|freeze it)\b/.test(flat) && music.playing && !music.paused) {
     if (musicPause()) { caption(null, "paused \u00b7 " + music.title); return "pause"; }
   }
   if (/\b(next|another|skip|different)\b.*\b(song|track|tune|one)\b/.test(flat) && music.playing) {
-    musicPlay(music.i + 1).then((t) => { if (t) caption(null, "\u266a " + t); musicPanel(-1); });
+    musicPlay(music.i + 1).then((t) => { if (t) caption(null, t); musicPanel(-1); });
     return "next track";
   }
   const m = flat.match(/\bplay\b(?:\s+(?:me|us|the|some|a))*\s*(.*)$/);
@@ -6961,18 +6961,18 @@ async function musicWant(want) {
   await musicLocalList();
   if (!want) {
     const t0 = await musicPlay();
-    caption(null, t0 ? "\u266a " + t0 : (music.err || "no music"));
+    caption(null, t0 ? t0 : (music.err || "no music"));
     musicPanel(-1);
     return;
   }
   const local = await musicPlay(want);
-  if (local) { caption(null, "\u266a " + local); musicPanel(-1); return; }
+  if (local) { caption(null, local); musicPanel(-1); return; }
   caption(null, "looking for \u201c" + want + "\u201d\u2026");
   try {
     const found = await audiusSearch(want);
     if (!found.length) { caption(null, "nothing found for \u201c" + want + "\u201d"); return; }
     const t1 = await musicPlayList(found, 0);
-    caption(null, t1 ? "\u266a " + t1 + (music.artist ? " \u00b7 " + music.artist : "")
+    caption(null, t1 ? t1 + (music.artist ? " \u00b7 " + music.artist : "")
                      : (music.err || "could not play that"));
     musicPanel(-1);
   } catch (e) {
@@ -6999,7 +6999,7 @@ function sandboxSay(flat) {
          he started it, so it is his to stop. */
       if (/dance/.test(list[0] || "") && !music.playing)
         musicPlay().then((t) => {
-          if (t) { music.byDance = 1; caption(null, "♪ " + t); }
+          if (t) { music.byDance = 1; caption(null, t); }
           else if (music.err) caption(null, music.err);
         });
       const nm = playSeq(list, 0.3);
@@ -10884,7 +10884,9 @@ function loop() {
         }
       };
       const ts = Math.max(16, Math.min(31, W * 0.049));
-      line("\u266a  " + song.title, ts, "#E4F8CB", "rgba(150,240,120,0.85)",
+      // just the title. The note was a label on something that does not need
+      // one -- you asked what the song was, so the answer is the song
+      line(song.title, ts, "#E4F8CB", "rgba(150,240,120,0.85)",
            ty - ts * 0.30, 0, 0.52);
       line(song.sub, ts * 0.52, "#B98BE8", "rgba(139,47,214,0.8)",
            ty + ts * 0.78, 0.18, 0.46);
