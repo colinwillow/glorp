@@ -7447,6 +7447,128 @@ function eyeSave() {
     JSON.stringify({ down: EYE.down, apart: EYE.apart, r: EYE.r })); } catch (e) {}
 }
 
+/* Which particles are an EYE, a NOSE or a MOUTH -- so the features can be
+   drawn in the other half of the palette and read against the green.
+
+   None of it is a hand-placed radius. The mesh already knows two of the three
+   exactly: the eye bones say where the sockets are, and every blend shape on
+   this head is a mouth or a jaw shape, so the vertices those shapes MOVE are
+   the mouth, by definition, on any character that ships visemes. Jaw_Open is
+   left out of that -- it swings the whole lower half of the head, and using it
+   would paint the chin and the jawline as though they were lips.
+
+   The nose is the one thing with no landmark on a CC rig, so it is derived
+   from the other two rather than guessed: it lives in the band between the eye
+   line and the mouth, close to the midline, and it is the part of that band
+   nearest the camera. A cheek in the same band is simply further back. Done in
+   formation space, where x is right, y is down and z is away, so there is no
+   axis convention left to get wrong.
+
+   Built once per figure and cached. It is a property of the mesh, not of the
+   frame -- the bob moves every particle together and cannot move a nostril
+   onto a cheek. */
+/* All five sized off measurements, not taste. Eye separation on this head is
+   0.594 formation units against a head 1.727 wide, so a socket is about a
+   quarter of the separation, not the 1.35 I first wrote -- that was a radius
+   wider than the face, which is why the first attempt came out purple from
+   the hairline down. And the mouth shapes move 14% of the head above a
+   sixteenth of their peak but only 5% above a third, so the ramp sits between:
+   lips and the ring around them, not half a cheek. */
+const FEAT = { eyeR: 0.26, noseW: 0.26, noseZ: 0.30, lo: 0.22, hi: 0.45 };
+function figFeatures(EP, sep) {
+  const R = rig.R;
+  if (!R || !EP[0] || !EP[1] || !gl.mesh) return null;
+  const dn = R.dec.n, REP = R.dec.REP, F = new Float32Array(MAX);
+  const sm = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+  // MOUTH -- straight off the blend shapes
+  const mt = (gl.mesh.geometry.morphAttributes || {}).position || [];
+  const dict = gl.mesh.morphTargetDictionary || {};
+  const use = [];
+  for (const nm in dict) if (!/jaw_?open/i.test(nm) && mt[dict[nm]]) use.push(mt[dict[nm]]);
+  const disp = new Float32Array(dn);
+  let dmax = 0;
+  for (let v = 0; v < dn; v++) {
+    const r = REP[v];
+    let m = 0;
+    for (let a = 0; a < use.length; a++) {
+      const t2 = use[a];
+      const d = Math.hypot(t2.getX(r), t2.getY(r), t2.getZ(r));
+      if (d > m) m = d;
+    }
+    disp[v] = m;
+    if (m > dmax) dmax = m;
+  }
+  if (dmax <= 0) return null;
+
+  /* EYES and NOSE, on the FACE's own axes rather than the screen's.
+
+     u is the interocular axis, v runs from the eye line down to the mouth, and
+     w is the face normal, u cross v. Measuring against those makes the whole
+     thing pose-invariant: the bob yaws and rocks the head a few degrees every
+     frame, and an axis-aligned x-band sliced through that at an angle, which
+     put the nose visibly off the midline. A band defined by where the eyes and
+     the mouth actually are cannot drift, because it moves with them. */
+  const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  const norm = (a) => { const L = Math.hypot(a[0],a[1],a[2]) || 1;
+                        return [a[0]/L, a[1]/L, a[2]/L]; };
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const midE = [(EP[0][0]+EP[1][0])/2, (EP[0][1]+EP[1][1])/2, (EP[0][2]+EP[1][2])/2];
+  const u = norm(sub(EP[1], EP[0]));
+  const eR = sep * FEAT.eyeR;
+
+  let mx2 = 0, my2 = 0, mz2 = 0, mn = 0;
+  for (let i = 0; i < rig.ord.length; i++) {
+    const vv = rig.ord[i];
+    if (vv >= dn) continue;
+    const w2 = sm((disp[vv] / dmax - FEAT.lo) / (FEAT.hi - FEAT.lo));
+    if (w2 > 0) { F[i] = w2; if (w2 > 0.5) { mx2 += formX[i]; my2 += formY[i]; mz2 += formZ[i]; mn++; } }
+    for (let e = 0; e < 2; e++) {
+      const d = sub([formX[i], formY[i], formZ[i]], EP[e]);
+      const we = sm(1 - Math.hypot(d[0], d[1] * 1.2, d[2] * 0.8) / eR);
+      if (we > F[i]) F[i] = we;
+    }
+  }
+
+  // NOSE -- the near part of the band between the eye line and the mouth
+  if (mn > 8) {
+    const mC = [mx2 / mn, my2 / mn, mz2 / mn];
+    const down = sub(mC, midE), len = Math.hypot(down[0], down[1], down[2]) || 1;
+    const v2 = norm(down);
+    const w3 = norm(cross(u, v2));          // out through the face
+    const halfW = sep * FEAT.noseW;
+    // which way along w is toward the camera: near is -z in formation space
+    const sgn = w3[2] < 0 ? 1 : -1;
+    let pLo = 1e30, pHi = -1e30;
+    const lat = [], along = [], out2 = [];
+    for (let i = 0; i < rig.ord.length; i++) {
+      if (rig.ord[i] >= dn) { lat[i] = 1e9; continue; }
+      const d = sub([formX[i], formY[i], formZ[i]], midE);
+      lat[i] = Math.abs(dot(d, u));
+      along[i] = dot(d, v2);
+      out2[i] = dot(d, w3) * sgn;
+      if (along[i] < 0 || along[i] > len || lat[i] > halfW) continue;
+      if (out2[i] < pLo) pLo = out2[i];
+      if (out2[i] > pHi) pHi = out2[i];
+    }
+    const depth = (pHi - pLo) || 1, cut = pHi - depth * FEAT.noseZ;
+    for (let i = 0; i < rig.ord.length; i++) {
+      if (rig.ord[i] >= dn || lat[i] > halfW) continue;
+      if (along[i] < 0 || along[i] > len) continue;
+      // fading at the cheeks and at the back of the band, so the nose has an
+      // edge rather than a rectangle around it
+      const wn = sm(1 - lat[i] / halfW) * sm((out2[i] - cut) / (depth * 0.35));
+      if (wn > F[i]) F[i] = wn;
+    }
+  }
+  let c2 = 0;
+  for (let i = 0; i < rig.ord.length; i++) if (F[i] > 0.35) c2++;
+  console.log("orb features:", c2, "particles marked from", use.length,
+              "mouth shapes and", rig.eyeBones.filter(Boolean).length, "eye bones");
+  return F;
+}
+
 function bobMatrix(M0, t) {
   const rx = Math.sin(t * 0.45) * BOB.pitch;
   const ry = Math.sin(t * 0.19 + 0.6) * BOB.yaw;
@@ -7630,7 +7752,7 @@ async function showFigure(src, portrait) {
   rig.portrait = portrait ? 1 : 0;
   if (!rig.portrait) {
     rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null;
-    rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
+    rig.feat = null; rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
   }
   takeScreen("figure");
   src = String(src || "").trim() || "colin_slim";
@@ -7680,7 +7802,7 @@ async function showFigure(src, portrait) {
   rig.ord = formOrd ? formOrd.slice() : Int32Array.from({ length: R.dec.n }, (_, i) => i);
   /* The permutation scattered the eye points into arbitrary particle slots --
      which is fine, as long as we know which slot holds which eye point. */
-  rig.eyeBones = null; rig.eyeSlot = null; rig.isEye = null;
+  rig.eyeBones = null; rig.eyeSlot = null; rig.isEye = null; rig.feat = null;
   if (rig.portrait) {
     rig.eyeSlot = new Int32Array(EYE.dots * 2).fill(-1);
     rig.isEye = new Uint8Array(MAX);
@@ -7730,7 +7852,7 @@ function figClear() {
   worldReset();
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
   rig.portrait = 0; rig.pose = null;
-  rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null; rig.eb = null;
+  rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null; rig.feat = null; rig.eb = null;
   gl.ready = 0;
   figChooser(0);
 }
@@ -7968,6 +8090,9 @@ function updateFigure(dt, now) {
     const EP = [rig.eyeBones[0] && toForm(rig.eyeBones[0]),
                 rig.eyeBones[1] && toForm(rig.eyeBones[1])];
     const midX = EP[0] && EP[1] ? (EP[0][0] + EP[1][0]) / 2 : 0;
+    // once per figure, on the first frame the sockets are known
+    if (!rig.feat && EP[0] && EP[1])
+      rig.feat = figFeatures(EP, Math.abs(EP[0][0] - EP[1][0]) || span * 0.4);
     for (let e = 0; e < 2; e++) {
       const P2 = EP[e];
       if (!P2) continue;
@@ -10425,6 +10550,16 @@ function loop() {
          magenta back toward grey, which is the wrong direction and would wash
          out the silhouette. */
       if (s2 > 0) s2 *= 0.52 + 0.48 * figLit(i);
+      /* And the features cross to the other half of the palette. Depth alone
+         cannot separate a nostril from the cheek beside it -- they are the
+         same distance away, so they were the same green, and the face read as
+         a lit mask with nothing drawn on it. The eyes, the nose and the mouth
+         go magenta instead, over a green head, which is the same two colours
+         the field has always had doing the one job the depth ramp cannot.
+         They keep their near SIZE: big magenta on small green is what makes
+         them read as features rather than as the far side showing through. */
+      const ft = rig.feat ? rig.feat[i] : 0;
+      if (ft > 0) s2 = s2 * (1 - ft) + LUT_LO * 0.62 * ft;
       li = ((s2 - LUT_LO) / span * (LUT_N - 1)) | 0;
     }
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
