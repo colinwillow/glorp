@@ -7577,7 +7577,19 @@ function rigPoint(R, v, o) {
   else { o[0] = x; o[1] = y; o[2] = z; o[3] = nx; o[4] = ny; o[5] = nz; }
 }
 
-async function showFigure(src) {
+/* Portrait is an ARGUMENT, not a flag somebody sets beforehand and hopes gets
+   cleared. It was the latter, and only figStop cleared it -- so going from the
+   particle face straight to another figure (the room does exactly that:
+   setFormation({figure:"colin_slim"}) lands here) left rig.portrait set. The
+   new body inherited the head's eye slots, wore a giant eyeball for a face,
+   and the eye particles skittered around loose because nothing was placing
+   them any more. Defaulting to off means no route can inherit it. */
+async function showFigure(src, portrait) {
+  rig.portrait = portrait ? 1 : 0;
+  if (!rig.portrait) {
+    rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null;
+    rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
+  }
   takeScreen("figure");
   src = String(src || "").trim() || "colin_slim";
   let R;
@@ -7674,7 +7686,9 @@ function figStop() {
 function figClear() {
   mini.set = 0;
   worldReset();
-  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0; rig.portrait = 0; rig.pose = null;
+  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
+  rig.portrait = 0; rig.pose = null;
+  rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null; rig.eb = null;
   gl.ready = 0;
   figChooser(0);
 }
@@ -8686,9 +8700,8 @@ function heardSentence(heard) {
        point has already been placed -- which is why the pose transform below
        had no effect at all and two opposite yaw values rendered pixel for pixel
        the same. */
-    rig.portrait = 1;
-    showFigure("toon_head").then((ok) => {
-      if (ok === false) { rig.portrait = 0; return; }
+    showFigure("toon_head", 1).then((ok) => {
+      if (ok === false) return;
       figPick("dots");
       /* Straight on, whatever the tune sliders say. formTilt null means "use
          cfg.tilt", and cfg.tilt is a slider somebody set while looking at a
@@ -10274,7 +10287,7 @@ function loop() {
                 * (0.38 + 0.85 * Math.sqrt(rig.zHi > rig.zLo
                     ? Math.max(0, Math.min(1, (formZ[i] - rig.zLo) / (rig.zHi - rig.zLo)))
                     : 0.5))
-                * (rig.isEye && rig.isEye[i] ? EYE.size : 1)
+                * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
               ? sizeHiPx * cfg.dot * 0.13 * (1 - fT * 0.15)
