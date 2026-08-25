@@ -206,6 +206,7 @@ let model = null, meshes = [], mapped = null, headBox = null, fullBox = null, zo
 function resize() {
   const w = innerWidth, h = innerHeight;
   R.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix();
+  if (fullBox) frame(zoomed);      // a turned phone changes which axis is tighter
 }
 addEventListener("resize", resize); resize();
 
@@ -320,8 +321,22 @@ function headSpan() {
    back is to the camera looks exactly like a mesh that is not working. Drag
    also earns its keep on the shapes themselves: pucker and funnel barely read
    head-on and are obvious from the side. */
+/* How much of the screen the head is allowed to take, as a fraction of the
+   SHORTER side of the viewport. Fitting only the vertical axis, which is what
+   this did at first, is fine on a laptop and wrong on a phone: at 922x1900 the
+   head came out 142% of the screen width, hanging off both sides, while the
+   maths happily reported it fitting. Both axes now, and the tighter one wins. */
+const FRAME = { fill: 0.26, all: 0.80 };
+
 const camTgt = new THREE.Vector3();
 let camDist = 1, yaw = 0, pitch = 0, zoomF = 1;
+
+function fitDist(span, fill) {
+  const vt = Math.tan((cam.fov * Math.PI / 180) / 2);
+  const byHeight = (span * 0.5) / (vt * fill);
+  const byWidth = (span * 0.5) / (vt * Math.max(0.05, cam.aspect) * fill);
+  return Math.max(byHeight, byWidth);
+}
 
 function place() {
   const d = camDist * zoomF;
@@ -351,7 +366,7 @@ function frame(head) {
     fullBox.getSize(s); fullBox.getCenter(c);
     span = Math.max(s.x, s.y); camTgt.copy(c);
   }
-  camDist = (span * 0.5) / Math.tan((cam.fov * Math.PI / 180) / 2) * 1.45;
+  camDist = fitDist(span, head ? FRAME.fill : FRAME.all);
   place();
 }
 
@@ -585,7 +600,13 @@ const DOTS = {
      distinct triangles and quietly buys more deform work. 9000 cost 4.2ms here
      against 7000's 3.1, for a difference nobody can see. */
   want: 7000,
-  size: 0.0040,    // world units, so it scales with the model
+  /* In PIXELS, not world units. Sized in the world with distance attenuation,
+     a dot shrinks as the camera pulls back -- so framing him at character size
+     instead of filling the screen moved the camera four times further out and
+     turned the whole face to dust. A dot is a mark on the screen; its job is to
+     be visible, and that is a screen measurement. Pull back and you get fewer
+     dots on the face, not smaller ones, which is what should happen. */
+  px: 2.6,
   ease: 0.26,      // how hard a dot settles onto its spot. 1 = welded, 0 = ignores it
   drift: 0.0013,   // how far it floats off the skin, so the surface breathes
   lag: 0.55,       // spread in settling speed, so they do not move as one sheet
@@ -747,7 +768,7 @@ function dotsBuild() {
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
   g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
   dots = new THREE.Points(g, new THREE.PointsMaterial({
-    map: dotSprite(), size: DOTS.size, sizeAttenuation: true,
+    map: dotSprite(), size: DOTS.px, sizeAttenuation: false,
     transparent: true, depthWrite: false, depthTest: true, vertexColors: true,
     blending: THREE.AdditiveBlending, opacity: 1.0 }));
   dots.frustumCulled = false;
