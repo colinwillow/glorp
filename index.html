@@ -126,17 +126,6 @@
     border-radius:14px;padding:11px 12px;backdrop-filter:blur(9px);
     font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9FB98B}
   #mus.on{display:block}
-  #songCard{position:fixed;left:50%;top:calc(17% + env(safe-area-inset-top));
-    transform:translateX(-50%) translateY(6px) scale(.97);opacity:0;pointer-events:none;
-    z-index:8;max-width:min(88vw,420px);background:rgba(11,11,11,.92);
-    border:1px solid #3B4A31;border-radius:14px;padding:13px 18px;text-align:center;
-    backdrop-filter:blur(9px);box-shadow:0 0 22px rgba(139,47,214,.25);
-    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-    transition:opacity .35s ease,transform .35s ease}
-  #songCard.on{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}
-  #songCard .t{color:#D8EFC2;font-size:15px;letter-spacing:.02em;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #songCard .a{color:#9C6BD6;font-size:11px;margin-top:3px}
   #mus .now{color:#D8EFC2;font-size:13px;margin-bottom:2px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #mus .sub{color:#6E8560;margin-bottom:9px}
@@ -224,7 +213,6 @@
 <div id="fig"></div>
 <div id="panel"></div>
 <div id="mus"></div>
-<div id="songCard"><div class="t"></div><div class="a"></div></div>
 <div id="visWrap"><div id="vis"></div><div id="visLab">rest</div></div>
 
 <!-- Vendored, not from a CDN, and resolved by the browser's own import map
@@ -1874,25 +1862,35 @@ function musicLocalList() {
    that has now cost us three rounds in three other guises. */
 const musEl = () => document.getElementById("mus");
 let musOn = 0;
-/* The song card: the answer to "what is this song", as a thing you can read.
-   The caption already says it out of the corner of its mouth, but a caption is
-   subtitles -- gone with the next thing anybody says. This hangs centre stage
-   for a few seconds in the player's own palette and gets out of the way. */
-let songCardAt = 0;
+/* The song title, drawn INTO the field instead of over it.
+
+   It was a rounded rectangle with a border and a backdrop blur -- which is a
+   perfectly good panel and looked like a website had been pasted onto a living
+   thing. Everything else on this canvas is made of the same dots under the same
+   motion blur, and a bordered card shares none of that.
+
+   So it is drawn on the canvas now, in the same typeface as the menu labels,
+   and it gets the field's own behaviour for free: the low-alpha clear that
+   makes the particles liquid also smears the letters, so they bloom while they
+   hold and DISSOLVE rather than switch off. The only background is the void
+   deepening -- a soft radial with no edge anywhere -- so the words read as
+   coming up out of the middle of it, which is what was asked for.
+
+   Letters arrive one at a time, each rising a little into place. Not a
+   flourish: text that simply appears is the one thing on this screen that
+   would still look pasted on. */
+const song = { at: 0, title: "", sub: "" };
+const SONG_LIFE = 5.4;
+
 function songCard() {
-  const e = document.getElementById("songCard");
-  if (!e) return;
   const t = (music.list || [])[music.i];
-  e.querySelector(".t").textContent = music.playing
-    ? "\u266a  " + (music.title || "?") : "nothing playing";
-  e.querySelector(".a").textContent = music.playing
-    ? ((music.artist ? music.artist + "  \u00b7  " : "")
+  song.title = music.playing ? (music.title || "?") : "nothing playing";
+  song.sub = music.playing
+    ? ((music.artist ? music.artist + "   " : "")
        + (t && t.from === "audius" ? "audius" : "local")
-       + (music.bpm ? "  \u00b7  " + Math.round(music.bpm) + " bpm" : ""))
+       + (music.bpm ? "   " + Math.round(music.bpm) + " bpm" : ""))
     : "say \u201cplay\u201d and a name";
-  e.className = "on";
-  clearTimeout(songCardAt);
-  songCardAt = setTimeout(() => { e.className = ""; }, 5200);
+  song.at = performance.now();
 }
 
 function musicPanel(on) {
@@ -10725,6 +10723,69 @@ function loop() {
   drawPages();
   drawGallery(dt);
   drawMini(now, k);
+
+  /* The song title. See songCard() for why this is on the canvas. */
+  if (song.at) {
+    const e5 = (now - song.at) / 1000;
+    if (e5 > SONG_LIFE) song.at = 0;
+    else {
+      const out5 = Math.min(1, Math.max(0, (SONG_LIFE - e5) / 1.0));
+      // clear of his face when he is wearing one, dead centre otherwise
+      const ty = rig.on && rig.portrait ? H * 0.19 : cy;
+      ctx.save();
+      ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      /* The void deepens. A radial with no edge is not a panel -- there is
+         nothing to see except the middle getting darker, which is what lets
+         the words read over a bright core without anything being drawn ON. */
+      const R5 = Math.min(W, H) * 0.30;
+      const gr = ctx.createRadialGradient(cx, ty, 0, cx, ty, R5);
+      gr.addColorStop(0, "rgba(6,8,5," + (0.62 * out5).toFixed(3) + ")");
+      gr.addColorStop(0.5, "rgba(6,8,5," + (0.34 * out5).toFixed(3) + ")");
+      gr.addColorStop(1, "rgba(6,8,5,0)");
+      ctx.fillStyle = gr;
+      ctx.beginPath(); ctx.arc(cx, ty, R5, 0, TAU); ctx.fill();
+
+      const maxW = W * 0.84;
+      const line = (txt, size, colour, glow, yy, delay, alpha) => {
+        const face = "px ui-monospace, SFMono-Regular, Menlo, monospace";
+        const ch = Array.from(txt);
+        /* Measured, then shrunk to fit. A song title is somebody else's string
+           and can be any length; letter-spaced type runs off a phone fast, and
+           text sliding past the edge of the screen is the one failure that
+           looks like a bug rather than a style. */
+        let sp, wd, tw;
+        for (let pass = 0; pass < 6; pass++) {
+          ctx.font = "500 " + Math.round(size) + face;
+          sp = size * 0.24;
+          wd = ch.map((c) => ctx.measureText(c).width);
+          tw = -sp;
+          for (const w of wd) tw += w + sp;
+          if (tw <= maxW || size <= 9) break;
+          size = Math.max(9, size * (maxW / tw) * 0.99);
+        }
+        let x5 = cx - tw / 2;
+        for (let ci = 0; ci < ch.length; ci++) {
+          const t5 = Math.max(0, Math.min(1, (e5 - delay - ci * 0.028) / 0.44));
+          if (t5 > 0) {
+            const ez = 1 - Math.pow(1 - t5, 3);
+            ctx.globalAlpha = ez * out5 * alpha;
+            ctx.shadowColor = glow;
+            ctx.shadowBlur = 15 * k * ez;
+            ctx.fillStyle = colour;
+            ctx.fillText(ch[ci], x5, yy + (1 - ez) * size * 0.55);
+          }
+          x5 += wd[ci] + sp;
+        }
+      };
+      const ts = Math.max(16, Math.min(31, W * 0.049));
+      line("\u266a  " + song.title, ts, "#E4F8CB", "rgba(150,240,120,0.85)",
+           ty - ts * 0.30, 0, 0.52);
+      line(song.sub, ts * 0.52, "#B98BE8", "rgba(139,47,214,0.8)",
+           ty + ts * 0.78, 0.18, 0.46);
+      ctx.restore();
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    }
+  }
 
   /* The photograph, in the rectangle its own drawing occupied. Drawn after the
      particles so the field reads as being behind it, and never scaled past the
