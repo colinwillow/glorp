@@ -7222,12 +7222,140 @@ async function bakeRigTexture(R) {
 
    Pitch first, then yaw, both about the formation axes: x right, y DOWN, z
    away. */
-const POSE = { pitch: -0.32, yaw: Math.PI };
+const POSE = { pitch: -0.32, yaw: Math.PI };   // fallback only; see portraitBasis
 function poseXform(x, y, z, o, at) {
   const cp = Math.cos(POSE.pitch), sp = Math.sin(POSE.pitch);
   const y1 = y * cp - z * sp, z1 = y * sp + z * cp;
   const cy = Math.cos(POSE.yaw), sy = Math.sin(POSE.yaw);
   o[at] = x * cy + z1 * sy; o[at + 1] = y1; o[at + 2] = -x * sy + z1 * cy;
+}
+
+/* Where a head is pointing, solved from the skeleton instead of guessed.
+
+   Every previous attempt picked a rotation by looking at a render and deciding
+   it seemed better. That cannot work: a head made of dots seen from above and a
+   head seen head-on both look like a lot of dots, and "more rendered detail"
+   goes UP when you tilt to show the crown. Four attempts, four wrong answers,
+   each one defended with a screenshot.
+
+   The rig already knows. Hips to head is up. The jaw, teeth and tongue hang in
+   front of the middle of the skull, so their average points out through the
+   face. Two measured directions are enough to define the rotation completely,
+   so there is nothing left to choose -- and the result is CHECKED afterwards:
+   the chin has to end up below the eyes on screen and the teeth in front of the
+   skull, or it says so out loud rather than shipping another wrong guess. */
+function portraitBasis(R) {
+  const T = window.THREE, sk = gl.mesh && gl.mesh.skeleton;
+  if (!T || !sk) return null;
+  const B = (re, skip) => sk.bones.find((b) => re.test(b.name) && !(skip && skip.test(b.name)));
+  const head = B(/head/i, /(end|tip|top)$/i);
+  const hip = B(/hip|pelvis|spine|root/i) || sk.bones[0];
+  if (!head || !hip) return null;
+  const f = R.fit;
+  // the same conversion updateFigure does, so these land where the dots land
+  const toForm = (b) => {
+    const v = b.getWorldPosition(new T.Vector3()).applyMatrix4(rig.toGroup);
+    return new T.Vector3((v.x - f.c[0]) * f.k, -(v.y - f.c[1]) * f.k, -(v.z - f.c[2]) * f.k);
+  };
+  const hp = toForm(head);
+  const up = hp.clone().sub(toForm(hip));
+  if (up.lengthSq() < 1e-12) return null;
+  up.normalize();
+  const fwd = new T.Vector3(); let n = 0;
+  head.traverse((o) => {
+    if (o.isBone && /jaw|teeth|tongue|nose|lip/i.test(o.name)) { fwd.add(toForm(o).sub(hp)); n++; }
+  });
+  if (!n || fwd.lengthSq() < 1e-12) return null;
+  fwd.sub(up.clone().multiplyScalar(fwd.dot(up)));      // square it up against up
+  if (fwd.lengthSq() < 1e-12) return null;
+  fwd.normalize();
+  const side = new T.Vector3().crossVectors(fwd, up);
+
+  /* Screen space: x right, y DOWN, z away. So up must land on -y and the face
+     must land on -z, toward the camera. Both bases are orthonormal, so the
+     rotation is target times source-transposed, written out as nine numbers. */
+  const tU = [0, -1, 0], tF = [0, 0, -1], tS = [-1, 0, 0];
+  const e = [up, side, fwd], t = [tU, tS, tF];
+  const M = new Float64Array(9);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    let v = 0;
+    for (let k = 0; k < 3; k++) v += t[k][r] * (c === 0 ? e[k].x : c === 1 ? e[k].y : e[k].z);
+    M[r * 3 + c] = v;
+  }
+  const ap = (v) => [M[0]*v.x + M[1]*v.y + M[2]*v.z,
+                     M[3]*v.x + M[4]*v.y + M[5]*v.z,
+                     M[6]*v.x + M[7]*v.y + M[8]*v.z];
+  /* Checked against landmarks that actually mean something. The first version
+     compared the jaw bone with the head bone and reported the head upside down:
+     on this rig the jaw sits HIGHER than the head bone's origin, because that
+     origin is the base of the skull and the jaw hinges above it. A test that
+     fails on a correct answer is worse than no test.
+
+     Hips against head is unambiguous -- one is at the feet -- and teeth against
+     the skull decides facing. */
+  const teeth = B(/teeth/i);
+  const h2 = ap(hp), p2 = ap(toForm(hip));
+  const t2 = teeth ? ap(toForm(teeth)) : null;
+  const okUp = p2[1] > h2[1];
+  const okFwd = !t2 || t2[2] < h2[2];
+  /* Reasoning about this failed five times, so it is solved by search instead.
+
+     The head's own measurements give the answer to check against: projected on
+     its own axes this one is 0.245 wide, 0.285 tall and 0.252 deep, so seen
+     head-on it must render 1.16 tall per wide, and seen down its long axis
+     1.03. Those are far enough apart to tell one from the other, which is more
+     than four screenshots of grey dots ever managed.
+
+     So: try all 24 axis-aligned rotations, keep the ones that put the head
+     above the hips and the teeth toward the camera, and among those take the
+     one whose on-screen aspect is closest to what the mesh says it should be.
+     A wrong sign anywhere in the basis above cannot survive that, which is the
+     point -- I do not have to have got it right, only checkable. */
+  const dec = R.dec, W = R.wp;
+  const pts = [];
+  for (let v = 0; v < dec.n; v++)
+    pts.push([(W[v*3] - f.c[0]) * f.k, -(W[v*3+1] - f.c[1]) * f.k, -(W[v*3+2] - f.c[2]) * f.k]);
+
+  /* Scored by the aspect alone, with no target to compare against.
+
+     The first version computed what head-on "should" look like from the same
+     up/side axes the rotation came from -- so when those were wrong it happily
+     confirmed itself: "1.03 on screen, mesh says 1.03". A check derived from
+     the thing it is checking is not a check.
+
+     But a head does not need one. Of every way round you can hold it, HEAD-ON
+     is the tallest per wide: this one is 0.285 tall against 0.245 wide and
+     0.252 deep, so face-on gives 1.16, profile 1.13, and down the long axis
+     1.03. Take the tallest and the sign tests throw out the profiles. Nothing
+     to get wrong. */
+  const hpF = [hp.x, hp.y, hp.z];
+  const pipF = (() => { const q = toForm(hip); return [q.x, q.y, q.z]; })();
+  const teF = teeth ? (() => { const q = toForm(teeth); return [q.x, q.y, q.z]; })() : null;
+
+  const AX = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  const cross = (a2,b2) => [a2[1]*b2[2]-a2[2]*b2[1], a2[2]*b2[0]-a2[0]*b2[2], a2[0]*b2[1]-a2[1]*b2[0]];
+  const app = (M2, p) => [M2[0]*p[0]+M2[1]*p[1]+M2[2]*p[2],
+                          M2[3]*p[0]+M2[4]*p[1]+M2[5]*p[2],
+                          M2[6]*p[0]+M2[7]*p[1]+M2[8]*p[2]];
+  let best = null;
+  for (const r0 of AX) for (const r1 of AX) {
+    if (Math.abs(r0[0]*r1[0]+r0[1]*r1[1]+r0[2]*r1[2]) > 0.5) continue;
+    const r2 = cross(r0, r1);
+    const M2 = [r0[0],r0[1],r0[2], r1[0],r1[1],r1[2], r2[0],r2[1],r2[2]];
+    const h2b = app(M2, hpF), p2b = app(M2, pipF);
+    if (!(p2b[1] > h2b[1])) continue;                        // head above the hips
+    if (teF && !(app(M2, teF)[2] < h2b[2])) continue;        // teeth toward you
+    let x0=1e30,x1=-1e30,y0=1e30,y1=-1e30;
+    for (const p of pts) { const q = app(M2, p);
+      if(q[0]<x0)x0=q[0]; if(q[0]>x1)x1=q[0]; if(q[1]<y0)y0=q[1]; if(q[1]>y1)y1=q[1]; }
+    const asp = (y1-y0) / ((x1-x0) || 1);
+    if (!best || asp > best.asp) best = { M: M2, asp };
+  }
+  if (!best) { console.log("orb portrait: no orientation passed the checks"); return M; }
+  console.log("orb portrait: " + best.asp.toFixed(2)
+    + " tall per wide on screen, the tallest of 24 orientations that also put"
+    + " the head above the hips and the teeth toward you");
+  return Float64Array.from(best.M);
 }
 
 function rigPoint(R, v, o) {
@@ -7262,6 +7390,7 @@ async function showFigure(src) {
   } catch (e) { console.log("orb three:", e.message); gl.ready = 0; }
 
   if (gl.ready) { skinGL(R); skinPoints(R); } else { rigPose(R, 0); rigSkin(R, R.wp, R.wn); }
+  rig.pose = rig.portrait ? portraitBasis(R) : null;
   const pts = new Array(R.dec.n);
   const o = [0, 0, 0, 0, 0, 0];
   for (let v = 0; v < R.dec.n; v++) { rigPoint(R, v, o); pts[v] = o.slice(); }
@@ -7312,7 +7441,7 @@ function figStop() {
 function figClear() {
   mini.set = 0;
   worldReset();
-  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0; rig.portrait = 0;
+  rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0; rig.portrait = 0; rig.pose = null;
   gl.ready = 0;
   figChooser(0);
 }
@@ -7449,24 +7578,37 @@ function updateFigure(dt, now) {
      room and walk him about in it, which is exactly right for a body and is
      what was turning a face away from you. POSE replaces them: two numbers, one
      place, checkable in a reload. */
-  const port = rig.portrait;
-  const wy = port ? POSE.yaw : world.yaw;
-  const cw = Math.cos(wy), sw = Math.sin(wy);
-  const wx = port ? 0 : world.x, wyy = port ? 0 : world.y, wz = port ? 0 : world.z;
-  const cp = Math.cos(port ? POSE.pitch : 0), sp = Math.sin(port ? POSE.pitch : 0);
+  /* THIS is the loop that decides which way he faces, not rigPoint -- that one
+     builds the point list once and this overwrites it every frame. Patching the
+     wrong one is why two opposite rotations rendered pixel for pixel the same.
+
+     A portrait stands nowhere: world.yaw and world.x/y/z place a figure in the
+     room and walk him about it, which is right for a body and was turning a
+     face away from you. It uses the basis solved from its own skeleton instead
+     of the room's camera or a hand-picked angle. */
+  const port = rig.portrait, M = port ? rig.pose : null;
+  const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
   for (let i = 0; i < n; i++) {
     const v = ord[i] * 3;
     const x = P[v] - f.c[0], y = P[v + 1] - f.c[1], z = P[v + 2] - f.c[2];
-    const rx = x * cw + z * sw, rz = -x * sw + z * cw;
-    const fx = (rx + wx) * f.k;
-    let fy = -(y + wyy) * f.k, fz = -(rz + wz) * f.k;
-    if (port) { const y1 = fy * cp - fz * sp; fz = fy * sp + fz * cp; fy = y1; }
+    let fx, fy, fz, gx, gy, gz;
+    if (M) {
+      const ax = x * f.k, ay = -y * f.k, az = -z * f.k;
+      fx = M[0]*ax + M[1]*ay + M[2]*az;
+      fy = M[3]*ax + M[4]*ay + M[5]*az;
+      fz = M[6]*ax + M[7]*ay + M[8]*az;
+      const bx = N[v], by = -N[v + 1], bz = -N[v + 2];
+      gx = M[0]*bx + M[1]*by + M[2]*bz;
+      gy = M[3]*bx + M[4]*by + M[5]*bz;
+      gz = M[6]*bx + M[7]*by + M[8]*bz;
+    } else {
+      const rx = x * cw + z * sw, rz = -x * sw + z * cw;
+      fx = (rx + world.x) * f.k; fy = -(y + world.y) * f.k; fz = -(rz + world.z) * f.k;
+      const nx = N[v], nz = N[v + 2];
+      gx = nx * cw + nz * sw; gy = -N[v + 1]; gz = -(-nx * sw + nz * cw);
+    }
     formX[i] = fx; formY[i] = fy; formZ[i] = fz;
-    const nx = N[v], nz = N[v + 2];
-    fnx[i] = nx * cw + nz * sw;
-    fny[i] = -N[v + 1];
-    fnz[i] = -(-nx * sw + nz * cw);
-    if (port) { const a = fny[i] * cp - fnz[i] * sp; fnz[i] = fny[i] * sp + fnz[i] * cp; fny[i] = a; }
+    fnx[i] = gx; fny[i] = gy; fnz[i] = gz;
   }
   /* The split. The last arc of the ring does not trace him: it lifts off and
      becomes the orb, hovering over the source machine. GPU only -- the 2D
