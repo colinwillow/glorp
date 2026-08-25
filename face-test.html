@@ -579,12 +579,32 @@ function buildSliders(r) {
    lookup; a point on a triangle would have to interpolate all of that every
    frame for no visible gain at this density. */
 const DOTS = {
-  want: 4200,      // how many, before the head decides how many it actually has
-  size: 0.0042,    // world units, so it scales with the model
-  ease: 0.30,      // how hard a dot chases its vertex. 1 = welded, 0 = ignores it
-  drift: 0.0011,   // how far it wanders off the skin, so the surface breathes
+  /* Particles are cheap; the vertices under them are not. The expensive part
+     is pushing a vertex through its morphs and bones, and that happens once per
+     vertex any particle touches -- so raising this spreads dots over MORE
+     distinct triangles and quietly buys more deform work. 9000 cost 4.2ms here
+     against 7000's 3.1, for a difference nobody can see. */
+  want: 7000,
+  size: 0.0040,    // world units, so it scales with the model
+  ease: 0.26,      // how hard a dot settles onto its spot. 1 = welded, 0 = ignores it
+  drift: 0.0013,   // how far it floats off the skin, so the surface breathes
+  lag: 0.55,       // spread in settling speed, so they do not move as one sheet
+  /* Where the detail goes. 1 spreads dots by area, perfectly even, and a face
+     lit that way is a uniform cloud with no face in it. 0 gives every triangle
+     the same number regardless of size -- which is what sitting on the vertices
+     did, and why that version read: a modeller puts triangles where the detail
+     is, so eyes and lips came out dense and cheeks sparse. That density WAS the
+     drawing. Between the two you get even coverage that still thickens where
+     the face is interesting. */
+  detail: 0.45,
 };
-let dots = null, dotSrc = [], dotPhase = null;
+let dots = null, dotSrc = [], dotPhase = null, dotLag = null;
+/* Grazing, and from the side. A face is a shallow relief: light it from near
+   the camera and every dot comes back the same brightness, which is how the
+   first lit version still looked like a blob. Rake it across from the left and
+   the nose ridge, the lip line and the brow all cast, which is what draws the
+   face. */
+const LX = -0.79, LY = 0.33, LZ = 0.52;
 const _dv = new THREE.Vector3();
 
 function dotSprite() {
@@ -610,68 +630,131 @@ function faceVerts(mesh) {
         && !/neck/i.test(b.name)) want.add(i);
   });
   const si = mesh.geometry.attributes.skinIndex, sw = mesh.geometry.attributes.skinWeight;
-  if (!si || !sw) return [];
-  const out = [], C = ["getX", "getY", "getZ", "getW"];
+  if (!si || !sw) return null;
+  const out = new Set(), C = ["getX", "getY", "getZ", "getW"];
   for (let i = 0; i < si.count; i++) {
     let w = 0;
     for (const c of C) if (want.has(si[c](i))) w += sw[c](i);
-    if (w > 0.6) out.push(i);
+    if (w > 0.6) out.add(i);
   }
   return out;
 }
+
+// a fixed sequence, so the same face comes back the same way every reload
+let _seed = 0x2f6e2b1;
+const rnd = () => (_seed = (_seed * 1664525 + 1013904223) >>> 0) / 4294967296;
 
 function dotsBuild() {
   if (dots) { root.remove(dots); dots.geometry.dispose(); dots = null; }
   dotSrc = [];
   if (!model) return "no model";
+  _seed = 0x2f6e2b1;
 
-  /* Every skinned mesh with head vertices, not just the biggest -- the teeth
-     and tongue belong in this too, and they are exactly what you want to see
-     when the jaw drops.
+  /* Scattered across the SURFACE, not sat on the vertices.
 
-     But they cannot be shared out by vertex count. The teeth are 6362 vertices
-     ALL weighted to teeth bones, so counting alone hands them more particles
-     than the entire face and builds a floating set of dentures. Share by how
-     much room each one takes up instead: the head is enormous next to a row of
-     teeth, and that is the ratio that looks right. */
+     Vertices are where the modeller needed detail, not where you want light --
+     packed around the eyes and lips, stretched thin over a cheek. Sampling the
+     triangles instead, weighted by area, spreads them evenly and unhooks the
+     particle count from the mesh entirely: 9000 dots on a 14k mesh, or on a 2k
+     one, and it looks the same.
+
+     It is also barely more expensive, which is not obvious. The costly part is
+     pushing a vertex through sixty morph targets and four bones -- so that
+     happens ONCE per vertex per frame, into a scratch buffer, and each particle
+     is then three multiply-adds against its triangle's three corners. Deform
+     count is set by the mesh; particle count is nearly free on top. */
   const found = [];
-  const bb = new THREE.Box3(), v = new THREE.Vector3(), sz = new THREE.Vector3();
+  const v = new THREE.Vector3();
   model.traverse((o) => {
     if (!o.isSkinnedMesh) return;
-    const idx = faceVerts(o);
-    if (!idx.length) return;
-    const pos = o.geometry.attributes.position;
-    bb.makeEmpty();
-    for (let i = 0; i < idx.length; i += Math.max(1, idx.length >> 7))
-      bb.expandByPoint(v.fromBufferAttribute(pos, idx[i]));
-    bb.getSize(sz);
-    found.push({ mesh: o, idx, room: Math.max(sz.x, sz.y, sz.z) });
+    const face = faceVerts(o);
+    if (!face || !face.size) return;
+    const geo = o.geometry, pos = geo.attributes.position, ix = geo.index;
+    const nTri = (ix ? ix.count : pos.count) / 3;
+    const tri = [], area = [];
+    const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+    for (let t = 0; t < nTri; t++) {
+      const a = ix ? ix.getX(t * 3) : t * 3;
+      const b = ix ? ix.getX(t * 3 + 1) : t * 3 + 1;
+      const c = ix ? ix.getX(t * 3 + 2) : t * 3 + 2;
+      if (!face.has(a) || !face.has(b) || !face.has(c)) continue;
+      A.fromBufferAttribute(pos, a); B.fromBufferAttribute(pos, b); C.fromBufferAttribute(pos, c);
+      B.sub(A); C.sub(A);
+      tri.push(a, b, c);
+      area.push(Math.pow(B.cross(C).length() * 0.5, DOTS.detail));
+    }
+    if (!tri.length) return;
+    // share BETWEEN meshes still goes by true area, whatever the detail bias is
+    let real = 0;
+    for (let t = 0; t < tri.length; t += 3) {
+      A.fromBufferAttribute(pos, tri[t]); B.fromBufferAttribute(pos, tri[t + 1]);
+      C.fromBufferAttribute(pos, tri[t + 2]);
+      real += B.sub(A).cross(C.sub(A)).length() * 0.5;
+    }
+    found.push({ mesh: o, tri, area, room: real });
   });
   if (!found.length) return "no skinned head found -- dots need a rig";
 
+  /* Shared out by SURFACE AREA, which is the only measure that means anything
+     here -- particles cover a surface, so the amount of surface is the amount
+     you need. Counting vertices hands the teeth more dots than the entire face
+     (6362 of them, all weighted to teeth bones) and builds a set of floating
+     dentures. Bounding boxes are not much better: they made the tongue, which
+     is mostly a hidden nub, worth a sixth of the whole head. Area is already
+     sitting there from the triangle weighting. */
   const total = found.reduce((a, f) => a + f.room, 0);
   let n = 0;
   for (const f of found) {
-    const share = Math.max(24, Math.round(DOTS.want * f.room / total));
-    // thin evenly rather than taking the first N, which is one patch of scalp
-    const step = Math.max(1, f.idx.length / share), take = [];
-    for (let i = 0; i < f.idx.length; i += step) take.push(f.idx[Math.floor(i)]);
-    dotSrc.push({ mesh: f.mesh, idx: take, at: n });
-    n += take.length;
+    const share = Math.max(40, Math.round(DOTS.want * f.room / total));
+    const nTri = f.area.length;
+    const cum = new Float64Array(nTri);
+    let run = 0;
+    for (let i = 0; i < nTri; i++) { run += f.area[i]; cum[i] = run; }
+
+    const slot = new Map(), vi = [];
+    const local = (g) => {
+      let k = slot.get(g);
+      if (k === undefined) { k = vi.length; slot.set(g, k); vi.push(g); }
+      return k;
+    };
+    const tri = new Int32Array(share * 3), bary = new Float32Array(share * 3);
+    for (let p = 0; p < share; p++) {
+      // stratified, so they cover the face rather than clumping by luck
+      const target = run * (p + rnd()) / share;
+      let lo = 0, hi = nTri - 1;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < target) lo = m + 1; else hi = m; }
+      // uniform inside the triangle: the sqrt is what stops them piling into a corner
+      let u = rnd(), w = rnd();
+      const su = Math.sqrt(u);
+      const b0 = 1 - su, b1 = su * (1 - w), b2 = su * w;
+      tri[p * 3]     = local(f.tri[lo * 3]);
+      tri[p * 3 + 1] = local(f.tri[lo * 3 + 1]);
+      tri[p * 3 + 2] = local(f.tri[lo * 3 + 2]);
+      bary[p * 3] = b0; bary[p * 3 + 1] = b1; bary[p * 3 + 2] = b2;
+    }
+    dotSrc.push({ mesh: f.mesh, vi: Int32Array.from(vi),
+                  dv: new Float32Array(vi.length * 3), tri, bary, at: n, count: share });
+    n += share;
   }
 
   dotPhase = new Float32Array(n);
-  for (let i = 0; i < n; i++) dotPhase[i] = (i * 2.399963) % 6.283185;   // golden angle
+  dotLag = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    dotPhase[i] = (i * 2.399963) % 6.283185;            // golden angle
+    dotLag[i] = 1 - DOTS.lag * rnd();                   // some settle later than others
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
   dots = new THREE.Points(g, new THREE.PointsMaterial({
     map: dotSprite(), size: DOTS.size, sizeAttenuation: true,
-    transparent: true, depthWrite: false, depthTest: true,
-    blending: THREE.AdditiveBlending, color: 0xbfffd6, opacity: 0.95 }));
+    transparent: true, depthWrite: false, depthTest: true, vertexColors: true,
+    blending: THREE.AdditiveBlending, opacity: 1.0 }));
   dots.frustumCulled = false;
   root.add(dots);
   dotsFrame(1e6);         // one huge step so they start on the face, not at the origin
-  return n + " dots: " + dotSrc.map((d) => d.idx.length + " on " + d.mesh.name).join(", ");
+  return n + " dots: " + dotSrc.map((d) => d.count + " over " + d.vi.length
+    + " verts of " + d.mesh.name).join(", ");
 }
 
 /* Timed, and reported once, because the honest answer to "will this run on a
@@ -683,8 +766,10 @@ function dotsFrame(dt) {
   if (!dots || !dotSrc.length) return;
   const t0 = performance.now();
   const arr = dots.geometry.attributes.position.array;
-  const k = Math.min(1, 1 - Math.pow(1 - DOTS.ease, dt / 16.67));
+  const cols = dots.geometry.attributes.color.array;
+  const kBase = Math.min(1, 1 - Math.pow(1 - DOTS.ease, dt / 16.67));
   const t = performance.now() * 0.001, d = DOTS.drift;
+
   for (const src of dotSrc) {
     const mesh = src.mesh, geo = mesh.geometry, pos = geo.attributes.position;
     const mt = geo.morphAttributes.position || [];
@@ -693,9 +778,11 @@ function dotsFrame(dt) {
     // only the handful of shapes actually on right now, not all sixty
     const act = [];
     for (let i = 0; i < infl.length; i++) if (infl[i] > 0.002 && mt[i]) act.push(mt[i], infl[i]);
-    const mw = mesh.matrixWorld, idx = src.idx;
-    for (let n = 0; n < idx.length; n++) {
-      const i = idx[n];
+    const mw = mesh.matrixWorld, vi = src.vi, dv = src.dv;
+
+    // once per vertex: morph, skin, into world
+    for (let k = 0; k < vi.length; k++) {
+      const i = vi[k];
       _dv.fromBufferAttribute(pos, i);
       for (let a = 0; a < act.length; a += 2) {
         const at = act[a], w = act[a + 1];
@@ -708,13 +795,55 @@ function dotsFrame(dt) {
       }
       mesh.applyBoneTransform(i, _dv);
       _dv.applyMatrix4(mw);
-      const g = src.at + n, p = dotPhase[g], o = g * 3;
-      arr[o]     += (_dv.x + Math.sin(t * 1.7 + p) * d - arr[o]) * k;
-      arr[o + 1] += (_dv.y + Math.sin(t * 2.3 + p * 1.7) * d - arr[o + 1]) * k;
-      arr[o + 2] += (_dv.z + Math.sin(t * 1.3 + p * 2.9) * d - arr[o + 2]) * k;
+      const o = k * 3;
+      dv[o] = _dv.x; dv[o + 1] = _dv.y; dv[o + 2] = _dv.z;
+    }
+
+    // once per particle: three multiply-adds against its triangle, then light it
+    const tri = src.tri, bary = src.bary;
+    for (let p = 0; p < src.count; p++) {
+      const q = p * 3;
+      const a = tri[q] * 3, b = tri[q + 1] * 3, c = tri[q + 2] * 3;
+      const w0 = bary[q], w1 = bary[q + 1], w2 = bary[q + 2];
+      const g = src.at + p, ph = dotPhase[g], o = g * 3;
+      const k = Math.min(1, kBase * dotLag[g]);
+      const tx = dv[a] * w0 + dv[b] * w1 + dv[c] * w2 + Math.sin(t * 1.7 + ph) * d;
+      const ty = dv[a + 1] * w0 + dv[b + 1] * w1 + dv[c + 1] * w2 + Math.sin(t * 2.3 + ph * 1.7) * d;
+      const tz = dv[a + 2] * w0 + dv[b + 2] * w1 + dv[c + 2] * w2 + Math.sin(t * 1.3 + ph * 2.9) * d;
+      arr[o]     += (tx - arr[o]) * k;
+      arr[o + 1] += (ty - arr[o + 1]) * k;
+      arr[o + 2] += (tz - arr[o + 2]) * k;
+
+      /* Every dot the same brightness gives you an evenly lit blob with no
+         face in it. The old version read only because vertices clump at the
+         eyes and lips -- that was the mesh's topology doing the drawing, not
+         us. Spread them evenly and the features vanish.
+
+         So light them. The triangle's three deformed corners give a normal for
+         free, and a lambert term against the key plus a rim term brings the
+         nose, the lips and the sockets straight back -- from shape this time,
+         which is what was wanted. */
+      const e1x = dv[b] - dv[a], e1y = dv[b + 1] - dv[a + 1], e1z = dv[b + 2] - dv[a + 2];
+      const e2x = dv[c] - dv[a], e2y = dv[c + 1] - dv[a + 1], e2z = dv[c + 2] - dv[a + 2];
+      let nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      nx /= nl; ny /= nl; nz /= nl;
+      const lam = nx * LX + ny * LY + nz * LZ;
+      const face = Math.abs(nz);                      // 1 head-on, 0 at the silhouette
+      /* Measured before tuned: the first lit version spanned 0.05..1.44 with a
+         mean of 0.42, so the normals were fine all along -- most of the face
+         was simply too dim to survive additive blending on black. Lift the
+         floor so an unlit dot still reads as skin, and keep the gain high
+         enough that a raked highlight still separates from it. */
+      const lit = Math.max(0, lam);
+      const b0 = 0.26 + 1.15 * Math.pow(lit, 1.3) + 0.30 * (1 - face) * (1 - face);
+      cols[o]     = b0 * 0.70;
+      cols[o + 1] = b0 * 1.00;
+      cols[o + 2] = b0 * 0.80;
     }
   }
   dots.geometry.attributes.position.needsUpdate = true;
+  dots.geometry.attributes.color.needsUpdate = true;
   dotMs += performance.now() - t0;
   if (++dotN === 90) {
     line("dots: " + (dotMs / dotN).toFixed(2) + " ms a frame to move "
@@ -729,10 +858,10 @@ function dotsFrame(dt) {
    Hiding the mesh entirely and drawing additive points was wrong in a specific
    way: with nothing to occlude them, the teeth glowed straight through closed
    lips as a permanent grin, and the back of the skull showed through the face.
-   So the mesh stays, drawing nothing but depth. You see only the particles that
-   are actually facing you, the teeth appear when the jaw opens and not before,
-   and it costs one invisible pass. polygonOffset pushes that depth a hair back
-   so the dots sitting exactly ON the surface are not eaten by it. */
+   So the mesh stays, drawing nothing but depth. You see only the particles
+   actually facing you, the teeth appear when the jaw opens and not before, and
+   it costs one invisible pass. polygonOffset pushes that depth a hair back so
+   the dots sitting exactly ON the surface are not eaten by it. */
 const DOT_MASK = new THREE.MeshBasicMaterial({
   colorWrite: false, polygonOffset: true,
   polygonOffsetFactor: 4, polygonOffsetUnits: 4 });
