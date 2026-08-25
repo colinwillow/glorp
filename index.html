@@ -10198,6 +10198,64 @@ function loop() {
   const figZ0 = rig.zLo + (rig.zHi - rig.zLo) * 0.42;
   const figZK = figZ0 > rig.zLo ? 1 / (figZ0 - rig.zLo) : 0;
 
+  /* The eyeballs. Flat circles on purpose -- a pale disc and a black pupil
+     read as an eye at any size, where a cluster of dots reads as a glowing
+     patch. They sit at the centre of each eye's own particles, so everything
+     already true of the particles (the pose, the bob, the springs, the wisp)
+     is true of the eyes without any of it being recomputed. The particles
+     underneath stay: they bloom around the disc as a soft green halo.
+
+     Drawn INSIDE the sorted pass now, not after it. As a closing flourish they
+     were painted over the finished head, so no amount of moving them back in z
+     could seat them -- they were measured sitting a fifth of the head's depth
+     behind the brow in front of them and still came out on top, because there
+     was nothing left to draw over them. The loop runs far to near, so calling
+     this the moment it crosses the eye plane puts the lids, the brow and the
+     bridge of the nose over the rim of each disc, and they sit in the sockets
+     instead of on them. */
+  let eyePend = !!(eyeAcc && formT > 0.55);
+  // every eye dot shares one formZ, so the whole disc is at a single depth
+  let eyeZ = 0;
+  if (eyePend && rig.eyeSlot) {
+    const i0 = rig.eyeSlot[0];
+    if (i0 >= 0 && deep) eyeZ = zbuf[i0]; else eyePend = false;
+  } else eyePend = false;
+  const drawEyeballs = () => {
+    eyePend = false;
+    if (!eyeAcc[0].n || !eyeAcc[1].n) return;
+    // the gaze: your finger while it is down, a slow wander when it is not
+    const midX = (eyeAcc[0].x / eyeAcc[0].n + eyeAcc[1].x / eyeAcc[1].n) / 2;
+    const midY = (eyeAcc[0].y / eyeAcc[0].n + eyeAcc[1].y / eyeAcc[1].n) / 2;
+    if (mx > -9000) {
+      const dx = (mx - midX) / 150, dy = (my - midY) / 150;
+      const L2 = Math.hypot(dx, dy) || 1, cl2 = Math.min(1, L2);
+      gaze.tx = (dx / L2) * cl2; gaze.ty = (dy / L2) * cl2;
+      gaze.next = now + 900;      // let go and he holds your last spot a beat
+    } else if (now > gaze.next) {
+      if (Math.random() < 0.3) { gaze.tx = 0; gaze.ty = 0; }
+      else {
+        const a2 = Math.random() * 6.2832, r2 = 0.25 + Math.random() * 0.6;
+        gaze.tx = Math.cos(a2) * r2; gaze.ty = Math.sin(a2) * r2 * 0.7;
+      }
+      gaze.next = now + 1100 + Math.random() * 2600;
+    }
+    gaze.x += (gaze.tx - gaze.x) * 0.09;
+    gaze.y += (gaze.ty - gaze.y) * 0.09;
+    for (const A2 of eyeAcc) {
+      const ex2 = A2.x / A2.n, ey2 = A2.y / A2.n;
+      const R2 = Math.max(5, (A2.hi - A2.lo) * 0.62);
+      ctx.beginPath(); ctx.arc(ex2, ey2, R2, 0, 6.2832);
+      ctx.fillStyle = "rgba(224,242,206,0.96)"; ctx.fill();
+      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(59,74,49,0.9)"; ctx.stroke();
+      const pxx = ex2 + gaze.x * R2 * 0.38, pyy = ey2 + gaze.y * R2 * 0.38;
+      ctx.beginPath(); ctx.arc(pxx, pyy, R2 * 0.44, 0, 6.2832);
+      ctx.fillStyle = "#0d0f0a"; ctx.fill();
+      // the glint, which is most of what makes an eye look wet rather than flat
+      ctx.beginPath(); ctx.arc(pxx - R2 * 0.16, pyy - R2 * 0.16, R2 * 0.13, 0, 6.2832);
+      ctx.fillStyle = "rgba(238,248,228,0.9)"; ctx.fill();
+    }
+  };
+
   for (let q2 = 0; q2 < n; q2++) {
     const i = deep ? ord[q2] : q2;
     /* Hidden rather than skipped, because the edges still need to know where a
@@ -10251,6 +10309,8 @@ function loop() {
     const ry = oy * cpt - rz * spt;
     rz = oy * spt + rz * cpt;
     const persp = FOC / Math.max(FOC * 0.25, FOC + rz);
+    // far to near, so the first particle in front of the eye plane is the cue
+    if (eyePend && rz < eyeZ) drawEyeballs();
 
     /* Size keys off distance from centre, which is the whole charm of the orb
        and precisely wrong for a glyph: outer letters bloom shut while the
@@ -10354,8 +10414,17 @@ function loop() {
        stays right when the field retunes LUT_LO under a loud room. */
     if (rig.portrait && rig.on && held && fT > 0.5 && figZK) {
       const sFar = LUT_LO * 0.45;
-      const s2 = rig.isEye && rig.isEye[i] ? LUT_HI
-               : sFar + figNear * (LUT_HI - sFar);
+      let s2 = rig.isEye && rig.isEye[i] ? LUT_HI
+             : sFar + figNear * (LUT_HI - sFar);
+      /* And then the light, on the green half only. Depth alone puts the nose,
+         the lips and the chin at the same maximum green, because they are all
+         equally near -- so the whole lower face arrived as one flat mass with
+         no nose in it. A lambert off the surface normal is exactly what tells
+         a nostril from a cheek, and the crevices are where it falls off. Only
+         where s2 is positive: on the far half, scaling toward zero would pull
+         magenta back toward grey, which is the wrong direction and would wash
+         out the silhouette. */
+      if (s2 > 0) s2 *= 0.52 + 0.48 * figLit(i);
       li = ((s2 - LUT_LO) / span * (LUT_N - 1)) | 0;
     }
     if (li < 0) li = 0; else if (li >= LUT_N) li = LUT_N - 1;
@@ -10399,8 +10468,8 @@ function loop() {
               /* sqrt on the nearness, so the falloff is gentle across the face
                  and steep only at the silhouette -- linear made everything
                  behind the nose tip dwindle and the head went to dust again. */
-              ? sizeHiPx * cfg.dot * 0.70 * (0.66 + 0.34 * figLit(i))
-                * (0.52 + 0.55 * figNear)
+              ? sizeHiPx * cfg.dot * 0.46 * (0.66 + 0.34 * figLit(i))
+                * (0.66 + 0.30 * figNear)
                 * (rig.portrait && rig.isEye && rig.isEye[i] ? EYE.size : 1)
                 * (1 - fT * 0.15)
             : form3d && held && !isOrbD
@@ -10512,45 +10581,7 @@ function loop() {
     }
   }
 
-  /* The eyeballs. Flat circles on purpose -- a pale disc and a black pupil
-     read as an eye at any size, where a cluster of dots reads as a glowing
-     patch. They sit at the centre of each eye's own particles, so everything
-     already true of the particles (the pose, the bob, the springs, the wisp)
-     is true of the eyes without any of it being recomputed. The particles
-     underneath stay: they bloom around the disc as a soft green halo. */
-  if (eyeAcc && eyeAcc[0].n && eyeAcc[1].n && formT > 0.55) {
-    // the gaze: your finger while it is down, a slow wander when it is not
-    const midX = (eyeAcc[0].x / eyeAcc[0].n + eyeAcc[1].x / eyeAcc[1].n) / 2;
-    const midY = (eyeAcc[0].y / eyeAcc[0].n + eyeAcc[1].y / eyeAcc[1].n) / 2;
-    if (mx > -9000) {
-      const dx = (mx - midX) / 150, dy = (my - midY) / 150;
-      const L2 = Math.hypot(dx, dy) || 1, cl2 = Math.min(1, L2);
-      gaze.tx = (dx / L2) * cl2; gaze.ty = (dy / L2) * cl2;
-      gaze.next = now + 900;      // let go and he holds your last spot a beat
-    } else if (now > gaze.next) {
-      if (Math.random() < 0.3) { gaze.tx = 0; gaze.ty = 0; }
-      else {
-        const a2 = Math.random() * 6.2832, r2 = 0.25 + Math.random() * 0.6;
-        gaze.tx = Math.cos(a2) * r2; gaze.ty = Math.sin(a2) * r2 * 0.7;
-      }
-      gaze.next = now + 1100 + Math.random() * 2600;
-    }
-    gaze.x += (gaze.tx - gaze.x) * 0.09;
-    gaze.y += (gaze.ty - gaze.y) * 0.09;
-    for (const A2 of eyeAcc) {
-      const ex2 = A2.x / A2.n, ey2 = A2.y / A2.n;
-      const R2 = Math.max(5, (A2.hi - A2.lo) * 0.62);
-      ctx.beginPath(); ctx.arc(ex2, ey2, R2, 0, 6.2832);
-      ctx.fillStyle = "rgba(224,242,206,0.96)"; ctx.fill();
-      ctx.lineWidth = 1; ctx.strokeStyle = "rgba(59,74,49,0.9)"; ctx.stroke();
-      const pxx = ex2 + gaze.x * R2 * 0.38, pyy = ey2 + gaze.y * R2 * 0.38;
-      ctx.beginPath(); ctx.arc(pxx, pyy, R2 * 0.44, 0, 6.2832);
-      ctx.fillStyle = "#0d0f0a"; ctx.fill();
-      // the glint, which is most of what makes an eye look wet rather than flat
-      ctx.beginPath(); ctx.arc(pxx - R2 * 0.16, pyy - R2 * 0.16, R2 * 0.13, 0, 6.2832);
-      ctx.fillStyle = "rgba(238,248,228,0.9)"; ctx.fill();
-    }
-  }
+  if (eyePend) drawEyeballs();
 
   /* The mesh, drawn last, between dots already standing in the right places.
      Nothing moves and nothing cross-fades: the lines simply appear between the
