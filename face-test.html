@@ -114,7 +114,13 @@ const VIS_RIG = {
    look like a bug. It looks like a bad mesh. */
 const VIS_RIG_CC = {
   rest: {},
-  MBP:  { V_Explosive: 1.00 },
+  /* V_Explosive alone does not close a mouth. Measured against every shape on
+     the CC mesh it has the smallest displacement of all 46 -- 0.03 against
+     Mouth_Close's 0.30. It is a refinement to a closure, not the closure. So
+     press the lips with the shape that actually moves them. Mouth_Close at 1.0
+     curls the mouth into a smile; 0.6 with a little press is where it reads as
+     lips pushed together. */
+  MBP:  { V_Explosive: 1.00, Mouth_Close: 0.60, Mouth_Press_L: 0.40, Mouth_Press_R: 0.40 },
   FV:   { V_Dental_Lip: 1.00 },
   E:    { V_Wide: 0.88 },
   AI:   { V_Open: 0.90, V_Lip_Open: 0.35 },
@@ -559,6 +565,15 @@ let manual = false;
 const MIN_HOLD = 0.055;
 const REST_GAP = 0.12;   // a space shorter than this is not a pause
 
+/* Lips that have met should stay met for a moment. Not real sticky lips --
+   that is per-vertex, the lips peeling apart from the centre outward, and it
+   needs its own corrective shape. This is the cheap approximation an animator
+   would reach for anyway: hold the closure past what the audio strictly says,
+   and let it borrow the time from the vowel beside it. A closure that flickers
+   for 40ms between two open vowels never reads as a closure at all. */
+const MIN_OF = { MBP: 0.085, FV: 0.075 };
+const floorOf = (sh) => MIN_OF[sh] || MIN_HOLD;
+
 /* A viseme is never worth deleting.
 
    The old rule dropped any shape shorter than MIN_HOLD and handed its time to
@@ -581,18 +596,27 @@ function tighten(seq) {
   }
   for (let i = 0; i < out.length; i++) {
     const e = out[i];
-    if (e.sh === "rest" || e.t1 - e.t0 >= MIN_HOLD) continue;
-    let need = MIN_HOLD - (e.t1 - e.t0);
-    const nxt = out[i + 1], prv = out[i - 1];
-    if (nxt && nxt.sh === "rest") {
-      const give = Math.min(need, Math.max(0, (nxt.t1 - nxt.t0) - 0.02));
-      e.t1 += give; nxt.t0 += give; need -= give;
+    const floor = floorOf(e.sh);
+    if (e.sh === "rest" || e.t1 - e.t0 >= floor) continue;
+    let need = floor - (e.t1 - e.t0);
+    // rests give freely; a real shape gives only down to its own floor, and
+    // only to a closure, which is the one thing worth stealing a vowel for
+    // rests give freely; a real shape gives only down to its own floor, and
+    // only to a closure -- the one thing worth stealing part of a vowel for
+    const room = (n) => n.sh === "rest" ? Math.max(0, (n.t1 - n.t0) - 0.02)
+      : (MIN_OF[e.sh] ? Math.max(0, (n.t1 - n.t0) - floorOf(n.sh)) * 0.5 : 0);
+    /* Grow a closure BACKWARDS first. Lips arriving early is anticipation and
+       is what real mouths do; lips leaving late is lag, and lag is the thing
+       that made the first version of this whole feature look wrong. Anything
+       else can grow either way. */
+    const back = { n: out[i - 1], take: (g) => { e.t0 -= g; out[i - 1].t1 -= g; } };
+    const fwd  = { n: out[i + 1], take: (g) => { e.t1 += g; out[i + 1].t0 += g; } };
+    for (const side of (MIN_OF[e.sh] ? [back, fwd] : [fwd, back])) {
+      if (need <= 0 || !side.n) continue;
+      const give = Math.min(need, room(side.n));
+      if (give > 0) { side.take(give); need -= give; }
     }
-    if (need > 0 && prv && prv.sh === "rest") {
-      const give = Math.min(need, Math.max(0, (prv.t1 - prv.t0) - 0.02));
-      e.t0 -= give; prv.t1 -= give;
-    }
-    // no rest to borrow from: a short shape beats no shape
+    // nothing to borrow from: a short shape still beats no shape
   }
   return out.filter((e) => e.t1 > e.t0);
 }
@@ -699,22 +723,28 @@ function tick() {
 
   if (mapped && !manual) {
     const target = RIG[vis.shape] || RIG.rest;
-    /* Asymmetric, because mouths are. A viseme can be 40ms long, and at one
-       rate for both directions it only ever got about half way to its shape
-       before the next one started -- every consonant a mumble. Opening fast and
-       closing slower is also just what a real mouth does. */
-    const kUp = 1 - Math.pow(1 - 0.50, dt / 16.67);
-    const kDn = 1 - Math.pow(1 - 0.28, dt / 16.67);
+    /* Closing your lips is a movement, not a relaxation.
+
+       The first cut of this opened fast and closed slow, on the reasoning that
+       mouths do that. They do -- when relaxing. But an M is an active gesture:
+       the lips are driven shut, hard and quickly. Treating it as a decay left
+       the jaw 3.7 degrees open at the end of an 80ms M coming out of a vowel,
+       and the lips never met.
+
+       So: any commanded shape is reached fast, in both directions. Only the
+       drift back to a neutral face is allowed to be lazy. */
+    const fast = 1 - Math.pow(1 - 0.50, dt / 16.67);
+    const lazy = 1 - Math.pow(1 - 0.28, dt / 16.67);
+    const k = vis.shape === "rest" ? lazy : fast;
     for (const p of mapped) for (const name in p.map) {
       const i = p.map[name];
       const wantV = (target[name] || 0) * GAIN;
-      const cur = p.mesh.morphTargetInfluences[i];
-      p.mesh.morphTargetInfluences[i] += (wantV - cur) * (wantV > cur ? kUp : kDn);
+      p.mesh.morphTargetInfluences[i] += (wantV - p.mesh.morphTargetInfluences[i]) * k;
     }
     if (!manual) jawWant = VIS_JAW[vis.shape] != null ? VIS_JAW[vis.shape] : 0;
   }
   if (jawBone && jawRest) {
-    const k = 1 - Math.pow(1 - (jawWant > jawNow ? 0.50 : 0.28), dt / 16.67);
+    const k = 1 - Math.pow(1 - (vis.shape === "rest" ? 0.28 : 0.50), dt / 16.67);
     jawNow += (jawWant - jawNow) * k;
     jawBone.quaternion.copy(jawRest).multiply(new THREE.Quaternion()
       .setFromAxisAngle(JAW_AXIS[JAW.axis], JAW.sign * jawNow * JAW.deg * Math.PI / 180));
