@@ -3112,6 +3112,19 @@ const micBtn = document.getElementById("micBtn");
 const micBig = document.getElementById("mic");
 const frzBtn = document.getElementById("frzBtn");
 const hud = document.getElementById("hud");
+/* Which build this is, from the file's own modified time -- so "it is not
+   working for me" and "it works here" can be compared against something.
+   GitHub Pages caches for ten minutes and an iOS home-screen app for longer,
+   and half a day was spent debugging reports that may simply have been an old
+   build wearing new expectations. */
+const BUILD = (() => {
+  try {
+    const d = new Date(document.lastModified);
+    return "b" + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0")
+      + "." + String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
+  } catch (e) { return "b?"; }
+})();
+console.log("orb build", BUILD);
 const meter = document.getElementById("meter");
 let micState = "idle";
 
@@ -7389,6 +7402,18 @@ const EYE = { dots: 16, size: 1.35,
               down: 0.505,   // how far down the head the sockets sit, 0 = crown
               apart: 0.20,   // half the distance between them, as a fraction of width
               r: 0.070 };    // eye radius as a fraction of head width
+/* Your eye beats my screenshot. Placement guessed here and judged over a
+   commit-and-reload loop has missed twice, so the numbers are yours to move,
+   out loud, while looking at him: "eyes down", "eyes up", "eyes wider", "eyes
+   closer", "eyes bigger", "eyes smaller". Saved locally so they stick. */
+try {
+  const e0 = JSON.parse(localStorage.getItem("orbEye") || "0");
+  if (e0 && e0.down) { EYE.down = e0.down; EYE.apart = e0.apart; EYE.r = e0.r; }
+} catch (e) {}
+function eyeSave() {
+  try { localStorage.setItem("orbEye",
+    JSON.stringify({ down: EYE.down, apart: EYE.apart, r: EYE.r })); } catch (e) {}
+}
 
 function bobMatrix(M0, t) {
   const rx = Math.sin(t * 0.45) * BOB.pitch;
@@ -8619,6 +8644,21 @@ function heardSentence(heard) {
      branch could never fire, and every attempt fell through to the 2D cards.
      Reusing SCENE_SAID rather than a second copy of the same pattern, so there
      is only one place that knows how people say "3D". */
+  /* The eyes, steered by the person looking at them. */
+  if (rig.on && rig.portrait && /\beyes?\b/.test(flat)
+      && /\b(down|up|lower|higher|raise|wider|apart|closer|together|bigger|larger|smaller)\b/.test(flat)) {
+    if (/\b(down|lower)\b/.test(flat)) EYE.down = Math.min(0.8, EYE.down + 0.02);
+    if (/\b(up|higher|raise)\b/.test(flat)) EYE.down = Math.max(0.2, EYE.down - 0.02);
+    if (/\b(wider|apart)\b/.test(flat)) EYE.apart = Math.min(0.35, EYE.apart + 0.012);
+    if (/\b(closer|together)\b/.test(flat)) EYE.apart = Math.max(0.08, EYE.apart - 0.012);
+    if (/\b(bigger|larger)\b/.test(flat)) EYE.r = Math.min(0.14, EYE.r * 1.18);
+    if (/\b(smaller)\b/.test(flat)) EYE.r = Math.max(0.03, EYE.r / 1.18);
+    eyeSave();
+    caption(null, "eyes \u00b7 down " + EYE.down.toFixed(2) + " \u00b7 apart "
+      + EYE.apart.toFixed(2) + " \u00b7 r " + EYE.r.toFixed(3));
+    return "eyes";
+  }
+
   /* Turn him. Only means anything while the particle head is up, and it is the
      way out of an orientation I could not derive: step, look, stop. */
   if (rig.on && rig.portrait
@@ -10776,7 +10816,7 @@ function loop() {
 
   acc += dt; frames++;
   if (acc > 500) {
-    hud.textContent = Math.round(frames / (acc / 1000)) + " fps · " + n + " · " +
+    hud.textContent = BUILD + " · " + Math.round(frames / (acc / 1000)) + " fps · " + n + " · " +
                       state + (manual ? " (held)" : "") +
                       (formLabel ? " · " + formLabel : "") +
                       (bs ? " · " + firing.name : "");
