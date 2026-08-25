@@ -7222,7 +7222,31 @@ async function bakeRigTexture(R) {
 
    Pitch first, then yaw, both about the formation axes: x right, y DOWN, z
    away. */
-const POSE = { pitch: -0.32, yaw: Math.PI };   // fallback only; see portraitBasis
+const POSE = { ix: 0 };
+try { POSE.ix = +(localStorage.getItem("orbPoseIx") || 0) || 0; } catch (e) {}
+
+/* The 24 ways round you can hold a thing, as signed axis permutations. Stepping
+   through these is exhaustive: the right answer is definitely one of them. */
+const POSE_AX = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+const POSE_ALL = (() => {
+  const out = [], X = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  for (const r0 of POSE_AX) for (const r1 of POSE_AX) {
+    if (Math.abs(r0[0]*r1[0] + r0[1]*r1[1] + r0[2]*r1[2]) > 0.5) continue;
+    const r2 = X(r0, r1);
+    out.push([r0[0],r0[1],r0[2], r1[0],r1[1],r1[2], r2[0],r2[1],r2[2]]);
+  }
+  return out;
+})();
+function poseSpin(M, ix) {
+  const S = POSE_ALL[((ix % POSE_ALL.length) + POSE_ALL.length) % POSE_ALL.length];
+  const out = new Float64Array(9);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    let v = 0;
+    for (let k = 0; k < 3; k++) v += S[r * 3 + k] * M[k * 3 + c];
+    out[r * 3 + c] = v;
+  }
+  return out;
+}
 function poseXform(x, y, z, o, at) {
   const cp = Math.cos(POSE.pitch), sp = Math.sin(POSE.pitch);
   const y1 = y * cp - z * sp, z1 = y * sp + z * cp;
@@ -7251,111 +7275,70 @@ function portraitBasis(R) {
   const head = B(/head/i, /(end|tip|top)$/i);
   const hip = B(/hip|pelvis|spine|root/i) || sk.bones[0];
   if (!head || !hip) return null;
-  const f = R.fit;
-  // the same conversion updateFigure does, so these land where the dots land
-  const toForm = (b) => {
-    const v = b.getWorldPosition(new T.Vector3()).applyMatrix4(rig.toGroup);
-    return new T.Vector3((v.x - f.c[0]) * f.k, -(v.y - f.c[1]) * f.k, -(v.z - f.c[2]) * f.k);
-  };
-  const hp = toForm(head);
-  const up = hp.clone().sub(toForm(hip));
+
+  /* This is face-test.html's standUp, ported line for line, because that one
+     demonstrably produces a face from this exact mesh and five attempts at
+     deriving it here did not.
+
+     What kept going wrong was the checking, not the maths. "Tallest per wide"
+     is true of a head seen from below -- an open neck is a tall silhouette.
+     "Teeth nearer than the skull" is true from below too, because under the
+     chin the teeth ARE nearer. Every test I invented passed for a view up
+     through his neck, so the search kept choosing it and I kept agreeing.
+
+     So there is no search and nothing to score. Stand him up (hips to head is
+     up), turn him to face front (the jaw, teeth and tongue hang in front of the
+     middle of the skull), and then apply the one fixed thing the 2D side does:
+     it negates y and z, because the screen's y grows downward and glTF's z
+     comes toward the viewer. Two flips, a rotation, no freedom left. */
+  const grp = (b) => b.getWorldPosition(new T.Vector3()).applyMatrix4(rig.toGroup);
+  const hp = grp(head);
+  const up = hp.clone().sub(grp(hip));
   if (up.lengthSq() < 1e-12) return null;
   up.normalize();
+  const q1 = new T.Quaternion().setFromUnitVectors(up, new T.Vector3(0, 1, 0));
+
   const fwd = new T.Vector3(); let n = 0;
   head.traverse((o) => {
-    if (o.isBone && /jaw|teeth|tongue|nose|lip/i.test(o.name)) { fwd.add(toForm(o).sub(hp)); n++; }
+    if (o.isBone && /jaw|teeth|tongue|nose|lip/i.test(o.name)) { fwd.add(grp(o).sub(hp)); n++; }
   });
   if (!n || fwd.lengthSq() < 1e-12) return null;
-  fwd.sub(up.clone().multiplyScalar(fwd.dot(up)));      // square it up against up
+  fwd.applyQuaternion(q1);
+  fwd.y = 0;
   if (fwd.lengthSq() < 1e-12) return null;
   fwd.normalize();
-  const side = new T.Vector3().crossVectors(fwd, up);
+  /* Aimed at -Z, not +Z. The renderer negates z on the way in, so a face
+     pointing down glTF's +Z ends up pointing away from you -- which is exactly
+     what it did: upright, correct in every other respect, and showing the back
+     of his head. One bit, and the only way to know it was to look. */
+  const q = new T.Quaternion()
+    .setFromAxisAngle(new T.Vector3(0, 1, 0), -Math.atan2(-fwd.x, -fwd.z))
+    .multiply(q1);
 
-  /* Screen space: x right, y DOWN, z away. So up must land on -y and the face
-     must land on -z, toward the camera. Both bases are orthonormal, so the
-     rotation is target times source-transposed, written out as nine numbers. */
-  const tU = [0, -1, 0], tF = [0, 0, -1], tS = [-1, 0, 0];
-  const e = [up, side, fwd], t = [tU, tS, tF];
-  const M = new Float64Array(9);
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
-    let v = 0;
-    for (let k = 0; k < 3; k++) v += t[k][r] * (c === 0 ? e[k].x : c === 1 ? e[k].y : e[k].z);
-    M[r * 3 + c] = v;
-  }
-  const ap = (v) => [M[0]*v.x + M[1]*v.y + M[2]*v.z,
-                     M[3]*v.x + M[4]*v.y + M[5]*v.z,
-                     M[6]*v.x + M[7]*v.y + M[8]*v.z];
-  /* Checked against landmarks that actually mean something. The first version
-     compared the jaw bone with the head bone and reported the head upside down:
-     on this rig the jaw sits HIGHER than the head bone's origin, because that
-     origin is the base of the skull and the jaw hinges above it. A test that
-     fails on a correct answer is worse than no test.
+  // that rotation, then the renderer's y/z flip, folded into nine numbers
+  const m = new T.Matrix4().makeRotationFromQuaternion(q).elements;
+  let M = Float64Array.from([
+     m[0],  m[4],  m[8],
+    -m[1], -m[5], -m[9],
+    -m[2], -m[6], -m[10],
+  ]);
+  /* And then whichever way round you told it, because I could not get this
+     right by derivation and you can settle it in five seconds.
 
-     Hips against head is unambiguous -- one is at the feet -- and teeth against
-     the skull decides facing. */
-  const teeth = B(/teeth/i);
-  const h2 = ap(hp), p2 = ap(toForm(hip));
-  const t2 = teeth ? ap(toForm(teeth)) : null;
-  const okUp = p2[1] > h2[1];
-  const okFwd = !t2 || t2[2] < h2[2];
-  /* Reasoning about this failed five times, so it is solved by search instead.
-
-     The head's own measurements give the answer to check against: projected on
-     its own axes this one is 0.245 wide, 0.285 tall and 0.252 deep, so seen
-     head-on it must render 1.16 tall per wide, and seen down its long axis
-     1.03. Those are far enough apart to tell one from the other, which is more
-     than four screenshots of grey dots ever managed.
-
-     So: try all 24 axis-aligned rotations, keep the ones that put the head
-     above the hips and the teeth toward the camera, and among those take the
-     one whose on-screen aspect is closest to what the mesh says it should be.
-     A wrong sign anywhere in the basis above cannot survive that, which is the
-     point -- I do not have to have got it right, only checkable. */
-  const dec = R.dec, W = R.wp;
-  const pts = [];
-  for (let v = 0; v < dec.n; v++)
-    pts.push([(W[v*3] - f.c[0]) * f.k, -(W[v*3+1] - f.c[1]) * f.k, -(W[v*3+2] - f.c[2]) * f.k]);
-
-  /* Scored by the aspect alone, with no target to compare against.
-
-     The first version computed what head-on "should" look like from the same
-     up/side axes the rotation came from -- so when those were wrong it happily
-     confirmed itself: "1.03 on screen, mesh says 1.03". A check derived from
-     the thing it is checking is not a check.
-
-     But a head does not need one. Of every way round you can hold it, HEAD-ON
-     is the tallest per wide: this one is 0.285 tall against 0.245 wide and
-     0.252 deep, so face-on gives 1.16, profile 1.13, and down the long axis
-     1.03. Take the tallest and the sign tests throw out the profiles. Nothing
-     to get wrong. */
-  const hpF = [hp.x, hp.y, hp.z];
-  const pipF = (() => { const q = toForm(hip); return [q.x, q.y, q.z]; })();
-  const teF = teeth ? (() => { const q = toForm(teeth); return [q.x, q.y, q.z]; })() : null;
-
-  const AX = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
-  const cross = (a2,b2) => [a2[1]*b2[2]-a2[2]*b2[1], a2[2]*b2[0]-a2[0]*b2[2], a2[0]*b2[1]-a2[1]*b2[0]];
-  const app = (M2, p) => [M2[0]*p[0]+M2[1]*p[1]+M2[2]*p[2],
-                          M2[3]*p[0]+M2[4]*p[1]+M2[5]*p[2],
-                          M2[6]*p[0]+M2[7]*p[1]+M2[8]*p[2]];
-  let best = null;
-  for (const r0 of AX) for (const r1 of AX) {
-    if (Math.abs(r0[0]*r1[0]+r0[1]*r1[1]+r0[2]*r1[2]) > 0.5) continue;
-    const r2 = cross(r0, r1);
-    const M2 = [r0[0],r0[1],r0[2], r1[0],r1[1],r1[2], r2[0],r2[1],r2[2]];
-    const h2b = app(M2, hpF), p2b = app(M2, pipF);
-    if (!(p2b[1] > h2b[1])) continue;                        // head above the hips
-    if (teF && !(app(M2, teF)[2] < h2b[2])) continue;        // teeth toward you
-    let x0=1e30,x1=-1e30,y0=1e30,y1=-1e30;
-    for (const p of pts) { const q = app(M2, p);
-      if(q[0]<x0)x0=q[0]; if(q[0]>x1)x1=q[0]; if(q[1]<y0)y0=q[1]; if(q[1]>y1)y1=q[1]; }
-    const asp = (y1-y0) / ((x1-x0) || 1);
-    if (!best || asp > best.asp) best = { M: M2, asp };
-  }
-  if (!best) { console.log("orb portrait: no orientation passed the checks"); return M; }
-  console.log("orb portrait: " + best.asp.toFixed(2)
-    + " tall per wide on screen, the tallest of 24 orientations that also put"
-    + " the head above the hips and the teeth toward you");
-  return Float64Array.from(best.M);
+     Six attempts, six wrong answers, and the reason each one survived my own
+     checking is that every test I could think of passes for a head seen from
+     underneath as well as head-on: an open neck is tall, and under the chin the
+     teeth really are nearer than the skull. Your eyes are the only oracle here
+     that is not fooled, so "turn him" steps through the 24 axis-aligned
+     orientations and remembers the one you stop on. Tell me the number and it
+     becomes the default. */
+  if (POSE.ix) M = poseSpin(M, POSE.ix);
+  setTimeout(() => console.log("orb portrait camera: view.pitch " + view.pitch.toFixed(3)
+    + "  view.yaw " + view.yaw.toFixed(3) + "  view.turn " + view.turn.toFixed(3)
+    + "  formTilt " + formTilt + "  formSpin " + formSpin + "  formT " + formT.toFixed(2)), 6000);
+  console.log("orb portrait: stood up from " + head.name + " over " + hip.name
+    + ", faced front from " + n + " bones -- same method as the head test page");
+  return M;
 }
 
 function rigPoint(R, v, o) {
@@ -8348,6 +8331,18 @@ function heardSentence(heard) {
      branch could never fire, and every attempt fell through to the 2D cards.
      Reusing SCENE_SAID rather than a second copy of the same pattern, so there
      is only one place that knows how people say "3D". */
+  /* Turn him. Only means anything while the particle head is up, and it is the
+     way out of an orientation I could not derive: step, look, stop. */
+  if (rig.on && rig.portrait
+      && /\b(turn|spin|rotate|flip)\b/.test(flat) && !/\b(off|back to normal)\b/.test(flat)) {
+    POSE.ix = (POSE.ix + 1) % 24;
+    try { localStorage.setItem("orbPoseIx", String(POSE.ix)); } catch (e) {}
+    if (rig.R) rig.pose = portraitBasis(rig.R);
+    caption(null, "orientation " + POSE.ix + " of 24");
+    console.log("orb portrait orientation", POSE.ix);
+    return "figure";
+  }
+
   /* The particle head, formed HERE out of the orb rather than on another page.
      It is the same machinery that builds any figure -- the mesh handed to it
      just happens to be a head, trimmed to the neck so the orb does not spend
