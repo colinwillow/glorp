@@ -1410,7 +1410,77 @@ function visRigFind(mesh) {
     if (i >= 0) map[w] = dict[keys[i]];
   }
   mesh.__visMap = map;
+  visLipCal(mesh, map);
   return map;
+}
+
+/* How far MBP is allowed to push the bottom lip up, as a fraction of the
+   mouth's own width. Measured on the Character Creator base the rig's weights
+   were tuned against, where MBP lifts it 1.07%. */
+const VIS_LIP_MAX = 0.018;
+/* Per mesh, once, because a weight in the rig is not a distance.
+   VIS_RIG_CC says MBP is V_Explosive at 1.00 plus Mouth_Close at 0.60, and
+   those numbers were chosen by looking at ONE face. On that face Mouth_Close
+   is a modest press. On his it is the second-largest shape on the mesh -- 0.030
+   against V_Explosive's 0.009 -- so the same 0.60 hauls the bottom lip up over
+   the top one and the whole mouth reads wrong. Measured: 5.64% of mouth width
+   against the base head's 1.07%, and MBP is the ONLY viseme that lifts the lip
+   at all; every other one opens the jaw and lowers it.
+   So the rig states an intent and the mesh is measured against it. Find the
+   mouth (the vertices the mapped lip shapes actually move), find its bottom
+   half and its width, work out how far each of MBP's shapes lifts it, and if
+   the total overshoots, scale back the shape doing the most lifting -- not all
+   of them, or the press that makes an M an M goes with it. A face already
+   inside the limit is left exactly as it was. */
+function visLipCal(mesh, map) {
+  if (mesh.__visLipCal) return;
+  mesh.__visLipCal = 1;
+  const RIG = visRigPick(mesh);
+  const mbp = RIG.MBP;
+  const geo = mesh.geometry, pos = geo.attributes.position;
+  const mt = (geo.morphAttributes || {}).position || [];
+  if (!mbp || !pos || !mt.length) return;
+  const reach = new Float32Array(pos.count);
+  for (const nm in map) {
+    const a = mt[map[nm]]; if (!a) continue;
+    for (let v = 0; v < pos.count; v++) {
+      const q = Math.hypot(a.getX(v), a.getY(v), a.getZ(v));
+      if (q > reach[v]) reach[v] = q;
+    }
+  }
+  const idx = Array.from(reach.keys()).sort((a, b) => reach[b] - reach[a]).slice(0, 700);
+  if (idx.length < 40) return;
+  let my = 0; for (const v of idx) my += pos.getY(v); my /= idx.length;
+  const lo = idx.filter((v) => pos.getY(v) < my);
+  if (lo.length < 20) return;
+  let xl = 1e9, xh = -1e9;
+  for (const v of idx) { const x = pos.getX(v); if (x < xl) xl = x; if (x > xh) xh = x; }
+  const w = xh - xl;
+  if (!(w > 0)) return;
+  // how far each of MBP's shapes lifts the bottom lip, at the weight it is given
+  let total = 0, worst = null, worstV = 0;
+  for (const nm in mbp) {
+    const i = map[nm]; if (i == null || !mt[i]) continue;
+    let sy = 0;
+    for (const v of lo) sy += mt[i].getY(v);
+    const rise = (sy / lo.length) * mbp[nm];
+    total += rise;
+    if (rise > worstV) { worstV = rise; worst = nm; }
+  }
+  const frac = total / w;
+  if (frac <= VIS_LIP_MAX || !worst || worstV <= 0) {
+    console.log("orb lips: MBP lifts", (frac * 100).toFixed(2) + "% of mouth width -- within range");
+    return;
+  }
+  // take the overshoot out of the biggest lifter alone
+  const over = total - VIS_LIP_MAX * w;
+  const k = Math.max(0, (worstV - over) / worstV);
+  const tuned = Object.assign({}, mbp);
+  tuned[worst] = mbp[worst] * k;
+  mesh.__visRig = Object.assign({}, RIG, { MBP: tuned });
+  console.log("orb lips: MBP lifted " + (frac * 100).toFixed(2) + "% of mouth width; "
+    + worst + " " + mbp[worst].toFixed(2) + " -> " + tuned[worst].toFixed(2)
+    + " brings it to " + (VIS_LIP_MAX * 100).toFixed(1) + "%");
 }
 
 /* Eased, not switched -- which is the blending the still pictures cannot have.
