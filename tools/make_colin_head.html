@@ -1,0 +1,414 @@
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<script type="module">
+/* Builds models/colin_head.glb out of colin_stylized_facial_01.glb.
+
+   The source is 24.6 MB and 2.62 million vertices, and 97% of that is
+   duplicated shape geometry: 46 meshes of ~55,000 vertices each, named
+   V_Wide, Jaw_Open_3, Mouth_Close, Mouth_Smile_L and so on, sharing
+   colin_main's bounding box exactly -- the blend shapes exported a second time
+   as separate objects, on top of already being real morph targets. Thirteen
+   more do the same for the tongue. Four meshes carry everything that matters:
+   colin_main (15,602 verts, 50 targets), hair (1,726, 48), tongue (331, 14)
+   and eyes (1,291, none). 18,950 vertices out of 2.6 million.
+
+   Two other things the app cannot take as-is. The file is Draco-compressed,
+   and the orb has its own GLB reader for the particle positions that knows
+   nothing about compression. And it has no armature at all -- readGlbRig
+   throws "no skin in it" without one, skinPoints calls applyBoneTransform,
+   portraitBasis solves the facing off hips-to-head, and the eyes are placed
+   from eye bones. So this bakes a minimal one in: every vertex weighted to a
+   head bone, plus a jaw and two eye bones carrying no weight at all, existing
+   purely so those three passes have the landmarks they read. Nothing animates
+   them; the mouth is morphs, which is what he built. */
+
+import * as THREE from "three";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { DRACOLoader } from "./vendor/DRACOLoader.js";
+import { GLTFExporter } from "./vendor/GLTFExporter.js";
+const L = new GLTFLoader(); const d = new DRACOLoader();
+d.setDecoderPath("./vendor/draco/"); d.setDecoderConfig({ type: "wasm" }); L.setDRACOLoader(d);
+
+const log = [];
+const say = (s) => { log.push(s); };
+
+/* The shapes worth carrying. Everything the viseme rig can drive, plus the two
+   he baked by hand (mouth_pucker / mouth_funnell -- two Ls, which is in the
+   file and not a typo here) and both jaw shapes, because which of them
+   actually opens the jaw is a measurement, not a name. */
+const KEEP_FACE = ["V_Open", "V_Explosive", "V_Dental_Lip", "V_Tight_O", "V_Tight",
+  "V_Wide", "V_Affricate", "V_Lip_Open", "Mouth_Close", "Mouth_Press_L",
+  "Mouth_Press_R", "Mouth_Smile_L", "Mouth_Smile_R", "Mouth_Frown_L", "Mouth_Frown_R",
+  "mouth_pucker", "mouth_funnell", "Jaw_Open", "jaw_open"];
+const KEEP_TONGUE = ["V_Tongue_Raise", "V_Tongue_Out", "V_Tongue_up", "V_Tongue_Lower",
+  "Jaw_Open", "jaw_open"];
+/* Baked at full strength and then dropped. His note: without `colin` at 100%
+   the mesh is the generic base it was sculpted from, so it is not a shape at
+   all -- it is the identity, and a shape you can never turn off belongs in the
+   vertices. Same story for the tongue's own copy. */
+const IDENTITY = ["colin", "colin_tongue"];
+
+// ---- geometry helpers -------------------------------------------------
+
+function bakeIdentity(mesh) {
+  const geo = mesh.geometry, dict = mesh.morphTargetDictionary || {};
+  const mt = geo.morphAttributes.position || [];
+  const mn = geo.morphAttributes.normal || [];
+  let done = null;
+  for (const nm of IDENTITY) {
+    const i = dict[nm];
+    if (i == null || !mt[i]) continue;
+    const pos = geo.attributes.position, nrm = geo.attributes.normal;
+    const a = mt[i];
+    for (let v = 0; v < pos.count; v++) {
+      pos.setXYZ(v, pos.getX(v) + a.getX(v), pos.getY(v) + a.getY(v), pos.getZ(v) + a.getZ(v));
+    }
+    if (nrm && mn[i]) for (let v = 0; v < nrm.count; v++) {
+      nrm.setXYZ(v, nrm.getX(v) + mn[i].getX(v), nrm.getY(v) + mn[i].getY(v),
+                 nrm.getZ(v) + mn[i].getZ(v));
+    }
+    pos.needsUpdate = true;
+    done = nm;
+    say("baked " + nm + " into " + mesh.name + " at full strength");
+  }
+  return done;
+}
+
+/* Cut below the neck. toon_head did this by bone weight; there are no bones
+   here, so the cut is a plane -- and the height of it is measured rather than
+   picked. Between the chin and the shoulders the body's horizontal extent has
+   a minimum, and that minimum IS the neck. Scanning for it means this works on
+   the next export too, whatever height he happens to be. */
+function neckY(geo) {
+  const pos = geo.attributes.position;
+  let lo = Infinity, hi = -Infinity;
+  for (let v = 0; v < pos.count; v++) { const y = pos.getY(v); if (y < lo) lo = y; if (y > hi) hi = y; }
+  const span = hi - lo;
+  // the search band: the top fifth of the body, which is head plus shoulders
+  /* Wide enough to contain the answer. The first version searched the top 22%
+     and came back with the very bottom of its own band, which is what a search
+     says when the thing it is looking for is outside it. */
+  const y0 = hi - span * 0.34, y1 = hi - span * 0.09;
+  const SLOTS = 40;
+  const wide = new Float64Array(SLOTS).fill(0);
+  const seen = new Int32Array(SLOTS);
+  for (let v = 0; v < pos.count; v++) {
+    const y = pos.getY(v);
+    if (y < y0 || y > y1) continue;
+    let s = ((y - y0) / (y1 - y0) * SLOTS) | 0; if (s >= SLOTS) s = SLOTS - 1;
+    const r = Math.hypot(pos.getX(v), pos.getZ(v));
+    if (r > wide[s]) wide[s] = r;
+    seen[s]++;
+  }
+  let best = -1, bw = Infinity;
+  for (let s = 0; s < SLOTS; s++) {
+    if (seen[s] < 8) continue;
+    if (wide[s] < bw) { bw = wide[s]; best = s; }
+  }
+  if (best < 0) return hi - span * 0.16;
+  const y = y0 + (best + 0.5) / SLOTS * (y1 - y0);
+  say("neck found at y " + y.toFixed(2) + " (narrowest cross-section, radius "
+      + bw.toFixed(2) + "); body spans " + lo.toFixed(1) + " to " + hi.toFixed(1));
+  return y;
+}
+
+function trimAbove(mesh, cutY, keepNames) {
+  const geo = mesh.geometry, pos = geo.attributes.position, ix = geo.index;
+  const keepV = new Uint8Array(pos.count);
+  for (let v = 0; v < pos.count; v++) if (pos.getY(v) >= cutY) keepV[v] = 1;
+  const nTri = (ix ? ix.count : pos.count) / 3;
+  const tris = [];
+  for (let t = 0; t < nTri; t++) {
+    const a = ix ? ix.getX(t * 3) : t * 3, b = ix ? ix.getX(t * 3 + 1) : t * 3 + 1,
+          c = ix ? ix.getX(t * 3 + 2) : t * 3 + 2;
+    if (keepV[a] && keepV[b] && keepV[c]) tris.push(a, b, c);
+  }
+  if (!tris.length) return 0;
+  return rebuild(mesh, tris, keepNames);
+}
+
+// keep every triangle, just prune the shape list
+function keepAll(mesh, keepNames) {
+  const geo = mesh.geometry, pos = geo.attributes.position, ix = geo.index;
+  const nTri = (ix ? ix.count : pos.count) / 3;
+  const tris = [];
+  for (let t = 0; t < nTri; t++) {
+    tris.push(ix ? ix.getX(t * 3) : t * 3, ix ? ix.getX(t * 3 + 1) : t * 3 + 1,
+              ix ? ix.getX(t * 3 + 2) : t * 3 + 2);
+  }
+  return rebuild(mesh, tris, keepNames);
+}
+
+function rebuild(mesh, tris, keepNames) {
+  const geo = mesh.geometry;
+  const map = new Map(), order = [];
+  const li = (g) => { let k = map.get(g); if (k === undefined) { k = order.length; map.set(g, k); order.push(g); } return k; };
+  const idx = tris.map(li);
+  const n = order.length;
+  const g2 = new THREE.BufferGeometry();
+  const copy = (name, size, Arr) => {
+    const a = geo.attributes[name]; if (!a) return;
+    const out = new Arr(n * size);
+    for (let k = 0; k < n; k++) for (let c = 0; c < size; c++) out[k * size + c] = a.array[order[k] * a.itemSize + c];
+    g2.setAttribute(name, new THREE.BufferAttribute(out, size, a.normalized));
+  };
+  copy("position", 3, Float32Array); copy("normal", 3, Float32Array); copy("uv", 2, Float32Array);
+  g2.setIndex(idx);
+  const src = geo.morphAttributes.position || [];
+  const dict = mesh.morphTargetDictionary || {};
+  const attrs = [], names = [], newDict = {};
+  for (const nm of keepNames) {
+    const i = dict[nm]; if (i == null || !src[i]) continue;
+    const a = src[i], out = new Float32Array(n * 3);
+    for (let k = 0; k < n; k++) {
+      const o = order[k] * 3;
+      out[k * 3] = a.array[o]; out[k * 3 + 1] = a.array[o + 1]; out[k * 3 + 2] = a.array[o + 2];
+    }
+    newDict[nm] = attrs.length; names.push(nm);
+    attrs.push(new THREE.BufferAttribute(out, 3));
+  }
+  g2.morphAttributes.position = attrs;
+  g2.morphTargetsRelative = geo.morphTargetsRelative;
+  g2.userData.targetNames = names;
+  say(mesh.name + ": " + geo.attributes.position.count + " verts -> " + n
+      + ", " + (tris.length / 3) + " tris, " + Object.keys(dict).length + " shapes -> " + names.length
+      + (names.length ? " [" + names.join(" ") + "]" : ""));
+  mesh.geometry = g2;
+  mesh.morphTargetDictionary = newDict;
+  mesh.morphTargetInfluences = new Array(attrs.length).fill(0);
+  return n;
+}
+
+// how far a shape actually moves the mesh, in world units -- the only honest
+// way to tell his jaw_open from Character Creator's Jaw_Open
+function shapeReach(mesh, nm) {
+  const i = (mesh.morphTargetDictionary || {})[nm];
+  const a = (mesh.geometry.morphAttributes.position || [])[i];
+  if (!a) return 0;
+  let mx = 0;
+  for (let v = 0; v < a.count; v++) {
+    const d = Math.hypot(a.getX(v), a.getY(v), a.getZ(v));
+    if (d > mx) mx = d;
+  }
+  return mx;
+}
+
+// ---- build ------------------------------------------------------------
+
+L.load("models/colin_stylized_facial_01.glb", (g) => {
+  g.scene.updateMatrixWorld(true);
+  const want = { colin_main: null, hair: null, tongue: null, eyes: null };
+  const drop = [];
+  g.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    if (Object.prototype.hasOwnProperty.call(want, o.name)) want[o.name] = o;
+    else drop.push(o);
+  });
+  say("kept 4 meshes, dropping " + drop.length + " duplicate-shape objects");
+  for (const o of drop) o.parent.remove(o);
+  const face = want.colin_main;
+  if (!face) { window.__log = "colin_main not found"; return; }
+
+  /* Everything into ONE space before anything is measured. hair is its own
+     scene root with its own 0.01 scale and a 90-degree turn, the eyes carry
+     another, and the body sits under a `root` that scales the lot -- so a y
+     value means three different things depending on which mesh you read it
+     from. Baked into the vertices, they all mean the same thing. */
+  const bb = (m, tag) => {
+    const b2 = new THREE.Box3().setFromBufferAttribute(m.geometry.attributes.position);
+    say("  " + tag + " " + m.name + "  y " + b2.min.y.toFixed(3) + ".." + b2.max.y.toFixed(3)
+        + "  x " + b2.min.x.toFixed(3) + ".." + b2.max.x.toFixed(3)
+        + "  z " + b2.min.z.toFixed(3) + ".." + b2.max.z.toFixed(3));
+  };
+  for (const nm of Object.keys(want)) {
+    const m = want[nm]; if (!m) continue;
+    m.updateMatrixWorld(true);
+    bb(m, "before");
+    say("  matrix " + nm + " = " + Array.from(m.matrixWorld.elements).map(v=>v.toFixed(3)).join(","));
+    m.geometry.applyMatrix4(m.matrixWorld);
+    /* applyMatrix4 moves positions and normals and leaves morphAttributes
+       where they were -- so every shape would stay in the source's
+       centimetre-scale space while the mesh it deforms moved to metres, and
+       a one-millimetre lip movement would come out as ten centimetres. They
+       get the rotation and the scale, and nothing else: a morph target is a
+       displacement, so the translation must not touch it. */
+    const nrm3 = new THREE.Matrix3().setFromMatrix4(m.matrixWorld);
+    for (const key of ["position", "normal"]) {
+      for (const a of (m.geometry.morphAttributes[key] || [])) {
+        for (let v = 0; v < a.count; v++) {
+          const t = new THREE.Vector3(a.getX(v), a.getY(v), a.getZ(v)).applyMatrix3(nrm3);
+          a.setXYZ(v, t.x, t.y, t.z);
+        }
+        a.needsUpdate = true;
+      }
+    }
+    bb(m, "after ");
+    if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals();
+    m.position.set(0, 0, 0); m.quaternion.identity(); m.scale.set(1, 1, 1);
+    bakeIdentity(m);
+  }
+
+  for (const nm of ["V_Open", "Jaw_Open", "jaw_open", "mouth_pucker", "mouth_funnell", "V_Tight_O"])
+    say("  reach(untrimmed) " + nm + " = " + shapeReach(face, nm).toFixed(4));
+  const cutY = neckY(face.geometry);
+  trimAbove(face, cutY, KEEP_FACE);
+  for (const nm of ["hair", "tongue", "eyes"]) {
+    const m = want[nm]; if (!m) continue;
+    keepAll(m, nm === "tongue" ? KEEP_TONGUE : nm === "hair" ? KEEP_FACE : []);
+  }
+
+  say("jaw reach: Jaw_Open " + shapeReach(face, "Jaw_Open").toFixed(4)
+      + "  jaw_open " + shapeReach(face, "jaw_open").toFixed(4)
+      + "  V_Open " + shapeReach(face, "V_Open").toFixed(4));
+
+  /* Which way he faces, measured off the mesh rather than assumed: at eye
+     height the nose is the furthest point from the vertical axis along z, and
+     its sign is the direction the face looks. */
+  /* From the GEOMETRY, not the object. The transforms were baked into the
+     vertices above and the nodes reset to identity, but their matrixWorld
+     still holds the old 0.01 scale until three recomputes it -- so
+     setFromObject scaled the head down by a hundred and reported a box 18mm
+     tall. Everything downstream read from that: the eye height, the nose
+     scan (which then found nothing and defaulted the facing), and all four
+     bone positions. */
+  const fb = new THREE.Box3().setFromBufferAttribute(face.geometry.attributes.position);
+  const eyeY = fb.min.y + (fb.max.y - fb.min.y) * 0.55;
+  const pos = face.geometry.attributes.position;
+  let nz = 0;
+  for (let v = 0; v < pos.count; v++) {
+    if (Math.abs(pos.getY(v) - eyeY) > (fb.max.y - fb.min.y) * 0.12) continue;
+    if (Math.abs(pos.getX(v)) > (fb.max.x - fb.min.x) * 0.08) continue;
+    const z = pos.getZ(v);
+    if (Math.abs(z) > Math.abs(nz)) nz = z;
+  }
+  const fwd = nz >= 0 ? 1 : -1;
+  say("head box y " + fb.min.y.toFixed(3) + ".." + fb.max.y.toFixed(3)
+      + "  nose z " + nz.toFixed(3) + " so the face looks toward " + (fwd > 0 ? "+z" : "-z"));
+
+  /* The armature. Four bones and no animation: a root on the floor so
+     portraitBasis can solve up as hips-to-head, a head bone every vertex is
+     weighted to, and a jaw and two eyes carrying no weight at all -- pure
+     landmarks, because the passes that need them read positions, not skinning.
+     The jaw is deliberately weightless: his jaw_open shape does the opening,
+     and a bone that moves nothing is exactly what lets the existing jaw pass
+     spin harmlessly while the morph does the work. */
+  const cx = (fb.min.x + fb.max.x) / 2, cz = (fb.min.z + fb.max.z) / 2;
+  const hY = (fb.min.y + fb.max.y) / 2;
+  const hh = fb.max.y - fb.min.y;
+  const root = new THREE.Bone(); root.name = "CC_Base_BoneRoot";
+  const head = new THREE.Bone(); head.name = "CC_Base_Head";
+  const jaw = new THREE.Bone(); jaw.name = "CC_Base_JawRoot";
+  const eyeL = new THREE.Bone(); eyeL.name = "CC_Base_L_Eye";
+  const eyeR = new THREE.Bone(); eyeR.name = "CC_Base_R_Eye";
+  root.position.set(cx, 0, cz);
+  head.position.set(0, hY, 0);            // relative to root
+  jaw.position.set(0, -hh * 0.22, fwd * hh * 0.30);   // relative to head
+  root.add(head); head.add(jaw); head.add(eyeL); head.add(eyeR);
+
+  /* The eye bones on the eyeballs themselves: split the eye mesh at its own
+     midline and take each half's centre. Nothing is guessed and it is right on
+     any head with two eyes in it. */
+  if (want.eyes) {
+    const ep = want.eyes.geometry.attributes.position;
+    const acc = [[0, 0, 0, 0], [0, 0, 0, 0]];
+    let exMid = 0;
+    for (let v = 0; v < ep.count; v++) exMid += ep.getX(v);
+    exMid /= ep.count;
+    for (let v = 0; v < ep.count; v++) {
+      const s = ep.getX(v) < exMid ? 0 : 1;
+      acc[s][0] += ep.getX(v); acc[s][1] += ep.getY(v); acc[s][2] += ep.getZ(v); acc[s][3]++;
+    }
+    for (const [s, bn] of [[0, eyeL], [1, eyeR]]) {
+      if (!acc[s][3]) continue;
+      bn.position.set(acc[s][0] / acc[s][3] - cx, acc[s][1] / acc[s][3] - hY, acc[s][2] / acc[s][3] - cz);
+    }
+    say("eye bones at x " + eyeL.position.x.toFixed(3) + " / " + eyeR.position.x.toFixed(3)
+        + ", y " + eyeL.position.y.toFixed(3) + ", z " + eyeL.position.z.toFixed(3));
+  }
+
+  /* ONE mesh out of the four. The app takes the first skinned mesh it finds as
+     the figure -- gl.mesh for the render, and the CPU reader's first skinned
+     primitive for the particles -- so hair, eyes and tongue would have come
+     along as unmanaged extras: outside the build wipe, so they sat there at
+     full white while the face dissolved into dots, and outside the viseme
+     driver, so his hair had 18 mouth shapes on it that nothing would ever
+     move.
+
+     The shape lists are a UNION. A mesh that does not have a given shape
+     contributes zeros for its own vertices, which is exactly what "this shape
+     does not move this part" means, so the tongue rides Jaw_Open, the hair
+     follows the mouth it was generated from, and the eyeballs sit still
+     through all of it without needing a single special case anywhere. */
+  const parts = ["colin_main", "hair", "tongue", "eyes"].map((k) => want[k]).filter(Boolean);
+  const names = [];
+  for (const m of parts) for (const nm of (m.geometry.userData.targetNames || []))
+    if (!names.includes(nm)) names.push(nm);
+  let N = 0, NI = 0;
+  for (const m of parts) { N += m.geometry.attributes.position.count; NI += m.geometry.index.count; }
+  const P = new Float32Array(N * 3), NRM = new Float32Array(N * 3), UV = new Float32Array(N * 2);
+  const IX = new Uint32Array(NI);
+  const MT = names.map(() => new Float32Array(N * 3));
+  let vo = 0, io = 0;
+  for (const m of parts) {
+    const g2 = m.geometry, pa = g2.attributes.position, na = g2.attributes.normal,
+          ua = g2.attributes.uv, ia = g2.index;
+    for (let v = 0; v < pa.count; v++) {
+      P[(vo + v) * 3] = pa.getX(v); P[(vo + v) * 3 + 1] = pa.getY(v); P[(vo + v) * 3 + 2] = pa.getZ(v);
+      if (na) { NRM[(vo + v) * 3] = na.getX(v); NRM[(vo + v) * 3 + 1] = na.getY(v); NRM[(vo + v) * 3 + 2] = na.getZ(v); }
+      if (ua) { UV[(vo + v) * 2] = ua.getX(v); UV[(vo + v) * 2 + 1] = ua.getY(v); }
+    }
+    for (let k = 0; k < ia.count; k++) IX[io + k] = ia.getX(k) + vo;
+    const mine = g2.userData.targetNames || [];
+    for (let t = 0; t < mine.length; t++) {
+      const slot = names.indexOf(mine[t]);
+      const a = g2.morphAttributes.position[t];
+      for (let v = 0; v < a.count; v++) {
+        MT[slot][(vo + v) * 3] = a.getX(v);
+        MT[slot][(vo + v) * 3 + 1] = a.getY(v);
+        MT[slot][(vo + v) * 3 + 2] = a.getZ(v);
+      }
+    }
+    vo += pa.count; io += ia.count;
+  }
+  const gm = new THREE.BufferGeometry();
+  gm.setAttribute("position", new THREE.BufferAttribute(P, 3));
+  gm.setAttribute("normal", new THREE.BufferAttribute(NRM, 3));
+  gm.setAttribute("uv", new THREE.BufferAttribute(UV, 2));
+  gm.setIndex(new THREE.BufferAttribute(IX, 1));
+  gm.morphAttributes.position = MT.map((a) => new THREE.BufferAttribute(a, 3));
+  gm.morphTargetsRelative = true;
+  gm.userData.targetNames = names;
+  say("merged " + parts.length + " meshes -> " + N + " verts, " + (NI / 3) + " tris, "
+      + names.length + " shapes [" + names.join(" ") + "]");
+
+  const bones = [root, head, jaw, eyeL, eyeR];
+  root.updateMatrixWorld(true);
+  const inv = bones.map((b) => b.matrixWorld.clone().invert());
+  const skeleton = new THREE.Skeleton(bones, inv);
+
+  const out = new THREE.Group(); out.name = "colin_head";
+  out.add(root);
+  {
+    // every vertex on the head bone, index 1
+    const si = new Uint16Array(N * 4), sw = new Float32Array(N * 4);
+    for (let v = 0; v < N; v++) { si[v * 4] = 1; sw[v * 4] = 1; }
+    gm.setAttribute("skinIndex", new THREE.BufferAttribute(si, 4));
+    gm.setAttribute("skinWeight", new THREE.BufferAttribute(sw, 4));
+    const mat = new THREE.MeshStandardMaterial({ color: 0xd8d2c8, roughness: 0.85, metalness: 0 });
+    const sm = new THREE.SkinnedMesh(gm, mat);
+    sm.name = "colin_head";
+    const dict = {};
+    names.forEach((nm, i) => { dict[nm] = i; });
+    sm.morphTargetDictionary = dict;
+    sm.morphTargetInfluences = names.map(() => 0);
+    sm.userData.targetNames = names;
+    sm.bind(skeleton, new THREE.Matrix4());
+    out.add(sm);
+  }
+
+  new GLTFExporter().parse(out, (buf) => {
+    window.__glb = Array.from(new Uint8Array(buf));
+    window.__log = log.join("\n") + "\nexported " + (buf.byteLength / 1e6).toFixed(2) + " MB";
+  }, (e) => { window.__log = "EXPORT FAIL " + e; },
+  { binary: true, onlyVisible: false });
+}, null, (e) => { window.__log = "LOAD FAIL " + (e && e.message || e); });
+</script>

@@ -1298,15 +1298,68 @@ function visRigPick(mesh) {
   return rig;
 }
 
-function visJawBone(mesh) {
-  if (mesh.__visJaw !== undefined) return mesh.__visJaw;
-  let hit = null;
+/* Whether the jaw is a BONE or a SHAPE, decided by measurement.
+
+   On the Character Creator base it is a bone: Jaw_Open exists as a shape and
+   moves five thousand vertices, but opening it changes the render by 0.2% --
+   it tidies lips around a jaw that CC_Base_JawRoot is supposed to swing.
+
+   His own head has no armature at all. The one in the file is four bones baked
+   in so the passes that need landmarks have them, and the jaw among them
+   carries no weight on purpose, because he authored the opening as a shape.
+   Rotating that bone moves nothing, so a rig that only knows about bones sits
+   there with its mouth shut.
+
+   Neither is a name you can look up -- both files call it Jaw_Open. So: does
+   any vertex actually follow this bone? If none does, the bone is a landmark
+   and the shape is the jaw. And the shape is chosen the same way, by reach
+   rather than by name: measured on his head, jaw_open moves 0.0515 against
+   Character Creator's Jaw_Open at 0.0261 and V_Open at 0.0097, so his custom
+   one wins on the numbers as well as on his say-so. */
+function visJawDriver(mesh) {
+  if (mesh.__visJawKind !== undefined) return mesh.__visJawKind;
   const sk = mesh.skeleton;
-  if (sk) hit = sk.bones.find((b) => /jaw/i.test(b.name) && !/upper/i.test(b.name)) || null;
-  mesh.__visJaw = hit;
-  mesh.__visJawRest = hit ? hit.quaternion.clone() : null;
-  if (hit) console.log("orb jaw bone:", hit.name);
-  return hit;
+  let bone = null, bi = -1;
+  if (sk) {
+    bi = sk.bones.findIndex((b) => /jaw/i.test(b.name) && !/upper/i.test(b.name));
+    if (bi >= 0) bone = sk.bones[bi];
+  }
+  let weighted = false;
+  const si = mesh.geometry && mesh.geometry.attributes.skinIndex;
+  const sw = mesh.geometry && mesh.geometry.attributes.skinWeight;
+  if (bone && si && sw) {
+    for (let v = 0; v < si.count && !weighted; v++)
+      for (const c of ["getX", "getY", "getZ", "getW"])
+        if (si[c](v) === bi && sw[c](v) > 0.02) { weighted = true; break; }
+  }
+  let morph = null;
+  if (!weighted) {
+    const dict = mesh.morphTargetDictionary || {};
+    const mt = (mesh.geometry.morphAttributes || {}).position || [];
+    let best = 0;
+    for (const nm of Object.keys(dict)) {
+      if (!/jaw/i.test(nm) || /forward|back|up|down|left|right|_l$|_r$/i.test(nm)) continue;
+      const a = mt[dict[nm]]; if (!a) continue;
+      let mx = 0;
+      for (let v = 0; v < a.count; v++) {
+        const d = Math.hypot(a.getX(v), a.getY(v), a.getZ(v));
+        if (d > mx) mx = d;
+      }
+      if (mx > best) { best = mx; morph = nm; }
+    }
+    if (morph) console.log("orb jaw shape:", morph, "reach", best.toFixed(4),
+                           "(the jaw bone moves no vertices)");
+  }
+  mesh.__visJaw = weighted ? bone : null;
+  mesh.__visJawRest = weighted && bone ? bone.quaternion.clone() : null;
+  mesh.__visJawMorph = morph;
+  if (weighted) console.log("orb jaw bone:", bone.name);
+  mesh.__visJawKind = weighted ? "bone" : morph ? "shape" : "none";
+  return mesh.__visJawKind;
+}
+function visJawBone(mesh) {
+  visJawDriver(mesh);
+  return mesh.__visJaw;
 }
 
 function visRigFind(mesh) {
@@ -1363,8 +1416,11 @@ function visRig(dt) {
     const want = (target[name] || 0) * VIS_RIG_GAIN;
     mesh.morphTargetInfluences[i] += (want - mesh.morphTargetInfluences[i]) * k;
   }
-  const jaw = visJawBone(mesh);
-  if (jaw) {
+  /* The jaw runs whichever way this mesh opens it. Gating on the BONE was the
+     last thing keeping his head's mouth shut: the shape driver was found and
+     reported and then never asked for a number, because the line above it
+     asked for a bone first and there is not one. */
+  if (visJawDriver(mesh) !== "none") {
     const jw = VIS_JAW[shape] != null ? VIS_JAW[shape] : 0;
     visJawNow += (jw - visJawNow) * k;
     visApplyJaw();
@@ -1379,12 +1435,23 @@ function visRig(dt) {
    sticks. */
 function visApplyJaw() {
   const mesh = gl.mesh;
-  if (!mesh || !window.THREE || !mesh.__visJawRest) return;
-  const jaw = visJawBone(mesh);
-  if (!jaw) return;
-  jaw.quaternion.copy(mesh.__visJawRest).multiply(new window.THREE.Quaternion()
-    .setFromAxisAngle(new window.THREE.Vector3(0, 0, 1),
-                      visJawNow * VIS_JAW_DEG * Math.PI / 180));
+  if (!mesh || !window.THREE) return;
+  const kind = visJawDriver(mesh);
+  if (kind === "bone") {
+    const jaw = mesh.__visJaw;
+    if (!jaw || !mesh.__visJawRest) return;
+    jaw.quaternion.copy(mesh.__visJawRest).multiply(new window.THREE.Quaternion()
+      .setFromAxisAngle(new window.THREE.Vector3(0, 0, 1),
+                        visJawNow * VIS_JAW_DEG * Math.PI / 180));
+    return;
+  }
+  if (kind !== "shape") return;
+  /* Written straight onto the influence, after the visemes have laid theirs
+     down, for the same reason the bone version runs twice a frame: whatever
+     set the mouth shape this frame does not know the jaw is a separate
+     channel, and the jaw has to survive it. */
+  const i = mesh.morphTargetDictionary[mesh.__visJawMorph];
+  if (i != null && mesh.morphTargetInfluences) mesh.morphTargetInfluences[i] = visJawNow;
 }
 
 /* ---------------- the boom box ----------------
