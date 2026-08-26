@@ -1033,7 +1033,23 @@ const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: nul
    card toggle. Then the particle head arrived, ALSO a mouth, and every one of
    those gates silently kept it shut: no marks requested, no timeline built, no
    shape advanced. He replied out loud with a perfectly still face. */
-const visLive = () => vis.on || (rig.on && rig.portrait);
+/* Anything with a mouth on it lip-syncs, not just the particle face.
+
+   This used to be `rig.portrait`, which was true when the only rig that could
+   talk was the head the particles were made of. It is the wrong question now:
+   his own character is going to be a MESH that walks around and answers you,
+   and gating the visemes on the particle mode meant the render everyone
+   actually looks at stood there with its mouth shut.
+
+   The right question is whether this mesh has the shapes. visRigFind caches
+   the map it resolved, so "did four or more of the rig's shapes land on this
+   mesh" is already computed by the time anyone asks -- and a figure with no
+   mouth simply never qualifies and costs nothing. */
+const visMouth = () => {
+  const m = gl.mesh;
+  return !!(rig.on && m && m.__visMap && Object.keys(m.__visMap).length >= 4);
+};
+const visLive = () => vis.on || (rig.on && rig.portrait) || visMouth();
 
 function visLoad() {
   if (vis.el) return;
@@ -8341,7 +8357,9 @@ function updateFigure(dt, now) {
        vertex instead of a matrix per joint, which at this count is about a
        millisecond -- and it cannot disagree with the picture, because it IS
        the picture. */
-    if (rig.portrait) visApplyJaw();   // after the mixer's stomp, before the skin
+    // after the mixer's stomp, before the skin. Not portrait-only: the mixer
+    // stomps a mesh figure's jaw bone exactly as hard as a portrait's.
+    visApplyJaw();
     skinGL(R);
     skinPoints(R);
   } else {
