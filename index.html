@@ -593,6 +593,52 @@ const brain = {
   busy: false
 };
 
+/* What is actually happening, told to the brain every turn.
+
+   The voice and the page have been two separate programs that happen to share
+   a user. Ask it to play something and it plays; ask it what is playing and it
+   says it has no music, because the half that answers has never been told
+   anything the half that plays knows. Same for whose body is on screen, what
+   stage the build is at, whether a picture is up. Every one of those reads as
+   the thing being broken rather than unwired.
+
+   So: one snapshot, sent with the sentence. Small on purpose -- this rides
+   every turn, and a paragraph of state is a paragraph of prompt per question
+   forever. Only what a person in the room could see or hear.
+
+   Everything is read defensively. This runs before the brain call on every
+   single turn, and a state reporter that can throw is a reporter that takes
+   the whole conversation down with it the first time something is null. */
+function worldState() {
+  const st = {};
+  const safe = (f, d) => { try { const v = f(); return v == null ? d : v; } catch (e) { return d; } };
+  if (safe(() => music.playing, false)) {
+    st.music = {
+      title: safe(() => music.title, "") || "unknown",
+      artist: safe(() => music.artist, "") || undefined,
+      bpm: Math.round(safe(() => music.bpm, 0)) || undefined,
+      paused: safe(() => !!music.paused, false) || undefined,
+      of: safe(() => (music.list || []).length, 0) || undefined,
+    };
+  }
+  const on = safe(() => !!rig.on, false);
+  if (on) {
+    st.figure = {
+      model: safe(() => rig.src, "") || "?",
+      // who that model IS, which is the thing worth knowing about it
+      who: safe(() => CAST_OF[String(rig.src || "").toLowerCase()], "") || undefined,
+      stage: safe(() => FIG_STAGE[rig.stage], "") || undefined,
+      particles: safe(() => !!rig.portrait, false) || undefined,
+    };
+  }
+  if (safe(() => !!world.on, false) && safe(() => world.on > 0.5, false)) st.room = true;
+  if (safe(() => !!photo.img, false)) st.picture = safe(() => formLabel, "") || true;
+  if (safe(() => menuOn, false)) st.menu = true;
+  if (safe(() => !!vis.on, false)) st.mouthTest = true;
+  if (safe(() => !!A, false)) st.mic = "live";
+  return Object.keys(st).length ? st : undefined;
+}
+
 let lastAsked = "", lastTiming = "";
 function caption(said, said2) {
   if (said !== null) lastAsked = said;
@@ -768,6 +814,8 @@ async function ask(text) {
       body: JSON.stringify({ messages: brain.history, images: imageList || [],
                              // who is speaking; the Worker maps it to a persona
                              persona: brain.persona || undefined,
+                             // and what is on screen while it answers
+                             state: worldState(),
                              guest: guest.name || "",
                              // one line of who they are, when it is somebody it knows
                              about: (profileOf(guest.name) || {}).is || "",

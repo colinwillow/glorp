@@ -129,6 +129,29 @@ from deleting that variable. Do not add `ORB_PERSONA` to `wrangler.toml` — the
 file would then win over the dashboard on every deploy, which is exactly the
 thing being avoided.
 
+### What it can see
+
+The voice and the page used to be two programs that shared a user: ask it to
+play something and it plays, ask it what is playing and it says it has no
+music, because the half that answers had never been told anything the half that
+plays knows.
+
+The page now sends a `state` snapshot with every turn — what is playing, whose
+figure is on screen and at what build stage, whether the room or the menu or a
+picture is up — and the Worker renders it into a few lines of the system prompt
+labelled as *what you can see, not something to report*. Without that label a
+model reads a status line as an announcement, and nobody wants to be told what
+is on their own screen.
+
+It is rebuilt key by key rather than passed through. The snapshot arrives from a
+request anybody can make and it lands in a system prompt, so nothing reaches the
+model that is not asked for by name: unknown keys are dropped, strings are
+scrubbed and bounded, and booleans must be exactly `true`. The worst a forged
+one can do is lie about which song is playing.
+
+Nothing is sent when nothing is happening, so an idle question costs no extra
+prompt at all. With a track and a figure up it is about 150 bytes.
+
 ### More than one character
 
 The orb is not the only one who talks. When the avatar's body is on screen the

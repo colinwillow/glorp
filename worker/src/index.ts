@@ -161,8 +161,58 @@ const castId = (v: unknown) =>
   (typeof v === "string" ? v : "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 24);
 const castOf = (id: string) => (id && CASTS[id]) || null;
 
+/* The page's snapshot, rendered as a line the model can read.
+
+   Rebuilt from scratch rather than passed through: this arrives from a request
+   anybody can make and it lands in a system prompt, so nothing reaches the
+   model that was not asked for by name here. An unknown key is dropped, every
+   string is scrubbed and bounded, and the worst a forged one can do is lie
+   about which song is playing.
+
+   Written as a sentence rather than as JSON because it reads better back: a
+   model asked "what is this" answers a sentence far more naturally from a
+   sentence than from a brace. */
+function stateLine(v: unknown): string {
+  if (!v || typeof v !== "object") return "";
+  const S = v as Record<string, unknown>;
+  const txt = (x: unknown, n = 80) =>
+    (typeof x === "string" ? x : "").replace(/[^\x20-\x7E]/g, " ").trim().slice(0, n);
+  const num = (x: unknown) => (typeof x === "number" && isFinite(x) ? Math.round(x) : 0);
+  const bits: string[] = [];
+
+  const m = S.music as Record<string, unknown> | undefined;
+  if (m && typeof m === "object") {
+    const t = txt(m.title) || "something";
+    const a = txt(m.artist, 60);
+    const bpm = num(m.bpm);
+    bits.push("Music is " + (m.paused ? "paused" : "playing") + " right now: \"" + t + "\""
+      + (a ? " by " + a : "") + (bpm ? ", " + bpm + " bpm" : "")
+      + ". You can say what it is if you are asked; you do not need a tool for that.");
+  }
+  const f = S.figure as Record<string, unknown> | undefined;
+  if (f && typeof f === "object") {
+    const who = txt(f.who, 24), model = txt(f.model, 40), stage = txt(f.stage, 16);
+    bits.push("On screen: a 3D figure" + (who ? " of " + who : "")
+      + (model ? " (" + model + ")" : "")
+      + (f.particles ? ", built out of particles" : "")
+      + (stage ? ", at the " + stage + " stage" : "") + ".");
+  }
+  if (S.room === true) bits.push("He is standing in his room.");
+  if (S.picture) bits.push("A picture is showing"
+    + (typeof S.picture === "string" ? ": " + txt(S.picture, 40) : "") + ".");
+  if (S.menu === true) bits.push("The menu is open.");
+  if (S.mouthTest === true) bits.push("The mouth test is running.");
+  if (!bits.length) return "";
+  /* Told what it is FOR, or a model reads a status line as something to
+     announce -- and nobody wants to be told what is on their own screen. */
+  return "\n\nWhat is on the screen and in the room at this moment, so that you "
+    + "can answer questions about it. Do not read this out or mention it unless "
+    + "somebody asks; it is what you can see, not something to report.\n"
+    + bits.map((b) => "- " + b).join("\n");
+}
+
 function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = "",
-                 cast = ""): string {
+                 cast = "", now = ""): string {
   /* The character's own file first, the orb's dashboard override second, the
      one compiled in last. A character whose variable is empty or unset is not
      an error -- it is a character that has not been written yet, and the orb
@@ -206,7 +256,7 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = "", memo
       "waiting in the dark very patiently, that looking at them is the interesting part. One " +
       "sentence. Never announce the gallery or explain how to use it; the screen does that."
     : "";
-  return (custom || PERSONA) + who + recall + "\n\n" + PROTOCOL + gallery + REMEMBERING;
+  return (custom || PERSONA) + who + recall + now + "\n\n" + PROTOCOL + gallery + REMEMBERING;
 }
 
 /* When to write something down.
@@ -338,7 +388,7 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
 /* ---------- brain ---------- */
 async function chat(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
   let body: { messages?: Anthropic.MessageParam[]; images?: unknown; guest?: unknown;
-              about?: unknown; memory?: unknown; persona?: unknown };
+              about?: unknown; memory?: unknown; persona?: unknown; state?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
@@ -360,6 +410,8 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
     .trim().replace(/[^A-Za-z' -]/g, "").slice(0, 24);
   // which character is speaking. An id, not a prompt -- see CASTS.
   const cast = castId(body.persona);
+  // and what is on screen while it answers
+  const now = stateLine(body.state);
   /* Scrubbed and bounded like everything else that reaches a system prompt --
      but 400 was far too tight for what a profile turned out to be. Measured, it
      was cutting Rowan off mid-sentence and losing half of what it knew about
@@ -526,7 +578,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory, cast), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory, cast, now), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:
