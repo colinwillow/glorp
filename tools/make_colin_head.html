@@ -348,6 +348,7 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
   const IX = new Uint32Array(NI);
   const MT = names.map(() => new Float32Array(N * 3));
   let vo = 0, io = 0;
+  const groups = [];
   for (const m of parts) {
     const g2 = m.geometry, pa = g2.attributes.position, na = g2.attributes.normal,
           ua = g2.attributes.uv, ia = g2.index;
@@ -367,6 +368,7 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
         MT[slot][(vo + v) * 3 + 2] = a.getZ(v);
       }
     }
+    groups.push({ name: m.name, start: io, count: ia.count });
     vo += pa.count; io += ia.count;
   }
   const gm = new THREE.BufferGeometry();
@@ -374,6 +376,13 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
   gm.setAttribute("normal", new THREE.BufferAttribute(NRM, 3));
   gm.setAttribute("uv", new THREE.BufferAttribute(UV, 2));
   gm.setIndex(new THREE.BufferAttribute(IX, 1));
+  /* One mesh, four GROUPS. Merging was what let the visemes and the build wipe
+     reach the hair and the tongue at all -- the app drives the first skinned
+     mesh and nothing else -- but a single mesh does not have to mean a single
+     material. Each part keeps its own draw range and its own skin, and the
+     app's material pass already handles an array, so nothing there has to
+     learn about this. */
+  groups.forEach((g3, i) => gm.addGroup(g3.start, g3.count, i));
   gm.morphAttributes.position = MT.map((a) => new THREE.BufferAttribute(a, 3));
   gm.morphTargetsRelative = true;
   gm.userData.targetNames = names;
@@ -393,8 +402,29 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
     for (let v = 0; v < N; v++) { si[v * 4] = 1; sw[v * 4] = 1; }
     gm.setAttribute("skinIndex", new THREE.BufferAttribute(si, 4));
     gm.setAttribute("skinWeight", new THREE.BufferAttribute(sw, 4));
-    const mat = new THREE.MeshStandardMaterial({ color: 0xd8d2c8, roughness: 0.85, metalness: 0 });
-    const sm = new THREE.SkinnedMesh(gm, mat);
+    /* Named for the file each one wants, and the name is the whole mapping:
+       the app loads images/textures/<tex>.webp for any material that declares
+       one. The textures stay OUT of the GLB on purpose -- they are 263 KB of
+       webp between them, and GLTFExporter re-encodes to PNG on the way in,
+       which would have turned a quarter of a megabyte into several. */
+    const TEX = {
+      colin_main: { tex: "colin_head", color: 0xffffff },
+      hair:       { tex: "colin_hair", color: 0xffffff },
+      eyes:       { tex: "colin_eyes", color: 0xffffff },
+      // his hex, and no map: the tongue has UVs but nothing painted for them
+      tongue:     { tex: null, color: 0xbc6363 },
+    };
+    const mats = groups.map((g3) => {
+      const spec = TEX[g3.name] || { tex: null, color: 0xd8d2c8 };
+      const m2 = new THREE.MeshStandardMaterial({
+        color: spec.color, roughness: 0.85, metalness: 0 });
+      m2.name = g3.name;
+      if (spec.tex) m2.userData.tex = spec.tex;
+      return m2;
+    });
+    say("materials: " + groups.map((g3, i) =>
+      g3.name + "->" + (mats[i].userData.tex || "#" + mats[i].color.getHexString())).join(", "));
+    const sm = new THREE.SkinnedMesh(gm, mats);
     sm.name = "colin_head";
     const dict = {};
     names.forEach((nm, i) => { dict[nm] = i; });

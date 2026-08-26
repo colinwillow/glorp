@@ -6101,6 +6101,39 @@ const gl = {
 /* Injected into whatever material the file brought with it, rather than
    replacing it. The whole reason for rendering this on a GPU is that the
    model's own material is what makes it look like the model. */
+/* Textures that live next to the page rather than inside the model.
+
+   A material can name one -- userData.tex, written by the builder and carried
+   through as glTF extras -- and it is loaded from images/textures/<name>.webp
+   and hung on the material. Kept outside the GLB because these three are 263 KB
+   of webp between them and GLTFExporter re-encodes images to PNG on the way in,
+   which turns a quarter of a megabyte into several for no gain at all.
+
+   Two things a glTF-authored mesh needs from a texture loaded by hand, and
+   both are silent when wrong: flipY off, because glTF's UV origin is the
+   opposite of the one TextureLoader assumes and the face comes out upside
+   down; and sRGB, or every colour renders washed out and nobody can say quite
+   why. */
+const figTexCache = {};
+function figTextures(mats) {
+  const T = window.THREE;
+  if (!T) return;
+  for (const m of mats) {
+    const nm = m.userData && m.userData.tex;
+    if (!nm || m.map) continue;
+    const url = "images/textures/" + String(nm).replace(/[^a-z0-9_-]/gi, "") + ".webp";
+    const put = (t) => { m.map = t; m.color.setHex(0xffffff); m.needsUpdate = true; };
+    if (figTexCache[url]) { put(figTexCache[url]); continue; }
+    new T.TextureLoader().load(url, (t) => {
+      t.flipY = false;
+      t.colorSpace = T.SRGBColorSpace || T.sRGBEncoding;
+      t.anisotropy = 4;
+      figTexCache[url] = t;
+      put(t);
+      console.log("orb texture:", nm, "->", m.name || "(unnamed material)");
+    }, null, () => console.log("orb texture missing:", url));
+  }
+}
 function glWipeMat(m, hi, lo) {
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uWipe = hi;
@@ -6210,11 +6243,37 @@ function glLoad(buf, src, R) {
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
       let mesh = null;
-      g.scene.traverse((o) => { if (o.isSkinnedMesh && !mesh) mesh = o; });
+      /* ALL of them, not just the first.
+
+         A mesh with more than one material does not survive a round trip as
+         one object: glTF has a single material per primitive, so the exporter
+         splits it and the loader gives back one SkinnedMesh per piece --
+         mesh_0, mesh_0_1, mesh_0_2 -- sharing the geometry and the morph
+         targets but each with its own material and its own influence array.
+         Taking the first and stopping meant his hair, eyes and tongue got no
+         texture, no build wipe, and no visemes: three quarters of his head
+         rendering flat white through every stage. */
+      const skins = [];
+      g.scene.traverse((o) => { if (o.isSkinnedMesh) { skins.push(o); if (!mesh) mesh = o; } });
       if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
-      // never culled: the wipe means most of it is clipped away most of the
-      // time, and a bounding sphere computed on the bind pose is wrong anyway
-      mesh.frustumCulled = false;
+      for (const o of skins) {
+        // never culled: the wipe means most of it is clipped away most of the
+        // time, and a bounding sphere computed on the bind pose is wrong anyway
+        o.frustumCulled = false;
+        /* One influence array between them. The viseme driver writes to
+           gl.mesh and only gl.mesh, and these are pieces of one face -- a jaw
+           that opens on the skin and not on the beard is not a jaw. Sharing the
+           array rather than copying it each frame means the driver stays a
+           driver and never learns that the mesh came back in pieces. */
+        if (o !== mesh && o.morphTargetInfluences && mesh.morphTargetInfluences
+            && o.morphTargetInfluences.length === mesh.morphTargetInfluences.length) {
+          o.morphTargetInfluences = mesh.morphTargetInfluences;
+          o.morphTargetDictionary = mesh.morphTargetDictionary;
+        }
+      }
+      if (skins.length > 1)
+        console.log("orb rig: " + skins.length + " primitives share one face ("
+          + skins.map((o) => (Array.isArray(o.material) ? o.material[0] : o.material).name || "?").join(", ") + ")");
       /* The hood drawing in front of the face.
 
          The material in this file is `alphaMode: BLEND`, and glTF says a
@@ -6233,7 +6292,10 @@ function glLoad(buf, src, R) {
          an override. If the map really does carry alpha, it is left alone and
          the reason is logged -- silently discarding somebody's cutouts to fix
          their hood would be much worse than the hood. */
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const mats = [];
+      for (const o of skins)
+        for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
+          if (m && !mats.includes(m)) mats.push(m);
       for (const m of mats) {
         if (m.transparent) {
           if (R && R.texMinAlpha >= 250) {
@@ -6250,6 +6312,7 @@ function glLoad(buf, src, R) {
         }
         glWipeMat(m, gl.uTex, null);
       }
+      figTextures(mats);
       /* The ghost: the same geometry and the same skeleton, a second time, in
          the orb's own green. It is the "fill" step -- the surface arriving
          before its colours do -- and it is a real second mesh rather than a
