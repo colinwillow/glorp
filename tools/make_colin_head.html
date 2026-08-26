@@ -38,7 +38,13 @@ const say = (s) => { log.push(s); };
 const KEEP_FACE = ["V_Open", "V_Explosive", "V_Dental_Lip", "V_Tight_O", "V_Tight",
   "V_Wide", "V_Affricate", "V_Lip_Open", "Mouth_Close", "Mouth_Press_L",
   "Mouth_Press_R", "Mouth_Smile_L", "Mouth_Smile_R", "Mouth_Frown_L", "Mouth_Frown_R",
-  "mouth_pucker", "mouth_funnell", "Jaw_Open", "jaw_open"];
+  "mouth_pucker", "mouth_funnell", "Jaw_Open", "jaw_open",
+  /* Not in the file yet -- he has not sculpted them. Listed anyway so that the
+     day they exist they survive the prune without this being edited, and the
+     app's blink driver finds them by any of the names a DCC tool is likely to
+     write. A name that is not there is skipped in silence. */
+  "Eye_Blink", "Eye_Blink_L", "Eye_Blink_R", "eye_blink", "blink",
+  "Eye_Squint_L", "Eye_Squint_R"];
 const KEEP_TONGUE = ["V_Tongue_Raise", "V_Tongue_Out", "V_Tongue_up", "V_Tongue_Lower",
   "Jaw_Open", "jaw_open"];
 /* Baked at full strength and then dropped. His note: without `colin` at 100%
@@ -452,7 +458,7 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
         MT[slot][(vo + v) * 3 + 2] = a.getZ(v);
       }
     }
-    groups.push({ name: m.name, start: io, count: ia.count });
+    groups.push({ name: m.name, start: io, count: ia.count, v0: vo, vn: pa.count });
     vo += pa.count; io += ia.count;
   }
   const gm = new THREE.BufferGeometry();
@@ -482,8 +488,31 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
   out.add(root);
   {
     // every vertex on the head bone, index 1
+    /* Everything on the head bone -- except the eyeballs, which go on their
+       own. Weighting the whole model to one bone was right while the bones
+       were only landmarks, and it is what stops him looking anywhere: a
+       skinned eye follows its bone, and an eye welded to the skull can only
+       ever stare. Split at the eye mesh's own midline, same as the bones were.
+
+       Rotating them then works because each bone sits AT its eyeball's centre,
+       so a rotation about the bone is a rotation about the eye rather than a
+       swing around the head. */
     const si = new Uint16Array(N * 4), sw = new Float32Array(N * 4);
     for (let v = 0; v < N; v++) { si[v * 4] = 1; sw[v * 4] = 1; }
+    const eg = groups.find((g3) => g3.name === "eyes");
+    if (eg) {
+      let mid = 0;
+      for (let k = 0; k < eg.vn; k++) mid += P[(eg.v0 + k) * 3];
+      mid /= eg.vn;
+      let nl = 0, nr = 0;
+      for (let k = 0; k < eg.vn; k++) {
+        const v = eg.v0 + k;
+        const left = P[v * 3] < mid;
+        si[v * 4] = left ? 3 : 4;        // bones[] = root, head, jaw, eyeL, eyeR
+        if (left) nl++; else nr++;
+      }
+      say("eyes skinned to their own bones: " + nl + " left, " + nr + " right");
+    }
     gm.setAttribute("skinIndex", new THREE.BufferAttribute(si, 4));
     gm.setAttribute("skinWeight", new THREE.BufferAttribute(sw, 4));
     /* Named for the file each one wants, and the name is the whole mapping:

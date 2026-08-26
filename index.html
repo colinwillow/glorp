@@ -6490,8 +6490,11 @@ function glFrame(K, FOC) {
      proportional to how far he has come. Measured at world.z = 4.95 it put the
      particle silhouette 130 px below the figure it is supposed to be. */
   gl.stage.rotation.set(view.pitch * formT, view.yaw, 0);
-  gl.root.position.set(world.x, world.y, world.z);
-  gl.root.rotation.set(0, world.yaw, 0);
+  floatNow(performance.now() * 0.001);
+  eyesNow(gl.dt || 16.67, performance.now());
+  blinkNow(performance.now());
+  gl.root.position.set(world.x + flo.x, world.y + flo.y, world.z + flo.z);
+  gl.root.rotation.set(flo.rx, world.yaw + flo.ry, flo.rz);
   if (gl.group) gl.group.position.set(-f.c[0], -f.c[1], -f.c[2]);
   boomBoxFrame(gl.dt || 16.67);
   if (gl.ground) {
@@ -7993,6 +7996,110 @@ function figFeatures(EP, sep) {
   return F;
 }
 
+/* A head with nothing under it should not hang there like a photograph.
+
+   The portrait has BOB, but that is the PARTICLE face and it works on the
+   formation matrix. This is the rendered mesh, placed in the room by world.x
+   and world.yaw like any other figure -- and a figure with legs is supposed to
+   stand still. So the float is switched on by the thing that is actually true
+   of him: he has no feet. A skeleton with no foot or toe bone in it is not
+   standing on anything, so it drifts.
+
+   Six sines on periods that share no common multiple, which is the whole
+   reason it does not read as a loop. Amplitudes are in his own height, so this
+   is the same drift whatever scale the next model is exported at. */
+const FLOAT = { y: 0.030, x: 0.022, z: 0.026, pitch: 0.055, yaw: 0.085, roll: 0.040 };
+const flo = { x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0 };
+function floatNow(t) {
+  if (!rig.floats) { flo.x = flo.y = flo.z = flo.rx = flo.ry = flo.rz = 0; return; }
+  const H1 = figH1() || 1;
+  flo.y = Math.sin(t * 0.53) * FLOAT.y * H1;
+  flo.x = Math.sin(t * 0.37 + 2.1) * FLOAT.x * H1;
+  flo.z = Math.sin(t * 0.23 + 4.3) * FLOAT.z * H1;
+  flo.rx = Math.sin(t * 0.41 + 1.2) * FLOAT.pitch;
+  flo.ry = Math.sin(t * 0.19 + 0.6) * FLOAT.yaw;
+  flo.rz = Math.sin(t * 0.31 + 3.7) * FLOAT.roll;
+}
+
+/* Where he is looking, and the eyes are bones now rather than a drawn disc --
+   the builder skins each eyeball to its own bone, so this is a rotation about
+   the centre of an eye rather than anything painted on.
+
+   Wander, with the occasional return to centre and a long hold. Eyes are
+   conjugate, so both take the same angles; that they move TOGETHER is most of
+   what stops it reading as a doll. */
+const EYES = { reach: 0.34, ease: 0.10, hold: [0.7, 3.4] };
+const look = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
+function eyesNow(dt, now) {
+  if (now > look.next) {
+    if (Math.random() < 0.32) { look.tx = 0; look.ty = 0; }
+    else {
+      const a = Math.random() * TAU, r = 0.3 + Math.random() * 0.7;
+      look.tx = Math.cos(a) * r; look.ty = Math.sin(a) * r * 0.55;
+    }
+    look.next = now + look.hold0();
+  }
+  const k = 1 - Math.pow(1 - EYES.ease, dt / 16.67);
+  look.x += (look.tx - look.x) * k;
+  look.y += (look.ty - look.y) * k;
+  const T = window.THREE;
+  if (!T || !gl.mesh || !gl.mesh.skeleton) return;
+  if (!gazeQ) { gazeQ = new T.Quaternion(); gazeE = new T.Euler(); }
+  if (!rig.eyeB) {
+    rig.eyeB = gl.mesh.skeleton.bones.filter((b) => /_(l|r)_eye$|left_?eye$|right_?eye$/i.test(b.name));
+    rig.eyeQ = rig.eyeB.map((b) => b.quaternion.clone());
+    if (rig.eyeB.length) console.log("orb gaze:", rig.eyeB.map((b) => b.name).join(", "));
+  }
+  for (let i = 0; i < rig.eyeB.length; i++) {
+    // yaw about the head's up, pitch about its right. The eye bones were baked
+    // with no rotation of their own, so their axes are the head's axes.
+    rig.eyeB[i].quaternion.copy(rig.eyeQ[i])
+      .multiply(gazeQ.setFromEuler(gazeE.set(-look.y * EYES.reach, look.x * EYES.reach, 0, "YXZ")));
+  }
+}
+/* Blinking, for whenever the shape exists.
+
+   It does not yet -- his head ships 23 shapes and not one of them closes a
+   lid, so this reports what it looked for and then does nothing at all. It is
+   here rather than waiting because the whole of a blink is two numbers and a
+   timer, and the part worth getting right is that a blink is FAST down and
+   slower up, not a symmetric fade: about 90ms to close and 160 to open. A
+   symmetric one reads as a wince.
+
+   Any of the usual names, either as a pair or as one shape for both eyes. */
+const BLINK = { down: 90, up: 160, gap: [2600, 7000], twice: 0.22 };
+const blink = { at: 0, t: 0, next: 0, ids: null };
+function blinkNow(now) {
+  const m = gl.mesh;
+  if (!m || !m.morphTargetDictionary) return;
+  if (blink.ids === null) {
+    const d = m.morphTargetDictionary;
+    blink.ids = Object.keys(d).filter((k) => /blink|eye_?close|lid/i.test(k)).map((k) => d[k]);
+    console.log(blink.ids.length
+      ? "orb blink: " + blink.ids.length + " shape(s)"
+      : "orb blink: no blink shape on this head -- sculpt one named Eye_Blink_L / "
+        + "Eye_Blink_R (or a single Eye_Blink) and it starts working with no code change");
+  }
+  if (!blink.ids.length) return;
+  if (!blink.next) blink.next = now + 1200;
+  if (now > blink.next) {
+    blink.at = now;
+    blink.next = now + BLINK.gap[0] + Math.random() * (BLINK.gap[1] - BLINK.gap[0]);
+    // people blink twice in a row more often than chance would have it
+    if (Math.random() < BLINK.twice) blink.next = now + BLINK.down + BLINK.up + 90;
+  }
+  const e = now - blink.at;
+  blink.t = e < 0 ? 0
+    : e < BLINK.down ? e / BLINK.down
+    : e < BLINK.down + BLINK.up ? 1 - (e - BLINK.down) / BLINK.up
+    : 0;
+  for (const i of blink.ids) if (m.morphTargetInfluences) m.morphTargetInfluences[i] = blink.t;
+}
+
+look.hold0 = () => EYES.hold[0] * 1000 + Math.random() * (EYES.hold[1] - EYES.hold[0]) * 1000;
+// built on first use: three is loaded on demand and is not here at parse time
+let gazeQ = null, gazeE = null;
+
 function bobMatrix(M0, t) {
   const rx = Math.sin(t * 0.45) * BOB.pitch;
   const ry = Math.sin(t * 0.19 + 0.6) * BOB.yaw;
@@ -8368,6 +8475,15 @@ async function showFigure(src, portrait) {
   worldReset();
   rig.fs0 = FIG_FS;
   rig.R = R; rig.src = src; rig.on = 1; rig.out = 0; rig.loading = 0;
+  /* Measured off the skeleton rather than declared per model: a rig with no
+     foot and no toe in it is not standing on anything. A head floats; a body
+     does not, and nobody has to remember to say so. */
+  rig.floats = 0;
+  rig.eyeB = null; blink.ids = null; blink.next = 0;
+  try {
+    const bs = (gl.mesh && gl.mesh.skeleton && gl.mesh.skeleton.bones) || [];
+    rig.floats = bs.length && !bs.some((b) => /foot|toe/i.test(b.name)) ? 1 : 0;
+  } catch (e) {}
   rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
   rig.orbN = 0; rig.oH = null;
   rig.wipe = [0, 0, 0, 0];
@@ -8549,7 +8665,7 @@ function updateFigure(dt, now) {
     bobX = Math.sin(tSec * 0.37 + 2.1) * BOB.x;
     bobZ = Math.sin(tSec * 0.23 + 4.3) * BOB.z;
   }
-  const cw = Math.cos(world.yaw), sw = Math.sin(world.yaw);
+  const cw = Math.cos(world.yaw + flo.ry), sw = Math.sin(world.yaw + flo.ry);
   const S = rig.samp, pn = rig.pn != null ? rig.pn : R.dec.n;
   let bXL = 1e30, bXH = -1e30, bYL = 1e30, bYH = -1e30, bZL = 1e30, bZH = -1e30;
   for (let i = 0; i < n; i++) {
@@ -8587,7 +8703,9 @@ function updateFigure(dt, now) {
       gz = M[6]*bx + M[7]*by + M[8]*bz;
     } else {
       const rx = x * cw + z * sw, rz = -x * sw + z * cw;
-      fx = (rx + world.x) * f.k; fy = -(y + world.y) * f.k; fz = -(rz + world.z) * f.k;
+      fx = (rx + world.x + flo.x) * f.k;
+      fy = -(y + world.y + flo.y) * f.k;
+      fz = -(rz + world.z + flo.z) * f.k;
       gx = nx2 * cw + nz2 * sw; gy = -ny2; gz = -(-nx2 * sw + nz2 * cw);
     }
     if (M) {
