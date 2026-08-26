@@ -178,6 +178,79 @@ function rebuild(mesh, tris, keepNames) {
   return n;
 }
 
+/* The eyelashes, which are meant to be invisible and are not.
+
+   In his scene they are a polygon selection with a zero-opacity material. None
+   of that survives the export: the source GLB has zero materials, one
+   primitive per mesh, and all three textures are fully opaque -- so there is
+   nothing left that says "these faces are lashes". They arrive as ordinary
+   geometry, take the black they are painted in colin_head.webp, and render as
+   heavy dark bands above and below each eye.
+
+   What DID survive is that they are not welded to the face. Welding by
+   position and walking the triangle graph finds seven connected components in
+   his head: the head itself at 7737 triangles, a symmetric pair of 320 just
+   above the eye bones, a symmetric pair of 280 just below, and two 60-triangle
+   specks at the inner corners. Upper lashes, lower lashes, and the tear ducts.
+
+   So: any component that is not the head, sits near an eye, and is wide enough
+   to cover one. Both tests scale-free -- the width is measured against that
+   eye's own width, not against a number typed here -- so this keeps working on
+   a re-export at a different size. The tear ducts fail the width test by a
+   factor of seven and stay, because they are tiny and nobody asked. */
+function dropLashes(mesh, eyeWorld, eyeW, headW) {
+  const geo = mesh.geometry, ix = geo.index, pos = geo.attributes.position;
+  const rep = new Int32Array(pos.count);
+  const seen = new Map();
+  for (let v = 0; v < pos.count; v++) {
+    const k = Math.round(pos.getX(v) * 1e5) + "," + Math.round(pos.getY(v) * 1e5)
+            + "," + Math.round(pos.getZ(v) * 1e5);
+    if (!seen.has(k)) seen.set(k, v);
+    rep[v] = seen.get(k);
+  }
+  const par = new Int32Array(pos.count);
+  for (let i = 0; i < par.length; i++) par[i] = i;
+  const find = (a) => { while (par[a] !== a) { par[a] = par[par[a]]; a = par[a]; } return a; };
+  const uni = (a, c) => { a = find(a); c = find(c); if (a !== c) par[a] = c; };
+  for (let t = 0; t < ix.count; t += 3) {
+    const a = rep[ix.getX(t)], c = rep[ix.getX(t + 1)], d = rep[ix.getX(t + 2)];
+    uni(a, c); uni(c, d);
+  }
+  const comp = new Map();
+  for (let t = 0; t < ix.count; t += 3) {
+    const r = find(rep[ix.getX(t)]);
+    let e = comp.get(r);
+    if (!e) { e = { tris: 0, lo: [1e9, 1e9, 1e9], hi: [-1e9, -1e9, -1e9] }; comp.set(r, e); }
+    e.tris++;
+    for (let k = 0; k < 3; k++) {
+      const v = ix.getX(t + k), q = [pos.getX(v), pos.getY(v), pos.getZ(v)];
+      for (let j = 0; j < 3; j++) { if (q[j] < e.lo[j]) e.lo[j] = q[j]; if (q[j] > e.hi[j]) e.hi[j] = q[j]; }
+    }
+  }
+  let biggest = null;
+  for (const [r, e] of comp) if (!biggest || e.tris > comp.get(biggest).tris) biggest = r;
+  const kill = new Set();
+  for (const [r, e] of comp) {
+    if (r === biggest) continue;
+    const c = [0, 1, 2].map((j) => (e.hi[j] + e.lo[j]) / 2);
+    const near = eyeWorld.some((p2) => Math.hypot(c[0] - p2[0], c[1] - p2[1], c[2] - p2[2]) < headW * 0.30);
+    const wide = (e.hi[0] - e.lo[0]) >= eyeW * 0.5;
+    if (near && wide) {
+      kill.add(r);
+      say("  dropping lash shell: " + e.tris + " tris at "
+          + c.map((v) => v.toFixed(3)).join(", ") + " (width "
+          + (e.hi[0] - e.lo[0]).toFixed(3) + " vs eye " + eyeW.toFixed(3) + ")");
+    }
+  }
+  if (!kill.size) { say("  no lash shells found"); return; }
+  const tris = [];
+  for (let t = 0; t < ix.count; t += 3) {
+    if (kill.has(find(rep[ix.getX(t)]))) continue;
+    tris.push(ix.getX(t), ix.getX(t + 1), ix.getX(t + 2));
+  }
+  rebuild(mesh, tris, geo.userData.targetNames || []);
+}
+
 // how far a shape actually moves the mesh, in world units -- the only honest
 // way to tell his jaw_open from Character Creator's Jaw_Open
 function shapeReach(mesh, nm) {
@@ -338,6 +411,17 @@ L.load("models/colin_stylized_facial_01.glb", (g) => {
      does not move this part" means, so the tongue rides Jaw_Open, the hair
      follows the mouth it was generated from, and the eyeballs sit still
      through all of it without needing a single special case anywhere. */
+  /* Dropped rather than made transparent. "A material with zero opacity" and
+     "not there" render identically, and the second one costs no draw call, no
+     depth-sort argument with the eyeball behind it, and no vertices. If they
+     are ever wanted back they come from a re-export, not from this file. */
+  {
+    const eb = new THREE.Box3().setFromBufferAttribute(want.eyes.geometry.attributes.position);
+    const eyeW = (eb.max.x - eb.min.x) / 2;     // one eye, not the pair
+    const world = [eyeL, eyeR].map((bn) => [cx + bn.position.x, hY + bn.position.y, cz + bn.position.z]);
+    dropLashes(face, world, eyeW, fb.max.x - fb.min.x);
+  }
+
   const parts = ["colin_main", "hair", "tongue", "eyes"].map((k) => want[k]).filter(Boolean);
   const names = [];
   for (const m of parts) for (const nm of (m.geometry.userData.targetNames || []))
