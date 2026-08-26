@@ -119,18 +119,57 @@ function buildRoom() {
    here had to be told that a wall became a floor. */
 const G = new THREE.Vector3(0, -1, 0);      // smoothed, unit
 const gRaw = new THREE.Vector3(0, -1, 0);
+let gMag = 9.81, gLen = 9.81;
 let shake = 0, motionOn = 0, lastMotion = 0, motionWhy = "not started";
 const push = new THREE.Vector3(), shakeDir = new THREE.Vector3(1, 0, 0);
+
+/* THE SIGN, which is the one thing in this file with no right answer.
+
+   accelerationIncludingGravity is specified as the force ON the device -- a
+   phone lying still reads +9.81 pointing UP out of its own back -- and Chrome
+   on Android reports it that way. Safari on iOS does not. It passes CoreMotion
+   through untouched, where the same phone reads -9.81, i.e. the vector already
+   IS gravity. Assume either one and half the phones in the world put him on
+   the ceiling, which is exactly what happened: the HUD read g = 0.98 up while
+   the phone was upright, and he fell towards it, correctly, obediently, into
+   the wrong wall.
+
+   So do not assume. Measure it, against a source that IS specified the same
+   way everywhere: deviceorientation. beta and gamma give the rotation from the
+   world to the device, and the third row of Rz(a)Rx(b)Ry(g) turns that into
+   which way is down IN THE PHONE'S OWN AXES -- flat on a table, (0,0,-1), out
+   through its back, no vendor opinion involved. Dot that against the
+   accelerometer while the phone is roughly still and the sign falls out: if
+   they agree, the reading is gravity; if they oppose, it is the reaction to
+   it. Eight agreeing samples and it locks. */
+let gSign = 0, gVote = 0, gLock = 0;
+const oDown = new THREE.Vector3();
+let oAt = 0;
+
+function onOrient(e) {
+  if (e.beta == null || e.gamma == null) return;
+  const b = e.beta * Math.PI / 180, c = e.gamma * Math.PI / 180;
+  const cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(c), sg = Math.sin(c);
+  oDown.set(cb * sg, -sb, -cb * cg);
+  oAt = performance.now();
+}
+
+function gCalibrate(a, L) {
+  if (gLock || !oAt || performance.now() - oAt > 500) return;
+  // only while he is holding it still: any real motion corrupts the reading
+  if (L < 8.4 || L > 11.2) return;
+  const d = (a.x * oDown.x + a.y * oDown.y + a.z * oDown.z) / L;
+  if (Math.abs(d) < 0.8) return;              // orientation not settled either
+  gVote += d > 0 ? 1 : -1;
+  if (Math.abs(gVote) >= 8) { gSign = gVote > 0 ? 1 : -1; gLock = 1; }
+}
 
 function onMotion(e) {
   const a = e.accelerationIncludingGravity;
   if (!a || a.x == null) return;
-  /* The sign. accelerationIncludingGravity reports the force ON the device,
-     which points AWAY from gravity -- a phone lying still on a table reads
-     +9.81 on z, not -9.81. So down is the negative of it. Getting this
-     backwards is the classic version of this bug and it looks completely
-     plausible: he falls to the ceiling. */
-  gRaw.set(-a.x, -a.y, -a.z);
+  const L0 = Math.hypot(a.x, a.y, a.z) || 1;
+  gCalibrate(a, L0);
+  gRaw.set(a.x * gSign, a.y * gSign, a.z * gSign);
   const L = gRaw.length() || 1;
   /* The shake has a DIRECTION, and that was the thing missing. Taking only the
      magnitude and then flinging every joint along a random vector is why he
@@ -158,7 +197,17 @@ function onMotion(e) {
      way you flicked, the way anything loose in a box you jerk sideways does.
      An impulse fired at a threshold could never do that; it can only ever
      shove him once, in one direction, at one strength. */
-  push.copy(gRaw).multiplyScalar(1 / L).sub(G).multiplyScalar(L);
+  /* Minus the box's acceleration, and the magnitude has to come from a
+     low-passed |g| rather than from this reading's own length. Scaling the
+     unit down-vector by L looked equivalent and is not: L swells the moment
+     the phone moves, so subtracting G*L leaves a leftover along GRAVITY
+     proportional to how hard you shook. Measured, a purely sideways 1.8g flick
+     came out as 26 -- clipped at the ceiling -- with a large vertical
+     component that was never in the hand. Gravity's magnitude is a constant;
+     filtering it slowly and using that makes this exactly -A and nothing
+     else. */
+  gMag += (L - gMag) * 0.02; gLen = L;
+  push.copy(gRaw).addScaledVector(G, -gMag);
   const mag = push.length();
   // a deadband for sensor hash, or he buzzes on a still table
   if (mag < SIM.deadband) push.set(0, 0, 0);
@@ -182,10 +231,27 @@ async function startMotion() {
       if (r !== "granted") { motionWhy = "permission " + r; return false; }
     } catch (err) { motionWhy = "permission failed: " + err.message; return false; }
   }
+  /* The opening guess while the calibration gathers samples, so the first
+     second is not spent upside down: requestPermission exists on iOS and
+     nowhere else, and iOS is the one that reports gravity directly. */
+  if (!gSign) gSign = typeof D.requestPermission === "function" ? 1 : -1;
+  const O = window.DeviceOrientationEvent;
+  if (O) {
+    try {
+      if (typeof O.requestPermission === "function") await O.requestPermission();
+      window.addEventListener("deviceorientation", onOrient);
+    } catch (err) { /* no orientation: the guess above stands, tap to flip */ }
+  }
   window.addEventListener("devicemotion", onMotion);
   motionWhy = "listening";
   return true;
 }
+
+/* And the escape hatch, because a calibration that cannot be overruled is just
+   a confident guess. Tap the readout and down becomes up. */
+function flipG() { gSign = -gSign || -1; gLock = 1; gVote = 0; G.multiplyScalar(-1); }
+HUD.addEventListener("click", flipG);
+HUD.style.cursor = "pointer";
 
 /* ---- the man ---- */
 let mesh = null, skel = null, mixer = null, idle = null;
@@ -583,7 +649,20 @@ function frame() {
   let dt = (now - last) / 1000; last = now;
   if (dt > 0.1) dt = 0.1;
 
-  G.lerp(gRaw, 1 - Math.pow(0.002, dt));    // low-passed, or he jitters
+  /* Separating gravity from the hand, which one fixed filter cannot do.
+
+     Slow enough to ignore a shake and it takes most of a second to notice you
+     tilted the phone; fast enough to follow a tilt and a shake bleeds straight
+     into it -- G swings, `tilt` spikes, and the leftover shows up in `push` as
+     force that was never in your hand.
+
+     But the reading tells you which one is happening. A phone that is merely
+     ROTATED still reads 9.81, however fast you turn it; only acceleration
+     changes the magnitude. So follow hard while the length says "still" and
+     freeze while it says "moving", and one filter does both jobs: a tilt lands
+     in about a sixth of a second, and a hard flick barely moves G at all. */
+  const off = Math.min(8, Math.abs(gLen - gMag));
+  G.lerp(gRaw, 1 - Math.exp(-dt / (0.15 + off * 0.35)));
   G.normalize();
   /* The push is refreshed sixty times a second while the sensor is live. If it
      stops -- the tab backgrounds, the permission lapses, a keyboard test sets
@@ -608,7 +687,9 @@ function frame() {
     "   tilt " + (tilt * 180 / Math.PI).toFixed(0) + "°" +
     "\nlimp " + limp.toFixed(2) + "   shake " + shake.toFixed(1) +
     "   settled " + settled.toFixed(1) +
-    "\nmotion: " + motionWhy;
+    "\nmotion: " + motionWhy +
+    (motionOn ? "   g" + (gSign > 0 ? "+" : "-") + (gLock ? "" : "?")
+              + " · tap to flip" : "");
 }
 
 function resize() {
@@ -629,7 +710,7 @@ addEventListener("resize", resize);
 /* Not a courtesy. Everything above is driven by one unit vector and one
    scalar, and being able to set those from a keyboard is what makes the
    physics checkable at all -- there is no way to shake a headless browser. */
-function tiltKeys(x, y, z) { gRaw.set(x, y, z).normalize(); motionOn = 1; }
+function tiltKeys(x, y, z) { gRaw.set(x, y, z).normalize(); gLen = gMag; motionOn = 1; }
 addEventListener("keydown", (e) => {
   const k = e.key;
   if (k === "ArrowLeft") tiltKeys(-1, -0.35, 0);
