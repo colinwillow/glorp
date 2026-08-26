@@ -1,0 +1,505 @@
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>box</title>
+<style>
+  html,body{height:100%;margin:0;background:#08090A;overflow:hidden;
+    font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#7F8B77;
+    -webkit-user-select:none;user-select:none;touch-action:none}
+  canvas{display:block;position:fixed;inset:0}
+  #hud{position:fixed;left:12px;top:calc(12px + env(safe-area-inset-top));z-index:3;
+    white-space:pre;pointer-events:none;opacity:.75;font-size:11px}
+  #tap{position:fixed;inset:0;z-index:9;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;background:rgba(8,9,10,.92);text-align:center;padding:24px}
+  #tap b{font-weight:500;color:#C8F49A;font-size:15px}
+  #tap p{margin:0;max-width:30ch;line-height:1.6}
+  #tap button{margin-top:8px;background:#12160F;border:1px solid #3B4A31;color:#C8F49A;
+    padding:12px 22px;border-radius:22px;font:inherit;font-size:14px}
+  #keys{position:fixed;left:0;right:0;bottom:calc(14px + env(safe-area-inset-bottom));z-index:3;
+    text-align:center;opacity:.5;font-size:11px}
+</style>
+<div id="hud"></div>
+<div id="keys"></div>
+<div id="tap">
+  <b>the box</b>
+  <p id="why">Tilt the phone and he falls whichever way is down. Shake it and he
+     comes off the floor.</p>
+  <button id="go">start</button>
+</div>
+
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { DRACOLoader } from "./vendor/DRACOLoader.js";
+import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
+
+/* ---------------------------------------------------------------------------
+   A box, a man, and the phone's own idea of down.
+
+   Two halves. The sensor half is small: iOS hands you a gravity vector for
+   free -- accelerationIncludingGravity, normalised, IS which way is down
+   whenever the phone is roughly still -- so tilting the room and having him
+   fall against whatever wall now faces the floor costs nothing but a low-pass
+   filter. The ragdoll half is the work.
+
+   The ragdoll is verlet: fifteen point masses at the joints that matter,
+   distance constraints between them, and a box to stay inside. Verlet because
+   it is almost impossible to blow up -- there are no velocities to integrate,
+   only where a point is and where it was -- and because a constraint is one
+   line: move two points apart until they are the right distance again. No
+   engine, no wasm, no dependency.
+
+   It never switches on. The physics runs every frame whether he is standing or
+   not; what changes is who is in charge. Standing, the animation drives the
+   points and the points follow. Limp, the points drive the bones. The blend
+   between is a single number, so there is no pop in either direction -- the
+   thing that usually gives a ragdoll away is the frame it turns on, and there
+   isn't one here.
+--------------------------------------------------------------------------- */
+
+const HUD = document.getElementById("hud");
+const KEYS = document.getElementById("keys");
+
+/* ---- the world ---- */
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(42, 1, 0.01, 100);
+const R = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+R.setPixelRatio(Math.min(devicePixelRatio, 2));
+R.toneMapping = THREE.NeutralToneMapping;
+R.toneMappingExposure = 1.1;
+document.body.appendChild(R.domElement);
+
+const pm = new THREE.PMREMGenerator(R);
+scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.55;
+pm.dispose();
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(-4, 6, 6); scene.add(key);
+const rim = new THREE.DirectionalLight(0xC9D8FF, 1.1); rim.position.set(4, 2, -5); scene.add(rim);
+
+/* The room, in his own heights. Measured off the model rather than typed, so a
+   different character gets a room that fits him instead of one he rattles
+   around in. */
+/* Half-extents in his heights, and a centre, because where the floor is
+   matters more than how big the box is. He is modelled standing at y = 0 with
+   his feet on the origin, so a room centred on the origin buries him to the
+   waist -- and a room merely made bigger leaves him hanging in the middle of
+   it in free space, which is the version that does not work at all: a rigid
+   body under uniform gravity does not rotate, it only translates, so he slid
+   to a wall still standing bolt upright and stayed there. What topples a man
+   is his feet being held while the rest of him keeps going. He has to be on
+   the floor for any of this to look like anything. */
+const BOX = { w: 0.58, h: 0.60, d: 0.58, cy: 0.55 };
+const room = new THREE.Group(); scene.add(room);
+
+function buildRoom() {
+  room.clear();
+  room.position.set(0, BOX.cy * H, 0);
+  const g = new THREE.BoxGeometry(BOX.w * 2 * H, BOX.h * 2 * H, BOX.d * 2 * H);
+  // inside-out, so we are looking at the far walls from within
+  const m = new THREE.MeshStandardMaterial({
+    color: 0x1A1F16, roughness: 0.95, metalness: 0, side: THREE.BackSide });
+  room.add(new THREE.Mesh(g, m));
+  // the edges, which are most of what makes a dark box read as a box at all
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(g),
+    new THREE.LineBasicMaterial({ color: 0x4E7A34 }));
+  room.add(e);
+}
+
+/* ---- gravity, from the phone ---- */
+/* In the phone's own frame, which is the whole trick: the box is welded to the
+   screen and gravity is what swings. Tip the phone on its side and -x becomes
+   down; the wall that is now underneath is the one he lands on, and nothing in
+   here had to be told that a wall became a floor. */
+const G = new THREE.Vector3(0, -1, 0);      // smoothed, unit
+const gRaw = new THREE.Vector3(0, -1, 0);
+let shake = 0, shakeHit = 0, motionOn = 0, motionWhy = "not started";
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null) return;
+  /* The sign. accelerationIncludingGravity reports the force ON the device,
+     which points AWAY from gravity -- a phone lying still on a table reads
+     +9.81 on z, not -9.81. So down is the negative of it. Getting this
+     backwards is the classic version of this bug and it looks completely
+     plausible: he falls to the ceiling. */
+  gRaw.set(-a.x, -a.y, -a.z);
+  const L = gRaw.length() || 1;
+  /* How far off one g we are is the shake. Gravity alone is always 9.81; any
+     excess is somebody moving the phone, and it does not matter which way. */
+  const excess = Math.abs(L - 9.81);
+  shake = Math.max(shake, excess);
+  gRaw.multiplyScalar(1 / L);
+  motionOn = 1;
+}
+
+async function startMotion() {
+  const D = window.DeviceMotionEvent;
+  if (!D) { motionWhy = "no DeviceMotion here"; return false; }
+  /* iOS 13 and up will not give you a single reading until you ask, and the
+     ask only counts inside a real tap. There is no way around it and no way to
+     remember the answer across loads, which is why this page has a start
+     button rather than just beginning. */
+  if (typeof D.requestPermission === "function") {
+    try {
+      const r = await D.requestPermission();
+      if (r !== "granted") { motionWhy = "permission " + r; return false; }
+    } catch (err) { motionWhy = "permission failed: " + err.message; return false; }
+  }
+  window.addEventListener("devicemotion", onMotion);
+  motionWhy = "listening";
+  return true;
+}
+
+/* ---- the man ---- */
+let mesh = null, skel = null, mixer = null, idle = null;
+let H = 1.7;                                  // his height, measured at load
+
+const dl = new DRACOLoader();
+dl.setDecoderPath("./vendor/draco/"); dl.setDecoderConfig({ type: "wasm" });
+const L = new GLTFLoader(); L.setDRACOLoader(dl);
+
+/* The fifteen points. Mixamo names, because colin_slim is a Mixamo rig and
+   that makes this a lookup rather than a guess -- 82 joints in the file and
+   these are the ones a body actually pivots about. */
+const P = ["Hips", "Spine1", "Head",
+  "LeftArm", "LeftForeArm", "LeftHand",
+  "RightArm", "RightForeArm", "RightHand",
+  "LeftUpLeg", "LeftLeg", "LeftFoot",
+  "RightUpLeg", "RightLeg", "RightFoot"];
+/* Which point hangs off which, for the bone driving. A bone is aimed at its
+   child; the ones with no child here (hands, feet, head) keep their rest
+   rotation and just get carried. */
+const CHAIN = [["Hips","Spine1"], ["Spine1","Head"],
+  ["LeftArm","LeftForeArm"], ["LeftForeArm","LeftHand"],
+  ["RightArm","RightForeArm"], ["RightForeArm","RightHand"],
+  ["LeftUpLeg","LeftLeg"], ["LeftLeg","LeftFoot"],
+  ["RightUpLeg","RightLeg"], ["RightLeg","RightFoot"]];
+/* Braces. Without them the torso is a single line from hips to head and the
+   shoulders swing round it like a skirt -- the "spider" failure. A triangle
+   between the shoulders and one across to the opposite hip makes the chest a
+   solid thing that can only rotate as a piece. */
+const BRACE = [["LeftArm","RightArm"], ["LeftUpLeg","RightUpLeg"],
+  ["LeftArm","RightUpLeg"], ["RightArm","LeftUpLeg"],
+  ["LeftArm","Hips"], ["RightArm","Hips"]];
+
+const pt = {};        // name -> { p, prev, tgt, inv }
+const links = [];     // { a, b, len }
+const bones = {};     // name -> Bone
+const aim = [];       // { bone, child, d0, rest }
+
+function boneNamed(n) {
+  let hit = null;
+  for (const b of skel.bones) {
+    // mixamorig_LeftArm, mixamorig:LeftArm, LeftArm -- all the same joint
+    if (new RegExp("(^|[_:])" + n + "$").test(b.name)) { hit = b; break; }
+  }
+  return hit;
+}
+
+const v3 = new THREE.Vector3(), v3b = new THREE.Vector3();
+const q1 = new THREE.Quaternion(), q2 = new THREE.Quaternion();
+
+function buildDoll() {
+  mesh.updateMatrixWorld(true);
+  for (const n of P) {
+    const b = boneNamed(n);
+    if (!b) { console.log("box: no bone for", n); continue; }
+    bones[n] = b;
+    const w = b.getWorldPosition(new THREE.Vector3());
+    pt[n] = { p: w.clone(), prev: w.clone(), tgt: w.clone(), pin: 0 };
+  }
+  const add = (a, b) => {
+    if (!pt[a] || !pt[b]) return;
+    links.push({ a, b, len: pt[a].p.distanceTo(pt[b].p) });
+  };
+  for (const [a, b] of CHAIN) add(a, b);
+  for (const [a, b] of BRACE) add(a, b);
+
+  /* The rest data for aiming, taken once, in the bone's PARENT space.
+
+     A direction does not specify a twist -- point a bone at a target and it is
+     still free to spin about its own length, and that spin is exactly what
+     makes a hand-rolled ragdoll look like a broken puppet. Recording the rest
+     direction and the rest local rotation, and applying only the DELTA that
+     takes one direction to the other, carries the original twist through
+     untouched. The elbow ends up where the physics says and the forearm is
+     still the right way up. */
+  for (const [a, b] of CHAIN) {
+    const B = bones[a], C = bones[b];
+    if (!B || !C) continue;
+    const par = B.parent;
+    const wq = par ? par.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
+    const d0 = C.getWorldPosition(new THREE.Vector3())
+      .sub(B.getWorldPosition(new THREE.Vector3()))
+      .applyQuaternion(wq.clone().invert()).normalize();
+    aim.push({ bone: B, child: b, self: a, d0, rest: B.quaternion.clone(), parent: par });
+  }
+}
+
+/* ---- the simulation ---- */
+const SIM = {
+  step: 1 / 60,
+  drag: 0.992,
+  bounce: 0.30,
+  /* How much sideways speed a point KEEPS when it is touching something, and
+     it is the whole toppling mechanism rather than a polish detail. At 0.72 --
+     keeping nearly three quarters of it -- his feet slid along the floor as
+     fast as gravity pulled the rest of him, everything moved together, and a
+     body whose parts all accelerate equally does not rotate: he arrived at the
+     wall still standing bolt upright. Grip the feet and the top of him keeps
+     going without them, which is what falling over IS. */
+  friction: 0.20,
+  iters: 8,
+  gravity: 7.0,        // in his heights per second squared, not metres
+};
+let limp = 0, limpWant = 0, tilt = 0, settled = 0;
+let WALL = 0;   // the inset, set once his height is known
+let acc = 0, last = performance.now();
+
+function simulate(dt) {
+  const g = v3.copy(G).multiplyScalar(SIM.gravity * H * dt * dt);
+  for (const n of P) {
+    const q = pt[n]; if (!q) continue;
+    /* Standing, the animation is in charge and the points are simply told
+       where the body already is. Limp, they are let go. Everything in between
+       is a lerp, which is the whole reason there is no visible moment where
+       physics "takes over". */
+    if (limp < 0.999) {
+      const k = (1 - limp) * (1 - limp);
+      q.p.lerp(q.tgt, k);
+      q.prev.lerp(q.tgt, k);
+    }
+    if (limp <= 0.001) continue;
+    v3b.copy(q.p).sub(q.prev).multiplyScalar(SIM.drag);
+    q.prev.copy(q.p);
+    q.p.add(v3b).add(g);
+  }
+  for (let it = 0; it < SIM.iters; it++) {
+    for (const l of links) {
+      const A = pt[l.a], B = pt[l.b];
+      v3.copy(B.p).sub(A.p);
+      const d = v3.length() || 1e-6;
+      // half the error each way: no masses, so nothing is heavier than
+      // anything else and a chain cannot slingshot itself
+      v3.multiplyScalar(((d - l.len) / d) * 0.5);
+      A.p.add(v3); B.p.sub(v3);
+    }
+    // and the walls, last, so nothing a constraint did can push him through one
+    for (const n of P) {
+      const q = pt[n]; if (!q) continue;
+      /* Inset. Only the fifteen joints are simulated and the body is draped
+         over them, so a knee stopped exactly at the wall puts the shin through
+         it. A margin of a twelfth of his height is about a limb's thickness
+         and keeps him in the room without a collision mesh. */
+      hitWall(q, "x", BOX.w * H - WALL, 0);
+      hitWall(q, "y", BOX.h * H - WALL, BOX.cy * H);
+      hitWall(q, "z", BOX.d * H - WALL, 0);
+    }
+  }
+}
+
+function hitWall(q, ax, lim, mid) {
+  const v = q.p[ax] - mid;
+  if (v > lim || v < -lim) {
+    const s = (v > lim ? lim : -lim) + mid;
+    q.p[ax] = s;
+    // reflect what is left of the motion, and scrub the two tangential axes so
+    // he slides to a stop rather than skating for ever
+    const vel = q.p[ax] - q.prev[ax];
+    q.prev[ax] = q.p[ax] + vel * SIM.bounce;
+    for (const t of ["x", "y", "z"]) {
+      if (t === ax) continue;
+      q.prev[t] += (q.p[t] - q.prev[t]) * (1 - SIM.friction);
+    }
+  }
+}
+
+/* ---- ragdoll -> bones ---- */
+function driveBones() {
+  if (limp <= 0.001) return;
+  // the hips carry the whole body's position; everything else is rotation
+  const hip = pt.Hips;
+  if (hip && bones.Hips) {
+    const b = bones.Hips;
+    const par = b.parent;
+    v3.copy(hip.p);
+    if (par) { par.updateMatrixWorld(true); v3.applyMatrix4(par.matrixWorld.clone().invert()); }
+    b.position.lerp(v3, limp);
+  }
+  for (const a of aim) {
+    const A = pt[a.self], B = pt[a.child];
+    if (!A || !B) continue;
+    const par = a.parent;
+    const wq = par ? par.getWorldQuaternion(q1) : q1.identity();
+    // where the physics wants this limb pointing, in the parent's frame
+    v3.copy(B.p).sub(A.p).applyQuaternion(q2.copy(wq).invert()).normalize();
+    if (!isFinite(v3.x)) continue;
+    q2.setFromUnitVectors(a.d0, v3).multiply(a.rest);
+    a.bone.quaternion.slerp(q2, limp);
+  }
+}
+
+/* Where the animation says each joint is, so the points have something to
+   follow while he is upright. Read AFTER the mixer has posed him and BEFORE
+   the physics runs, or the two are a frame apart and he shivers. */
+function readTargets() {
+  mesh.updateMatrixWorld(true);
+  for (const n of P) {
+    const q = pt[n], b = bones[n];
+    if (q && b) b.getWorldPosition(q.tgt);
+  }
+}
+
+/* ---- the state machine ---- */
+/* Upright is an angle, and it needs two thresholds rather than one. With a
+   single threshold he flickers between limp and standing for as long as you
+   hold the phone near it, which reads as a fault rather than as a character. */
+const TILT_GO = 32 * Math.PI / 180, TILT_BACK = 15 * Math.PI / 180;
+const SHAKE_GO = 4.5;      // m/s^2 above one g
+let tiltFor = 0, nudged = 0;
+
+function think(dt) {
+  // the angle between "down" and the bottom of the screen
+  tilt = Math.acos(Math.max(-1, Math.min(1, G.dot(v3.set(0, -1, 0)))));
+  if (shake > SHAKE_GO) { shakeHit = 1; limpWant = 1; tiltFor = 0.6; }
+  if (tilt > TILT_GO) { tiltFor = Math.min(0.6, tiltFor + dt); }
+  else if (tilt < TILT_BACK) { tiltFor = Math.max(0, tiltFor - dt); }
+  if (tiltFor > 0.12) limpWant = 1;
+  /* A nudge on the way down. Nothing about a symmetric body under uniform
+     gravity makes it crumple -- it stays a truss and arrives flat and tidy,
+     which is what the tilt-fall did while a SHAKE looked great, because a
+     shake is asymmetric by construction. Real falls have a shoulder that goes
+     first. This is that shoulder. */
+  if (limpWant > 0.5 && limp < 0.10 && !nudged) { nudged = 1; fling(0.035); }
+  if (limpWant < 0.5) nudged = 0;
+  else if (tilt < TILT_BACK && settled > 0.5) limpWant = 0;
+  limp += (limpWant - limp) * (1 - Math.pow(1 - (limpWant > limp ? 0.30 : 0.035), dt * 60));
+  // how still he is, so standing back up waits for him to stop tumbling
+  let moving = 0;
+  for (const n of P) { const q = pt[n]; if (q) moving += q.p.distanceTo(q.prev); }
+  settled = moving < H * 0.004 ? settled + dt : 0;
+  shake *= Math.pow(0.06, dt);
+}
+
+/* A shake throws him. Impulses go in as a displacement of `prev`, which in
+   verlet IS a velocity -- there is no velocity field to add to. */
+function fling(power) {
+  for (const n of P) {
+    const q = pt[n]; if (!q) continue;
+    q.prev.x -= (Math.random() - 0.5) * power * H;
+    q.prev.y -= (Math.random() - 0.5) * power * H;
+    q.prev.z -= (Math.random() - 0.5) * power * H;
+  }
+}
+
+/* ---- frame ---- */
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now();
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.1) dt = 0.1;
+
+  G.lerp(gRaw, 1 - Math.pow(0.002, dt));    // low-passed, or he jitters
+  G.normalize();
+
+  if (mesh) {
+    if (mixer && limp < 0.999) mixer.update(dt * (1 - limp));
+    readTargets();
+    think(dt);
+    if (shakeHit) { fling(0.10 + Math.min(0.25, shake * 0.02)); shakeHit = 0; }
+    acc += dt;
+    let n = 0;
+    while (acc >= SIM.step && n < 4) { acc -= SIM.step; simulate(SIM.step); n++; }
+    driveBones();
+    // the room turns with gravity only in the sense that it does not: the box
+    // is the screen. What moves is him.
+  }
+  R.render(scene, cam);
+  HUD.textContent =
+    "g " + G.x.toFixed(2) + " " + G.y.toFixed(2) + " " + G.z.toFixed(2) +
+    "   tilt " + (tilt * 180 / Math.PI).toFixed(0) + "°" +
+    "\nlimp " + limp.toFixed(2) + "   shake " + shake.toFixed(1) +
+    "   settled " + settled.toFixed(1) +
+    "\nmotion: " + motionWhy;
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  R.setSize(w, h);
+  cam.aspect = w / h;
+  /* Far enough back to see the whole box however tall the screen is. Framed on
+     the diagonal rather than the height, or a wide phone crops the side walls
+     off and the room stops reading as closed. */
+  const need = Math.max(BOX.h * H, (BOX.w * H) / cam.aspect);
+  cam.position.set(0, BOX.cy * H, need / Math.tan(cam.fov * Math.PI / 360) * 1.15 + BOX.d * H);
+  cam.lookAt(0, BOX.cy * H, 0);
+  cam.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+
+/* ---- desktop, so this is testable without a phone in your hand ---- */
+/* Not a courtesy. Everything above is driven by one unit vector and one
+   scalar, and being able to set those from a keyboard is what makes the
+   physics checkable at all -- there is no way to shake a headless browser. */
+function tiltKeys(x, y, z) { gRaw.set(x, y, z).normalize(); motionOn = 1; }
+addEventListener("keydown", (e) => {
+  const k = e.key;
+  if (k === "ArrowLeft") tiltKeys(-1, -0.35, 0);
+  else if (k === "ArrowRight") tiltKeys(1, -0.35, 0);
+  else if (k === "ArrowUp") tiltKeys(0, -0.35, -1);
+  else if (k === "ArrowDown") tiltKeys(0, 1, 0);
+  else if (k === " ") { shake = 12; }
+  else if (k === "r") { tiltKeys(0, -1, 0); }
+  else return;
+  e.preventDefault();
+});
+window.__g = (x, y, z) => tiltKeys(x, y, z);
+window.__shake = (v) => { shake = v == null ? 12 : v; };
+window.__state = () => ({
+  limp, tilt, settled, shake,
+  g: [G.x, G.y, G.z],
+  pts: Object.fromEntries(P.filter((n) => pt[n]).map((n) => [n, [pt[n].p.x, pt[n].p.y, pt[n].p.z]])),
+  box: [BOX.w * H, BOX.h * H, BOX.d * H], cy: BOX.cy * H,
+});
+
+/* ---- go ---- */
+document.getElementById("go").onclick = async () => {
+  document.getElementById("tap").style.display = "none";
+  await startMotion();
+  KEYS.textContent = motionOn ? "" : "arrows tilt · space shakes · r resets";
+};
+
+L.load("models/colin_slim.glb", (g) => {
+  g.scene.traverse((o) => {
+    if (o.isSkinnedMesh && !mesh) { mesh = o; skel = o.skeleton; }
+    if (o.isMesh) o.frustumCulled = false;
+  });
+  if (!mesh) { document.getElementById("why").textContent = "no skinned mesh in the model"; return; }
+  scene.add(g.scene);
+  /* His height off the SKELETON, not off a bounding box. Box3.setFromObject on
+     a skinned mesh reports the bind-pose geometry times the node matrix, which
+     on this file is off by a factor of tens -- it is measured here from the
+     head bone standing over the foot bone, which is a height whatever the
+     exporter did with the scale. */
+  mesh.updateMatrixWorld(true);
+  const hb = (n) => { const b = boneNamed(n); return b ? b.getWorldPosition(new THREE.Vector3()) : null; };
+  const head = hb("Head"), foot = hb("LeftToeBase") || hb("LeftFoot");
+  H = head && foot ? Math.abs(head.y - foot.y) * 1.15 : 1.7;
+  g.scene.position.set(0, 0, 0);
+  WALL = H * 0.085;
+  buildRoom();
+  buildDoll();
+  if (g.animations && g.animations.length) {
+    mixer = new THREE.AnimationMixer(mesh);
+    idle = g.animations.find((c) => /idle/i.test(c.name)) || g.animations[0];
+    mixer.clipAction(idle).play();
+  }
+  console.log("box: height", H.toFixed(2), "bones", Object.keys(bones).length,
+              "links", links.length, "clip", idle && idle.name);
+  resize();
+}, null, (e) => {
+  document.getElementById("why").textContent = "could not load the model: " + (e && e.message || e);
+});
+
+resize();
+frame();
+</script>
