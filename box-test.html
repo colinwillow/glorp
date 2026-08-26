@@ -119,8 +119,8 @@ function buildRoom() {
    here had to be told that a wall became a floor. */
 const G = new THREE.Vector3(0, -1, 0);      // smoothed, unit
 const gRaw = new THREE.Vector3(0, -1, 0);
-let shake = 0, shakeHit = 0, motionOn = 0, motionWhy = "not started";
-const kick = new THREE.Vector3(), shakeDir = new THREE.Vector3(1, 0, 0);
+let shake = 0, motionOn = 0, lastMotion = 0, motionWhy = "not started";
+const push = new THREE.Vector3(), shakeDir = new THREE.Vector3(1, 0, 0);
 
 function onMotion(e) {
   const a = e.accelerationIncludingGravity;
@@ -140,11 +140,33 @@ function onMotion(e) {
      Direction is what is left once gravity is taken out. G is the low-passed
      down vector, so raw-minus-G is user acceleration and nothing else -- no
      need for e.acceleration, which iOS supplies but not every browser does. */
-  kick.copy(gRaw).multiplyScalar(1 / L).sub(G).multiplyScalar(L);
-  const excess = kick.length();
-  if (excess > shake) { shake = excess; shakeDir.copy(kick).multiplyScalar(1 / (excess || 1)); }
+  /* The box is a frame that ACCELERATES, and in an accelerating frame
+     everything inside feels a force the other way. That is the whole of it,
+     and it replaces the shake threshold entirely -- no event, no impulse, no
+     "was that hard enough to count". The phone moves, he feels it, in
+     proportion, always.
+
+     What comes out of the arithmetic is exactly that force. The reading is
+     (device acceleration - gravity) in device axes, so gRaw is
+     (gravity - device acceleration) and G, low-passed, is gravity alone; the
+     difference is minus the device's acceleration, which is the pseudo-force
+     on everything in the box. Sign included, for free.
+
+     And the feel you described falls out of it rather than being aimed for. A
+     flick is a slow push and a hard stop: during the push he lags behind the
+     box, and when you stop it he keeps going -- so he ends up travelling the
+     way you flicked, the way anything loose in a box you jerk sideways does.
+     An impulse fired at a threshold could never do that; it can only ever
+     shove him once, in one direction, at one strength. */
+  push.copy(gRaw).multiplyScalar(1 / L).sub(G).multiplyScalar(L);
+  const mag = push.length();
+  // a deadband for sensor hash, or he buzzes on a still table
+  if (mag < SIM.deadband) push.set(0, 0, 0);
+  // and a ceiling, because a dropped phone reads 60 and would fire him through a wall
+  else if (mag > SIM.pushMax) push.multiplyScalar(SIM.pushMax / mag);
+  if (mag > shake) { shake = mag; shakeDir.copy(push).multiplyScalar(1 / (mag || 1)); }
   gRaw.multiplyScalar(1 / L);
-  motionOn = 1;
+  motionOn = 1; lastMotion = performance.now();
 }
 
 async function startMotion() {
@@ -309,20 +331,30 @@ const SIM = {
      to knock over, not a thing floating in a jar: the fall has to win against
      the shake, or every nudge sends him into the ceiling. */
   gravity: 16.0,       // in his heights per second squared, not metres
-  /* How hard a shake has to be before it moves him at all, and how much it
-     gives him when it does. The first pass took 4.5 and threw him at 0.10 of
-     his height per step, which is why a flick sent him wild. */
-  shakeGo: 11.0,       // m/s^2 of user acceleration, on top of gravity
-  shakeGain: 0.011,
-  shakeMax: 0.055,
-  spin: 0.30,          // how much of the throw is random rather than directional
+  /* The phone's own acceleration, in the same units as gravity above, so a 1g
+     flick pulls exactly as hard as the floor does and the whole thing is
+     self-calibrating: there is no gain to guess, only how much of real physics
+     to keep. 1.0 is honest. */
+  throwK: 1.15,
+  deadband: 0.45,      // m/s^2 -- below this it is sensor hash, not a hand
+  pushMax: 26.0,       // m/s^2 -- above this it is a drop, not a shake
+  /* What it takes to make him GIVE UP and go limp, which is a separate
+     question from how hard he is pushed: a nudge should rock a man standing
+     up, not fell him. */
+  limpGo: 13.0,
+  maxStep: 0.055,     // of his height, per 1/60s -- a hard cap on any speed
+  spin: 0.22,          // a little tumble on the way down, or he falls like a plank
 };
 let limp = 0, limpWant = 0, tilt = 0, settled = 0;
 let WALL = 0;   // the inset, set once his height is known
 let acc = 0, last = performance.now();
 
 function simulate(dt) {
-  const g = v3.copy(G).multiplyScalar(SIM.gravity * H * dt * dt);
+  /* Gravity plus the box's own motion, in one vector. Gravity always points at
+     the real world's floor -- that is what G is -- and the push is whatever
+     the hand is doing on top of it. */
+  const g = v3.copy(G).multiplyScalar(SIM.gravity * H * dt * dt)
+    .addScaledVector(push, (SIM.gravity / 9.81) * SIM.throwK * H * dt * dt);
   for (const n of P) {
     const q = pt[n]; if (!q) continue;
     /* Standing, the animation is in charge and the points are simply told
@@ -336,8 +368,32 @@ function simulate(dt) {
     }
     if (limp <= 0.001) continue;
     v3b.copy(q.p).sub(q.prev).multiplyScalar(SIM.drag);
+    /* A ceiling on how fast anything may travel in one step, and it is what
+       makes the whole thing safe rather than merely tuned.
+
+       Verlet has no velocity field -- speed IS the gap between where a point
+       is and where it was -- so the wall clamp, which moves `p` and then
+       rewrites `prev` from it, can hand a point a gap far larger than it
+       arrived with. Feed that back in and it diverges: measured, a hard flick
+       took every one of the fifteen joints to NaN inside a second, and the
+       screen simply went empty with no error anywhere.
+
+       Capping the gap costs nothing while he is behaving and makes a runaway
+       impossible whatever the sensor reports -- including a dropped phone. */
+    const sp = v3b.length();
+    if (sp > SIM.maxStep * H) v3b.multiplyScalar(SIM.maxStep * H / sp);
     q.prev.copy(q.p);
     q.p.add(v3b).add(g);
+  }
+  /* And nothing non-finite survives a step, whatever produced it. A single
+     NaN in a verlet system is terminal -- it spreads through every constraint
+     it touches in one iteration and there is nothing left to recover. Snapping
+     the offender back to where the animation says it should be costs one
+     comparison per point and turns a dead screen into a flinch. */
+  for (const n of P) {
+    const q = pt[n]; if (!q) continue;
+    if (isFinite(q.p.x + q.p.y + q.p.z)) continue;
+    q.p.copy(q.tgt); q.prev.copy(q.tgt);
   }
   for (let it = 0; it < SIM.iters; it++) {
     for (const l of links) {
@@ -431,8 +487,25 @@ function driveBones() {
     const par = a.parent;
     const wq = par ? par.getWorldQuaternion(q1) : q1.identity();
     // where the physics wants this limb pointing, in the parent's frame
-    v3.copy(B.p).sub(A.p).applyQuaternion(q2.copy(wq).invert()).normalize();
-    if (!isFinite(v3.x)) continue;
+    /* Length checked BEFORE normalising, and this is where the whole thing was
+       going to NaN.
+
+       normalize() on a zero-length vector returns (0,0,0) rather than
+       anything infinite, so the isFinite guard here passed happily -- and
+       setFromUnitVectors, handed a zero vector, produces a quaternion of NaNs.
+       That poisons the bone, readTargets then reads a NaN world position into
+       the point's target, and the next simulate step lerps every point toward
+       it. Fifteen joints gone in one frame, screen empty, no error logged
+       anywhere.
+
+       Two joints land exactly on top of each other whenever a hard enough
+       throw drives a constraint through itself, which is why a steady push was
+       fine and a flick was not. If it happens, the limb keeps last frame's
+       rotation, which is invisible and correct. */
+    v3.copy(B.p).sub(A.p);
+    if (!(v3.lengthSq() > 1e-12) || !isFinite(v3.x)) continue;
+    v3.applyQuaternion(q2.copy(wq).invert()).normalize();
+    if (!(v3.lengthSq() > 0.5)) continue;
     q2.setFromUnitVectors(a.d0, v3).multiply(a.rest);
     a.bone.quaternion.slerp(q2, limp);
   }
@@ -459,7 +532,7 @@ let tiltFor = 0, nudged = 0;
 function think(dt) {
   // the angle between "down" and the bottom of the screen
   tilt = Math.acos(Math.max(-1, Math.min(1, G.dot(v3.set(0, -1, 0)))));
-  if (shake > SIM.shakeGo) { shakeHit = 1; limpWant = 1; tiltFor = 0.5; }
+  if (shake > SIM.limpGo) { limpWant = 1; tiltFor = 0.5; }
   if (tilt > TILT_GO) { tiltFor = Math.min(0.6, tiltFor + dt); }
   else if (tilt < TILT_BACK) { tiltFor = Math.max(0, tiltFor - dt); }
   if (tiltFor > 0.12) limpWant = 1;
@@ -468,7 +541,7 @@ function think(dt) {
      which is what the tilt-fall did while a SHAKE looked great, because a
      shake is asymmetric by construction. Real falls have a shoulder that goes
      first. This is that shoulder. */
-  if (limpWant > 0.5 && limp < 0.10 && !nudged) { nudged = 1; fling(shakeDir, 0.006); }
+  if (limpWant > 0.5 && limp < 0.10 && !nudged) { nudged = 1; fling(shakeDir, 0.004); }
   if (limpWant < 0.5) nudged = 0;
   else if (tilt < TILT_BACK && settled > 0.5) limpWant = 0;
   limp += (limpWant - limp) * (1 - Math.pow(1 - (limpWant > limp ? 0.30 : 0.035), dt * 60));
@@ -512,12 +585,16 @@ function frame() {
 
   G.lerp(gRaw, 1 - Math.pow(0.002, dt));    // low-passed, or he jitters
   G.normalize();
+  /* The push is refreshed sixty times a second while the sensor is live. If it
+     stops -- the tab backgrounds, the permission lapses, a keyboard test sets
+     one by hand -- the last value would otherwise stay applied for ever and
+     pin him to a wall. It decays instead. */
+  if (performance.now() - lastMotion > 180) push.multiplyScalar(Math.pow(0.02, dt));
 
   if (mesh) {
     if (mixer && limp < 0.999) mixer.update(dt * (1 - limp));
     readTargets();
     think(dt);
-    if (shakeHit) { fling(shakeDir, shake * SIM.shakeGain); shakeHit = 0; }
     acc += dt;
     let n = 0;
     while (acc >= SIM.step && n < 4) { acc -= SIM.step; simulate(SIM.step); n++; }
@@ -559,15 +636,32 @@ addEventListener("keydown", (e) => {
   else if (k === "ArrowRight") tiltKeys(1, -0.35, 0);
   else if (k === "ArrowUp") tiltKeys(0, -0.35, -1);
   else if (k === "ArrowDown") tiltKeys(0, 1, 0);
-  else if (k === " ") { shake = 12; }
+  else if (k === " ") { flick(1, 0, 0); }
   else if (k === "r") { tiltKeys(0, -1, 0); }
   else return;
   e.preventDefault();
 });
 window.__g = (x, y, z) => tiltKeys(x, y, z);
-window.__shake = (v) => { shake = v == null ? 12 : v; };
+/* A flick, as the phone actually performs one: a push one way and a harder
+   stop. Both halves matter -- a single shove is the impulse model this
+   replaced, and it cannot produce the trailing slosh that makes a flick read
+   as a flick. */
+function flick(x, y, z, mag) {
+  const m = mag == null ? 16 : mag;
+  push.set(-x, -y, -z).normalize().multiplyScalar(m * 0.5);
+  shake = push.length(); lastMotion = performance.now();
+  setTimeout(() => {
+    push.set(x, y, z).normalize().multiplyScalar(m);
+    shake = m; lastMotion = performance.now();
+    setTimeout(() => { push.set(0, 0, 0); lastMotion = 0; }, 130);
+  }, 170);
+}
+window.__flick = flick;
+window.__push = (x, y, z) => { push.set(x, y, z); shake = push.length(); lastMotion = performance.now(); };
+window.__shake = (v) => flick(1, 0, 0, v == null ? 16 : v);
 window.__state = () => ({
-  limp, tilt, settled, shake,
+  limp, tilt, settled, shake, H,
+  push: [push.x, push.y, push.z],
   g: [G.x, G.y, G.z],
   pts: Object.fromEntries(P.filter((n) => pt[n]).map((n) => [n, [pt[n].p.x, pt[n].p.y, pt[n].p.z]])),
   box: [BOX.w * H, BOX.h * H, BOX.d * H], cy: BOX.cy * H,
@@ -577,7 +671,7 @@ window.__state = () => ({
 document.getElementById("go").onclick = async () => {
   document.getElementById("tap").style.display = "none";
   await startMotion();
-  KEYS.textContent = motionOn ? "" : "arrows tilt · space shakes · r resets";
+  KEYS.textContent = motionOn ? "" : "arrows tilt · space flicks · r resets";
 };
 
 L.load("models/colin_slim.glb", (g) => {
