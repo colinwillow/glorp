@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>box</title>
 <style>
@@ -119,6 +120,7 @@ function buildRoom() {
 const G = new THREE.Vector3(0, -1, 0);      // smoothed, unit
 const gRaw = new THREE.Vector3(0, -1, 0);
 let shake = 0, shakeHit = 0, motionOn = 0, motionWhy = "not started";
+const kick = new THREE.Vector3(), shakeDir = new THREE.Vector3(1, 0, 0);
 
 function onMotion(e) {
   const a = e.accelerationIncludingGravity;
@@ -130,10 +132,17 @@ function onMotion(e) {
      plausible: he falls to the ceiling. */
   gRaw.set(-a.x, -a.y, -a.z);
   const L = gRaw.length() || 1;
-  /* How far off one g we are is the shake. Gravity alone is always 9.81; any
-     excess is somebody moving the phone, and it does not matter which way. */
-  const excess = Math.abs(L - 9.81);
-  shake = Math.max(shake, excess);
+  /* The shake has a DIRECTION, and that was the thing missing. Taking only the
+     magnitude and then flinging every joint along a random vector is why he
+     went everywhere at once regardless of which way the phone went; shake it
+     left and he should go left.
+
+     Direction is what is left once gravity is taken out. G is the low-passed
+     down vector, so raw-minus-G is user acceleration and nothing else -- no
+     need for e.acceleration, which iOS supplies but not every browser does. */
+  kick.copy(gRaw).multiplyScalar(1 / L).sub(G).multiplyScalar(L);
+  const excess = kick.length();
+  if (excess > shake) { shake = excess; shakeDir.copy(kick).multiplyScalar(1 / (excess || 1)); }
   gRaw.multiplyScalar(1 / L);
   motionOn = 1;
 }
@@ -188,8 +197,38 @@ const BRACE = [["LeftArm","RightArm"], ["LeftUpLeg","RightUpLeg"],
   ["LeftArm","RightUpLeg"], ["RightArm","LeftUpLeg"],
   ["LeftArm","Hips"], ["RightArm","Hips"]];
 
+/* Joint limits, done as a MINIMUM distance across the joint rather than as an
+   angle.
+
+   An elbow cannot fold past a certain point, and the distance from shoulder to
+   hand is a direct measure of how far it HAS folded -- shortest when fully
+   bent, longest when straight. So "the elbow only bends this far" is "these
+   two points never get closer than this", which in verlet is the same one-line
+   constraint as every other link and cannot fight them or blow up, where a
+   cone clamp on an angle has to be re-derived every iteration and argues with
+   its neighbours.
+
+   Fractions of the limb's own straight length, so they hold at any scale. It
+   does not stop a knee bending BACKWARDS -- that needs a plane test and a
+   sense of which way the joint faces -- but it is what stops the forearm
+   folding through the upper arm, which is most of what reads as wrong. */
+const LIMIT = [
+  ["LeftArm", "LeftHand", 0.42], ["RightArm", "RightHand", 0.42],
+  ["LeftUpLeg", "LeftFoot", 0.52], ["RightUpLeg", "RightFoot", 0.52],
+  ["Hips", "Head", 0.86],            // the spine barely folds at all
+];
+/* And the body itself, so the arms stop passing through the chest. Spheres at
+   three joints, sized off him, and the limb ends are pushed out of them. Not a
+   collision system -- there is no hand-to-hand, no self-intersection between
+   limbs -- but a hand that never sinks into the ribcage is nearly all of the
+   difference. */
+const SOLID = [["Spine1", 0.19], ["Hips", 0.15], ["Head", 0.13]];
+const OUTSIDE = ["LeftHand", "LeftForeArm", "RightHand", "RightForeArm",
+                 "LeftFoot", "LeftLeg", "RightFoot", "RightLeg"];
+
 const pt = {};        // name -> { p, prev, tgt, inv }
 const links = [];     // { a, b, len }
+const limits = [];    // { a, b, min }
 const bones = {};     // name -> Bone
 const aim = [];       // { bone, child, d0, rest }
 
@@ -203,6 +242,7 @@ function boneNamed(n) {
 }
 
 const v3 = new THREE.Vector3(), v3b = new THREE.Vector3();
+let hipsRest = null;   // where the hips belong when he is not being thrown
 const q1 = new THREE.Quaternion(), q2 = new THREE.Quaternion();
 
 function buildDoll() {
@@ -214,12 +254,17 @@ function buildDoll() {
     const w = b.getWorldPosition(new THREE.Vector3());
     pt[n] = { p: w.clone(), prev: w.clone(), tgt: w.clone(), pin: 0 };
   }
+  if (bones.Hips) hipsRest = bones.Hips.position.clone();
   const add = (a, b) => {
     if (!pt[a] || !pt[b]) return;
     links.push({ a, b, len: pt[a].p.distanceTo(pt[b].p) });
   };
   for (const [a, b] of CHAIN) add(a, b);
   for (const [a, b] of BRACE) add(a, b);
+  for (const [a, b, f] of LIMIT) {
+    if (!pt[a] || !pt[b]) continue;
+    limits.push({ a, b, min: pt[a].p.distanceTo(pt[b].p) * f });
+  }
 
   /* The rest data for aiming, taken once, in the bone's PARENT space.
 
@@ -245,8 +290,9 @@ function buildDoll() {
 /* ---- the simulation ---- */
 const SIM = {
   step: 1 / 60,
-  drag: 0.992,
-  bounce: 0.30,
+  // more bleed per step, so a throw dies out instead of ringing
+  drag: 0.975,
+  bounce: 0.16,
   /* How much sideways speed a point KEEPS when it is touching something, and
      it is the whole toppling mechanism rather than a polish detail. At 0.72 --
      keeping nearly three quarters of it -- his feet slid along the floor as
@@ -255,8 +301,21 @@ const SIM = {
      wall still standing bolt upright. Grip the feet and the top of him keeps
      going without them, which is what falling over IS. */
   friction: 0.20,
-  iters: 8,
-  gravity: 7.0,        // in his heights per second squared, not metres
+  /* More passes, because every constraint added below -- the joint limits and
+     the body itself -- competes with the others, and eight was not enough to
+     settle them. */
+  iters: 14,
+  /* Heavier. He is meant to be a man standing on a floor that you are trying
+     to knock over, not a thing floating in a jar: the fall has to win against
+     the shake, or every nudge sends him into the ceiling. */
+  gravity: 16.0,       // in his heights per second squared, not metres
+  /* How hard a shake has to be before it moves him at all, and how much it
+     gives him when it does. The first pass took 4.5 and threw him at 0.10 of
+     his height per step, which is why a flick sent him wild. */
+  shakeGo: 11.0,       // m/s^2 of user acceleration, on top of gravity
+  shakeGain: 0.011,
+  shakeMax: 0.055,
+  spin: 0.30,          // how much of the throw is random rather than directional
 };
 let limp = 0, limpWant = 0, tilt = 0, settled = 0;
 let WALL = 0;   // the inset, set once his height is known
@@ -290,6 +349,29 @@ function simulate(dt) {
       v3.multiplyScalar(((d - l.len) / d) * 0.5);
       A.p.add(v3); B.p.sub(v3);
     }
+    // joints, which only ever push apart
+    for (const l of limits) {
+      const A = pt[l.a], B = pt[l.b];
+      v3.copy(B.p).sub(A.p);
+      const d = v3.length() || 1e-6;
+      if (d >= l.min) continue;
+      v3.multiplyScalar(((d - l.min) / d) * 0.5);
+      A.p.add(v3); B.p.sub(v3);
+    }
+    // and out of his own body
+    for (const [c, rf] of SOLID) {
+      const C = pt[c]; if (!C) continue;
+      const r = rf * H;
+      for (const n of OUTSIDE) {
+        const q = pt[n]; if (!q) continue;
+        v3.copy(q.p).sub(C.p);
+        const d = v3.length() || 1e-6;
+        if (d >= r) continue;
+        // the limb moves, the torso does not: a chest shoved by its own hand
+        // is a jitter loop, and the heavy thing winning is also what is true
+        q.p.add(v3.multiplyScalar((r - d) / d));
+      }
+    }
     // and the walls, last, so nothing a constraint did can push him through one
     for (const n of P) {
       const q = pt[n]; if (!q) continue;
@@ -322,7 +404,7 @@ function hitWall(q, ax, lim, mid) {
 
 /* ---- ragdoll -> bones ---- */
 function driveBones() {
-  if (limp <= 0.001) return;
+  if (limp <= 0.001) { if (bones.Hips && hipsRest) bones.Hips.position.copy(hipsRest); return; }
   // the hips carry the whole body's position; everything else is rotation
   const hip = pt.Hips;
   if (hip && bones.Hips) {
@@ -330,7 +412,18 @@ function driveBones() {
     const par = b.parent;
     v3.copy(hip.p);
     if (par) { par.updateMatrixWorld(true); v3.applyMatrix4(par.matrixWorld.clone().invert()); }
-    b.position.lerp(v3, limp);
+    /* FROM the rest position, not from wherever it currently is.
+
+       lerp() moves a bone from where it already sits, and where it already
+       sits is where the last frame's ragdoll put it -- so at limp 0 the lerp
+       is a no-op and the hips simply keep the offset they were flung to. The
+       clip would normally overwrite that, but these clips carry no root
+       motion, so nothing ever did: he stood back up two feet to the right of
+       where he started and stayed there, a little further right every throw.
+
+       Anchoring the blend to the rest position means limp 0 is genuinely
+       standing where he belongs, and limp 1 is fully the ragdoll. */
+    b.position.copy(hipsRest).lerp(v3, limp);
   }
   for (const a of aim) {
     const A = pt[a.self], B = pt[a.child];
@@ -361,13 +454,12 @@ function readTargets() {
    single threshold he flickers between limp and standing for as long as you
    hold the phone near it, which reads as a fault rather than as a character. */
 const TILT_GO = 32 * Math.PI / 180, TILT_BACK = 15 * Math.PI / 180;
-const SHAKE_GO = 4.5;      // m/s^2 above one g
 let tiltFor = 0, nudged = 0;
 
 function think(dt) {
   // the angle between "down" and the bottom of the screen
   tilt = Math.acos(Math.max(-1, Math.min(1, G.dot(v3.set(0, -1, 0)))));
-  if (shake > SHAKE_GO) { shakeHit = 1; limpWant = 1; tiltFor = 0.6; }
+  if (shake > SIM.shakeGo) { shakeHit = 1; limpWant = 1; tiltFor = 0.5; }
   if (tilt > TILT_GO) { tiltFor = Math.min(0.6, tiltFor + dt); }
   else if (tilt < TILT_BACK) { tiltFor = Math.max(0, tiltFor - dt); }
   if (tiltFor > 0.12) limpWant = 1;
@@ -376,25 +468,38 @@ function think(dt) {
      which is what the tilt-fall did while a SHAKE looked great, because a
      shake is asymmetric by construction. Real falls have a shoulder that goes
      first. This is that shoulder. */
-  if (limpWant > 0.5 && limp < 0.10 && !nudged) { nudged = 1; fling(0.035); }
+  if (limpWant > 0.5 && limp < 0.10 && !nudged) { nudged = 1; fling(shakeDir, 0.006); }
   if (limpWant < 0.5) nudged = 0;
   else if (tilt < TILT_BACK && settled > 0.5) limpWant = 0;
   limp += (limpWant - limp) * (1 - Math.pow(1 - (limpWant > limp ? 0.30 : 0.035), dt * 60));
   // how still he is, so standing back up waits for him to stop tumbling
   let moving = 0;
   for (const n of P) { const q = pt[n]; if (q) moving += q.p.distanceTo(q.prev); }
-  settled = moving < H * 0.004 ? settled + dt : 0;
+  /* How still counts as still. H * 0.004 is a thousandth of his height spread
+     over fifteen joints, which nothing with drag in it ever reaches -- so he
+     never stood back up, he just lay there being upright. This is loose enough
+     to notice him stopping and tight enough that he does not get up mid-tumble. */
+  settled = moving < H * 0.03 ? settled + dt : 0;
+  window.__move = moving;   // so a probe can see why he will not get up
   shake *= Math.pow(0.06, dt);
 }
 
 /* A shake throws him. Impulses go in as a displacement of `prev`, which in
    verlet IS a velocity -- there is no velocity field to add to. */
-function fling(power) {
+/* A shake throws him THAT WAY. Impulses go in as a displacement of `prev`,
+   which in verlet IS a velocity -- there is no velocity field to add to.
+
+   Mostly along the shake, with a little randomness on top: a perfectly uniform
+   impulse translates a body without rotating it (the same reason he used to
+   arrive at the wall bolt upright), so a pure direction would slide him
+   sideways still standing. The spin is what tumbles him. */
+function fling(dir, power) {
+  const p2 = Math.min(power, SIM.shakeMax) * H;
   for (const n of P) {
     const q = pt[n]; if (!q) continue;
-    q.prev.x -= (Math.random() - 0.5) * power * H;
-    q.prev.y -= (Math.random() - 0.5) * power * H;
-    q.prev.z -= (Math.random() - 0.5) * power * H;
+    q.prev.x -= dir.x * p2 + (Math.random() - 0.5) * p2 * SIM.spin;
+    q.prev.y -= dir.y * p2 + (Math.random() - 0.5) * p2 * SIM.spin;
+    q.prev.z -= dir.z * p2 + (Math.random() - 0.5) * p2 * SIM.spin;
   }
 }
 
@@ -412,7 +517,7 @@ function frame() {
     if (mixer && limp < 0.999) mixer.update(dt * (1 - limp));
     readTargets();
     think(dt);
-    if (shakeHit) { fling(0.10 + Math.min(0.25, shake * 0.02)); shakeHit = 0; }
+    if (shakeHit) { fling(shakeDir, shake * SIM.shakeGain); shakeHit = 0; }
     acc += dt;
     let n = 0;
     while (acc >= SIM.step && n < 4) { acc -= SIM.step; simulate(SIM.step); n++; }
@@ -501,7 +606,7 @@ L.load("models/colin_slim.glb", (g) => {
     mixer.clipAction(idle).play();
   }
   console.log("box: height", H.toFixed(2), "bones", Object.keys(bones).length,
-              "links", links.length, "clip", idle && idle.name);
+              "links", links.length, "limits", limits.length, "clip", idle && idle.name);
   resize();
 }, null, (e) => {
   document.getElementById("why").textContent = "could not load the model: " + (e && e.message || e);
