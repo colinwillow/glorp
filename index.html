@@ -2337,9 +2337,13 @@ async function playReply(text) {
       headers: { "content-type": "application/json" },
       // marks whenever anything on screen has a mouth: they cost a third more
       // bytes and are the difference between lip sync and a guess
+      /* marks while a figure is still LOADING too. They cost a third more
+         bytes and are the difference between lip sync and a guess, and the
+         reply that introduces him is spoken while he is still arriving --
+         which is the one reply most worth getting right. */
       body: JSON.stringify({ text, voice: brain.voice || undefined,
                              persona: brain.persona || undefined,
-                             marks: visLive() ? 1 : undefined })
+                             marks: (visLive() || rig.loading) ? 1 : undefined })
     });
     if (!res.ok) {
       // 501 just means no voice key is set; anything else is worth showing
@@ -2378,7 +2382,19 @@ async function playReply(text) {
     ttsSrc = ttsCtx.createBufferSource();
     ttsSrc.buffer = audio;
     ttsSrc.connect(ttsAn);
-    if (visLive()) { if (marks) visFromMarks(marks); else visBuild(text, audio.duration); }
+    /* Built unconditionally, and that matters more than it looks.
+
+       This used to be gated on visLive() -- read once, here, the instant the
+       audio was decoded. Ask to see his head and the answer comes back while
+       the model is still loading, so at this line there is no rig, no mouth,
+       and no timeline is built at all: the one reply that introduces him is
+       the one he does not move his mouth for, and every reply after it works
+       fine, which is exactly the shape of bug nobody can reproduce on demand.
+
+       Building is a string parse and costs nothing. Whether the mouth actually
+       MOVES is already decided every frame in visRig, which reads visLive()
+       there -- so the gate stays, it just stops being a race. */
+    if (marks) visFromMarks(marks); else visBuild(text, audio.duration);
     /* Only the clip that is actually playing gets to say the talking has
        stopped. Interrupting one -- which happens whenever a second line starts
        before the first has finished -- fires the OLD source's onended, and that
@@ -4120,7 +4136,7 @@ async function showImage(src, seconds) {
   }
   const hit = imageCache[key];
   const ok = setFormation({ points: hit, label: src, fs: 0.66, wide: 1 }, seconds || 22);
-  if (!ok) return false;
+  if (!ok) { rig.loading = 0; return false; }
   caption(null, src + " · " + hit.length + " points");
   /* A beat for the drawing to land and be read as a drawing, then the picture.
      Any less and the two are one event and the dots were pointless; any more
@@ -8181,6 +8197,8 @@ function rigPoint(R, v, o) {
    them any more. Defaulting to off means no route can inherit it. */
 async function showFigure(src, portrait) {
   rig.portrait = portrait ? 1 : 0;
+  // a reply spoken while this is in flight still wants timestamps
+  rig.loading = 1;
   /* Whose body is on screen is who is talking. Set before the load rather than
      after it, so a sentence answered while he is still assembling is already
      answered by him. */
@@ -8193,7 +8211,7 @@ async function showFigure(src, portrait) {
   src = String(src || "").trim() || "colin_slim";
   let R;
   try { R = await loadRig(src); }
-  catch (e) { caption(null, "figure " + src + ": " + e.message); return false; }
+  catch (e) { rig.loading = 0; caption(null, "figure " + src + ": " + e.message); return false; }
 
   /* Loaded first, THEN the formation. The formation's coordinates come out of
      the fit, and the fit is only right once it has been measured in the space
@@ -8279,7 +8297,7 @@ async function showFigure(src, portrait) {
      the first thing on screen was a figure two thirds assembled. */
   worldReset();
   rig.fs0 = FIG_FS;
-  rig.R = R; rig.src = src; rig.on = 1; rig.out = 0;
+  rig.R = R; rig.src = src; rig.on = 1; rig.out = 0; rig.loading = 0;
   rig.t = 0; rig.at = performance.now(); rig.stage = -1; rig.hold = 0; rig.speed = 1;
   rig.orbN = 0; rig.oH = null;
   rig.wipe = [0, 0, 0, 0];
@@ -8782,7 +8800,13 @@ const TRIGGERS = {
   sphere:{solid:"sphere"}, ball:{solid:"sphere"}, cube:{solid:"cube"},
   box:{solid:"cube"}, torus:{solid:"torus"}, donut:{solid:"torus"},
   helix:{solid:"helix"}, spiral:{solid:"helix"},
-  knot:{model:"knot"}, head:{model:"test_head"}
+  knot:{model:"knot"},
+  /* "head" means HIS head now. It used to fetch test_head, a wireframe debug
+     model from before there was a face to show -- which is what actually
+     answered "let me see Collin's head": not the brain guessing, but this
+     table matching the one word `head` after the possessive form missed on
+     the spelling. test_head is still there behind `/show model test_head`. */
+  head:{figure:"colin_head"}, colinhead:{figure:"colin_head"}
 };
 
 /* ---------------- menu ----------------
@@ -8806,7 +8830,7 @@ const TRIGGERS = {
    for a hub with things hanging off it. `setFormation({ menu: true, hub: true })`
    still builds it. */
 const MENU = [
-  { label: "head",      act: { model: "test_head" } },
+  { label: "head",      act: { figure: "colin_head" } },
   { label: "knot",      act: { model: "knot" } },
   { label: "shapes",    act: { solid: "torus" } },
   { label: "fireworks", act: { show: [["peony", 0], ["nova", 760], ["valentine", 1520],
@@ -9442,9 +9466,12 @@ function heardSentence(heard) {
      `flat` has already turned every non-letter into a space, so "colin's"
      arrives as "colin s" and "colin_head" as "colin head" -- both spelled out
      here rather than hoped for. */
-  const HEAD_SHOW = /\b(show|bring|load|display|render|put up|lets see|let s see|switch to|go to)\b/;
-  const HEAD_WHOSE = /\b(colins?|colin s|my|his|the new|the real|textured)\s+(head|face|mug)\b/;
-  if ((HEAD_SHOW.test(flat) && HEAD_WHOSE.test(flat)) || /\bcolin head\b/.test(flat)) {
+  const HEAD_SHOW = /\b(show|bring|load|display|render|put up|pull up|switch to|go to|become)\b|\b(let me see|let s see|lets see|can i see|i want to see|wanna see|want to see)\b/;
+  /* col+in, because the recogniser hears his name with two Ls about as often
+     as with one -- "Let me see Collin's head" is what actually came back, and
+     it missed, fell through to the brain, and the brain guessed test_head. */
+  const HEAD_WHOSE = /\b(col+ins?|col+in s|my|his|the new|the real|textured)\s+(head|face|mug)\b/;
+  if ((HEAD_SHOW.test(flat) && HEAD_WHOSE.test(flat)) || /\bcol+in head\b/.test(flat)) {
     showFigure("colin_head").then((ok) => {
       if (ok === false) return;
       // straight on. cfg.tilt is a slider somebody set looking down at a whole
