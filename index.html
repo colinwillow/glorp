@@ -575,6 +575,8 @@ const CAST_OF = {
   // his own body. When his head lands with blend shapes on it, add that
   // model's name here and the particle face speaks in his voice too.
   colin_slim: "colin", colin_dance: "colin", colin_animations: "colin",
+  // and the head with his face and his mouth on it
+  colin_head: "colin",
 };
 
 const brain = {
@@ -9415,6 +9417,43 @@ function heardSentence(heard) {
       formTilt = 0; formSpin = 0;
     });
     return "figure";
+  }
+  /* His own head, as a MESH.
+
+     Deliberately not in the single-word TRIGGERS table: "head" and "face" turn
+     up in far too many ordinary sentences, and the table matches one word
+     anywhere in one. This wants a possessive in front of it -- somebody asking
+     for COLIN's head, or the new one, or the real one -- which is how people
+     actually ask for it and cannot be said by accident.
+
+     It has to run before the table, too, or the bare word "colin" in the same
+     sentence would fetch colin_slim out from under it.
+
+     No portrait flag and no dots hold: the particle face was the last thing
+     and this is not that. He is a rendered character with skin, hair and a
+     textured mouth, and the build runs all the way through to it. */
+  /* Two tests ANDed rather than one long one, because they fail for different
+     reasons and a route test can tell them apart. Whose head, and whether this
+     is a request to SEE it -- "can you make him turn his head" and "what does
+     my face look like" both name a head and neither is asking for one, and
+     both fetched it until the verb was required. `see` on its own is not
+     enough either: "I can see his face" is a remark.
+
+     `flat` has already turned every non-letter into a space, so "colin's"
+     arrives as "colin s" and "colin_head" as "colin head" -- both spelled out
+     here rather than hoped for. */
+  const HEAD_SHOW = /\b(show|bring|load|display|render|put up|lets see|let s see|switch to|go to)\b/;
+  const HEAD_WHOSE = /\b(colins?|colin s|my|his|the new|the real|textured)\s+(head|face|mug)\b/;
+  if ((HEAD_SHOW.test(flat) && HEAD_WHOSE.test(flat)) || /\bcolin head\b/.test(flat)) {
+    showFigure("colin_head").then((ok) => {
+      if (ok === false) return;
+      // straight on. cfg.tilt is a slider somebody set looking down at a whole
+      // body, and a head does not want a torso's camera any more than a
+      // portrait did.
+      formTilt = 0; formSpin = 0;
+    });
+    caption(heard, "");
+    return "colinhead";
   }
   if (/\b(face test|head test)\b/.test(flat)
       || (SCENE_SAID.test(flatN) && !/\b(scene|sandbox|room)\b/.test(flatN)
