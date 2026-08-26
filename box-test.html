@@ -15,7 +15,14 @@
     padding:12px 22px;border-radius:22px;font:inherit;font-size:14px}
   #keys{position:fixed;left:0;right:0;bottom:calc(14px + env(safe-area-inset-bottom));z-index:3;
     text-align:center;opacity:.5;font-size:11px}
+  /* A way back. The orb can send you here by voice now, and a page you can
+     only leave by closing the tab is a trap rather than a test. */
+  #back{position:fixed;right:12px;top:calc(12px + env(safe-area-inset-top));z-index:4;
+    color:#7F8B77;text-decoration:none;border:1px solid #2C3826;border-radius:14px;
+    padding:5px 12px;font-size:11px;background:rgba(11,11,11,.6)}
+  #back:active{background:#1c2417}
 </style>
+<a id="back" href="./">← orb</a>
 <div id="hud"></div>
 <div id="keys"></div>
 <div id="tap">

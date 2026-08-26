@@ -9670,6 +9670,24 @@ function heardSentence(heard) {
     caption(heard, "");
     return "colinhead";
   }
+  /* The ragdoll box, which is its own page.
+
+     "ragdoll" carries this on its own -- nothing else in here wants the word,
+     and it is what anybody would actually say. "box" cannot: the single-word
+     table already maps it to a cube, and the room has a stereo in it, so a
+     bare box has two other meanings before this one. It needs a verb in front
+     of it or the word test after it.
+
+     Ahead of the table for the same reason the head route is: the word `box`
+     inside "open the box" would otherwise be caught on the way past and turned
+     into a cube. */
+  if (/\brag ?doll\b/.test(flat)
+      || /\b(box|physics|gravity|tilt) test\b/.test(flat)
+      || /\b(open|show|go to|take me to|launch|start|bring up|let me see)\b[^]*\bthe box\b/.test(flat)) {
+    caption(null, "opening the ragdoll box");
+    setTimeout(() => { location.href = "box-test.html"; }, 350);
+    return "boxtest";
+  }
   if (/\b(face test|head test)\b/.test(flat)
       || (SCENE_SAID.test(flatN) && !/\b(scene|sandbox|room)\b/.test(flatN)
           && /\b(lip ?sync|lipsync|mouth|face|head|viseme|visemes|talk|talking|test)\b/.test(flat))) {
