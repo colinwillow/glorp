@@ -7478,7 +7478,14 @@ const WALK = { turn: 2.1, turnPlace: 4.2, faceFirst: 1.55, turnMove: 0.35,
    it, at 60fps. 0.010 is 32 particles at 3200, so the full 55% share takes
    about nine tenths of a second to peel off -- slow enough to read as a stream
    of dots leaving him, fast enough that it is over before the build is. */
-const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.5,
+/* tempo is left at 1, and tried at 1.12 first, which is worth writing down:
+   it moved the measured ratio from 0.89 to 0.86, which is inside the noise.
+   The clock scales the desired speed and the force cap, and once the ring has
+   settled the distance left to travel is nearly nothing, so both are nearly
+   nothing -- what is still moving at that point is the membrane and the
+   turbulence. So the clock governs how fast it ARRIVES and the size scaling
+   governs how fast it lives, and only the second one was the complaint. */
+const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.0,
               share: 0.13, full: 0.55, rate: 0.010 };
 // where it is on screen this frame, and how big -- see the physics loop
 let orbCX = 0, orbCY = 0, orbK = 1, orbT = 1;
@@ -11856,7 +11863,25 @@ function loop() {
     orbK = 1 + (ORB.k * pp3 - 1) * oH;
     // and its clock eases in with it, so that while the block is still sitting
     // in the field its particles run at exactly the field's speed
-    orbT = 1 + (ORB.tempo / orbK - 1) * oH;
+    /* Not divided by its size any more, and that was the whole of the
+       choppiness. The idea was a sparrow's wings against a swan's -- a small
+       thing should beat faster -- and it is a good idea about ANIMALS and the
+       wrong one here, because these particles are not beating, they are
+       crossing a distance. Divide the clock by the size and you multiply the
+       speed by it twice over: the target is k times nearer AND the clock runs
+       1/k faster.
+
+       Measured, mini against full screen: 0.300 px a frame across a 58 px
+       radius, against 0.201 across 77. Which is 5.16 parts per thousand of
+       itself per frame against 2.62 -- running 1.97 times as fast relative to
+       its own size, with orbT sitting at 2.01. The excess IS the multiplier.
+
+       There is nothing to compensate for. The steering is proportional -- the
+       desired speed is a fraction of the distance left -- so shrinking the orb
+       shrinks the speed on its own, exactly in step. The note this replaces
+       said as much and then overrode it: "its relative tempo was already right
+       (3.7 against 4.22)". It was. */
+    orbT = 1 + (ORB.tempo - 1) * oH;
   }
   else orbT = 1;
   /* Per physics STEP, not per frame -- and the difference is not pedantic.
@@ -12109,9 +12134,23 @@ function loop() {
          swan's, and a sparrow moving at swan tempo reads as a model of a bird
          rather than a bird. */
       const oT = isOrb ? orbT : 1;
+      /* And its SIZE, which is a different correction to its clock.
+
+         Two kinds of term meet here. Some are PROPORTIONAL -- the desired
+         speed is a share of the distance left, the membrane pushes by how far
+         out of true a particle is -- and those shrink with the orb by
+         themselves. The rest are ABSOLUTE: a kick is so many pixels per step
+         however big the thing being kicked, and a fixed shove on a ring a
+         third the size is three times the shove. That is the half of the
+         choppiness that survives fixing the clock, and it is worse the further
+         away he stands, because the perspective divide is already inside orbK.
+
+         1 for the full-screen field, so nothing about the orb everyone
+         actually looks at changes. */
+      const oS = isOrb ? orbK : 1;
       // These particles are slow on purpose, which is lovely for a ring and
       // useless for hitting a mark. Lend them force while a shape is holding.
-      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull * oT;
+      const maxF = mSpd[i] * cfg.forceRatio * (1 + fT * 5 * loose) * pull * oT * oS;
 
       const ddx = tx - px[i], ddy = ty - py[i];
       const dd = Math.sqrt(ddx * ddx + ddy * ddy) || 0.0001;
@@ -12191,8 +12230,8 @@ function loop() {
           // dilation, so the outline stays similar to itself however hard it
           // is hit.
           const mag = 1 + (shapeLut[s2] - 1) * cfg.kickShape;
-          ax += (rx / rd) * kk2 * 1.6 * mag * oT;
-          ay += (ry / rd) * kk2 * 1.6 * mag * oT;
+          ax += (rx / rd) * kk2 * 1.6 * mag * oT * oS;
+          ay += (ry / rd) * kk2 * 1.6 * mag * oT * oS;
         }
       }
 
@@ -12228,23 +12267,23 @@ function loop() {
         const h = drive.hit[mBand] * drive.music;
         if (h > 0.012) {
           if (mBand < MUSIC_VIS.low) {
-            ax += ux * h * MUSIC_VIS.kick * oT;
-            ay += uy * h * MUSIC_VIS.kick * oT;
+            ax += ux * h * MUSIC_VIS.kick * oT * oS;
+            ay += uy * h * MUSIC_VIS.kick * oT * oS;
           } else if (mBand < MUSIC_VIS.mid) {
             // see the note on MUSIC_VIS.roles for why none of these ship on
-            ax -= ux * h * MUSIC_VIS.snap * oT;
-            ay -= uy * h * MUSIC_VIS.snap * oT;
+            ax -= ux * h * MUSIC_VIS.snap * oT * oS;
+            ay -= uy * h * MUSIC_VIS.snap * oT * oS;
           } else {
-            ax += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
-            ay += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT;
+            ax += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT * oS;
+            ay += (Math.random() - 0.5) * h * MUSIC_VIS.hat * oT * oS;
           }
         }
       }
 
       const tb = isOrb ? turbFree : held ? turb : turbFree;
       if (tb > 0.01) {
-        ax += (Math.random() - 0.5) * tb * 2.4 * oT;
-        ay += (Math.random() - 0.5) * tb * 2.4 * oT;
+        ax += (Math.random() - 0.5) * tb * 2.4 * oT * oS;
+        ay += (Math.random() - 0.5) * tb * 2.4 * oT * oS;
       }
 
       if (hasMouse) {
