@@ -7056,8 +7056,16 @@ function glFrame(K, FOC) {
   floatNow(performance.now() * 0.001);
   eyesNow(gl.dt || 16.67, performance.now());
   blinkNow(performance.now());
-  gl.root.position.set(world.x + flo.x, world.y + flo.y, world.z + flo.z);
-  gl.root.rotation.set(flo.rx, world.yaw + flo.ry, flo.rz);
+  gl.root.position.set(world.x + flo.x, world.y + hit.lift + flo.y, world.z + flo.z);
+  /* YXZ, so the tumble is about HIS right and not the world's.
+
+     With the default XYZ the x-rotation is applied last and is therefore a
+     world-axis one: thrown along z he would pitch head-over-heels correctly,
+     and thrown along x he would keel over sideways instead. Putting the yaw
+     outermost means the pitch happens in the frame he is already facing, which
+     is the only way one number can turn him over whichever way he was hit. */
+  gl.root.rotation.order = "YXZ";
+  gl.root.rotation.set(flo.rx + hit.pitch, world.yaw + flo.ry, flo.rz);
   if (gl.group) gl.group.position.set(-f.c[0], -f.c[1], -f.c[2]);
   boomBoxFrame(gl.dt || 16.67);
   if (gl.ground) {
@@ -7461,6 +7469,39 @@ const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.5,
               share: 0.13, full: 0.55, rate: 0.010 };
 // where it is on screen this frame, and how big -- see the physics loop
 let orbCX = 0, orbCY = 0, orbK = 1, orbT = 1;
+/* THE ORB DOES NOT TRACK HIM, IT FOLLOWS HIM.
+
+   Its place was computed straight from his -- behind him, above him, exactly,
+   every frame -- which is welded rather than followed: he moves, it moves, and
+   at the same instant, which is the one thing a floating object never does.
+
+   Two parts. A lag, slow enough to be a decision rather than a delay: about
+   two thirds of a second to catch up, so when he walks off it hangs where it
+   was for a moment and then comes after him, and when he stops it drifts the
+   last of the way in. And a wander on top -- a slow circle, a bob, and a
+   breath in and out on the depth, on three periods that do not divide into
+   each other so the pattern never comes round twice the same.
+
+   In HIS heights, like everything else in the room, so it reads the same at
+   any size he happens to be. */
+const OFOL = { lag: 1.55, orbit: 0.085, bob: 0.055, breath: 0.070 };
+function orbFollow(ow, H1o) {
+  // snapped rather than eased for a figure it has not been following, or the
+  // first second of a new one is the ball crossing the room to catch up
+  if (!rig.orbP || rig.orbP.of !== rig.src) {
+    rig.orbP = { x: ow[0], y: ow[1], z: ow[2], of: rig.src };
+  }
+  const p = rig.orbP;
+  // per second, so the lag is the same on a phone at 30 and a laptop at 120
+  const k = 1 - Math.exp(-((gl.dt || 16.67) / 1000) * OFOL.lag);
+  p.x += (ow[0] - p.x) * k;
+  p.y += (ow[1] - p.y) * k;
+  p.z += (ow[2] - p.z) * k;
+  const t = performance.now() * 0.001;
+  ow[0] = p.x + Math.sin(t * 0.41) * OFOL.orbit * H1o;
+  ow[1] = p.y + Math.sin(t * 0.67 + 1.3) * OFOL.bob * H1o;
+  ow[2] = p.z + Math.cos(t * 0.29 + 0.7) * OFOL.breath * H1o;
+}
 // normalised distance from the orb's centre: 0 in the middle, 1 on the ring
 // its own painter's-order scratch, since it draws in a pass of its own
 const ordOrb = new Int32Array(MAX), zbufOrb = new Float32Array(MAX);
@@ -8103,21 +8144,54 @@ function sandboxSay(flat) {
    so sliding him is not fighting the animation for control of the same value.
    It is the only way he moves at all. */
 const HIT = {
-  reach: 0.30,      // how near the swipe must pass him, as a fraction of the short side
-  soft: 0.55,       // px/ms: under this it is a shove and he stays up
-  hard: 1.9,        // and over this he leaves the floor first
+  reach: 0.30,      // how near a SWIPE must pass him, as a fraction of the short side
+  poke: 0.16,       // and how near a TAP must land to count as a poke
+  soft: 0.60,       // px/ms: under this a swipe is a shove he rides out
   push: 0.055,      // heights per second of travel, per px/ms of swipe
-  cap: 5.5,         // heights per second, whatever the swipe says
-  drag: 2.2,        // how fast the slide dies, per second
+  cap: 6.5,         // heights per second, whatever the swipe says
+  /* The shape of the throw, and these two are the whole feel of it.
+
+     They are not free: with a launch angle u and gravity g, the flight lasts
+     2v.u/g and tops out at (v.u)^2/2g, so picking a hang time and a height
+     picks both. Aimed at about a second in the air and a peak just under his
+     own height, because under half a second reads as a stumble rather than a
+     launch -- measured, the first pass gave 0.65s and 0.32 heights and looked
+     like he had tripped. */
+  up: 0.62,         // the share of the launch that goes upward
+  grav: 6.7,        // heights per second squared
+  air: 0.35,        // how fast the horizontal dies while he is off the floor
+  spin: 1.9,        // how hard the arc turns him over
+  unwind: 260,      // ms to take the tumble out of him once he lands
+  /* How much of the frame he must stay inside, and it is generous on purpose.
+     figSeen models somebody STANDING -- two probes up a vertical line -- and a
+     man tumbling through the air is as wide as he is tall, so his legs leave
+     the picture while his middle is still comfortably inside it. Rather than
+     give the test a notion of the pose, give it room. */
+  edge: 0.16,
   down: [500, 1400],// how long he stays on the floor
   hold: 2600,       // how long the director keeps out of it afterwards
 };
+/* Three gestures, three sets of clips, and the mapping is the whole design.
+
+   POKE -- a tap on him. The hit_*_fall clips all start from STANDING: he is
+   struck, he staggers, he goes down. That is exactly a poke and exactly wrong
+   for anything else, which is why an aerial impact used to snap him upright
+   before it knocked him over again.
+
+   SHOVE -- a slow swipe. He gives ground and rides it out, still on his feet.
+
+   LAUNCH -- a fast one. He leaves the floor, and none of the standing clips
+   are any use: he flies, lands, and is already on the ground, so the landing
+   goes straight to lying there. in_air_floating and not in_air_falling --
+   falling is the skydive, arms out, belly down, and it reads as a man who
+   meant to be there. */
 const HIT_STAY = ["reaction_shoved", "reaction_swivel"];
 const HIT_FALL = ["hit_legs_trip_fall", "hit_roll_fall", "hit_shoulder_and_fall",
                   "hit_stumble_fall", "trip_fall_flat"];
-const HIT_AIR  = ["in_air_floating", "in_air_falling"];
+const HIT_AIR  = ["in_air_floating"];
 const HIT_UP   = ["kip_up_from_laying", "stand_up_from_laying"];
-const hit = { on: 0, stage: "", until: 0, vx: 0, vz: 0 };
+const hit = { on: 0, stage: "", until: 0, vx: 0, vy: 0, vz: 0,
+              lift: 0, pitch: 0, want: 0, land: 0 };
 
 /* Where a swipe on the glass points in the room he stands in.
 
@@ -8136,43 +8210,79 @@ function hitDir(dx, dy) {
   return [x / L, z / L];
 }
 
-/* Did the swipe actually cross him, or just the screen next to him? Distance
-   from his chest to the SEGMENT, not to either end -- a swipe that starts and
-   ends well clear of him can still pass straight through. */
-function hitNear(x0, y0, x1, y1) {
-  if (!gl.ready || !gl.cam || !gl.mesh || !gl.mesh.skeleton) return 0;
+// where his chest is on the glass, which both gestures are measured against
+function hitAt() {
+  if (!gl.ready || !gl.cam || !gl.mesh || !gl.mesh.skeleton) return null;
   const T = window.THREE;
   let b = null;
   for (const bn of gl.mesh.skeleton.bones)
     if (/Spine1$|Spine2$/i.test(bn.name)) { b = bn; break; }
   if (!b) for (const bn of gl.mesh.skeleton.bones) if (/Hips$/i.test(bn.name)) b = bn;
-  if (!b) return 0;
+  if (!b) return null;
   gl.group.updateMatrixWorld(true);
   const v = b.getWorldPosition(new T.Vector3()).project(gl.cam);
-  const cx = (v.x * 0.5 + 0.5) * W, cy2 = (-v.y * 0.5 + 0.5) * H;
-  const ax = x1 - x0, ay = y1 - y0;
-  const len2 = ax * ax + ay * ay;
-  const t = len2 ? Math.max(0, Math.min(1, ((cx - x0) * ax + (cy2 - y0) * ay) / len2)) : 0;
-  const d = Math.hypot(x0 + ax * t - cx, y0 + ay * t - cy2);
-  return d < HIT.reach * Math.min(W, H) ? 1 : 0;
+  return [(v.x * 0.5 + 0.5) * W, (-v.y * 0.5 + 0.5) * H];
 }
 
-/* One swipe, turned into a shove. speed is in px/ms. */
+/* Did the swipe actually cross him, or just the screen next to him? Distance
+   from his chest to the SEGMENT, not to either end -- a swipe that starts and
+   ends well clear of him can still pass straight through. */
+function hitNear(x0, y0, x1, y1) {
+  const c = hitAt();
+  if (!c) return 0;
+  const ax = x1 - x0, ay = y1 - y0;
+  const len2 = ax * ax + ay * ay;
+  const t = len2 ? Math.max(0, Math.min(1, ((c[0] - x0) * ax + (c[1] - y0) * ay) / len2)) : 0;
+  return Math.hypot(x0 + ax * t - c[0], y0 + ay * t - c[1]) < HIT.reach * Math.min(W, H) ? 1 : 0;
+}
+function hitTap(x, y) {
+  const c = hitAt();
+  return c && Math.hypot(x - c[0], y - c[1]) < HIT.poke * Math.min(W, H) ? 1 : 0;
+}
+
+function hitTake() {
+  world.walking = 0; world.turning = 0; world.turnOnly = 0;
+  world.seq = null; world.actUntil = 0;
+  world.pose = 1;                 // he is IN something; nothing else may pose him
+  hit.on = 1;
+  mindHold(HIT.hold);
+}
+
+// a tap on him: struck where he stands, and the clip does the rest
+function hitPoke() {
+  if (!world.on || rig.out || hit.on) return 0;
+  hitTake();
+  hit.vx = hit.vz = hit.vy = 0; hit.lift = 0;
+  hitStage("fall");
+  return 1;
+}
+
+/* One swipe, turned into a shove or a launch. speed is in px/ms. */
 function hitGo(dx, dy, speed) {
   if (!world.on || rig.out) return 0;
   const [ux, uz] = hitDir(dx, dy);
   const v = Math.min(HIT.cap, speed * HIT.push * 60) * figH1();
-  hit.on = 1; hit.vx = ux * v; hit.vz = uz * v;
-  world.walking = 0; world.turning = 0; world.turnOnly = 0;
-  world.seq = null; world.actUntil = 0;
-  world.pose = 1;                 // he is IN something; nothing else may pose him
-  mindHold(HIT.hold);
+  hitTake();
+  hit.vx = ux * v; hit.vz = uz * v; hit.vy = 0; hit.lift = 0;
   if (speed < HIT.soft) {
-    /* A shove he rides out. He should also give a little ground -- a man who
+    /* A shove he rides out. He should still give a little ground -- a man who
        does not move at all when pushed reads as bolted down. */
-    hit.vx *= 0.5; hit.vz *= 0.5;
+    hit.vx *= 0.45; hit.vz *= 0.45;
     hitStage("stay");
-  } else hitStage(speed > HIT.hard ? "air" : "fall");
+  } else {
+    /* Thrown. He faces the way he is going from the first frame: being
+       launched sideways and travelling like a crab is the single thing that
+       most gives away that nothing is really being simulated. */
+    world.yaw = Math.atan2(hit.vx, hit.vz);
+    world.yawWant = world.yaw;
+    /* Split rather than stacked, so `cap` still means what it says: the launch
+       angle divides one speed between along and upward instead of adding a
+       vertical component on top of a horizontal one already at the limit. */
+    const L = Math.hypot(1, HIT.up);
+    hit.vx /= L; hit.vz /= L;
+    hit.vy = v * HIT.up / L;
+    hitStage("air");
+  }
   return 1;
 }
 
@@ -8185,19 +8295,20 @@ function hitStage(st) {
     hit.until = now + (nm ? playClip(nm, 0.12, 1) * 1000 : 400);
   } else if (st === "air") {
     const nm = pick(HIT_AIR);
-    // the air clip is a LOOP under him while he travels; the landing ends it
-    hit.until = now + (nm ? playClip(nm, 0.10) * 1000 : 300);
+    hit.until = now + 1e9;          // the ground ends this, not a clock
+    if (nm) playClip(nm, 0.10);
   } else if (st === "fall") {
     const nm = pick(HIT_FALL);
     hit.until = now + (nm ? playClip(nm, 0.10, 1) * 1000 : 700);
   } else if (st === "down") {
-    if (haveClip("laying_idle_00")) playClip("laying_idle_00", 0.35);
+    if (haveClip("laying_idle_00")) playClip("laying_idle_00", 0.3);
     hit.until = now + HIT.down[0] + Math.random() * (HIT.down[1] - HIT.down[0]);
   } else if (st === "up") {
     const nm = pick(HIT_UP);
     hit.until = now + (nm ? playClip(nm, 0.3, 1) * 1000 : 600);
   } else {
     hit.on = 0; hit.stage = ""; world.pose = 0;
+    hit.vx = hit.vy = hit.vz = hit.lift = 0; hit.want = 0;
     playClip(pickIdle(), 0.4);
     world.idleAt = now + 2500;
     mindHold(HIT.hold);
@@ -8205,32 +8316,128 @@ function hitStage(st) {
 }
 
 function hitNow(dt, now) {
+  /* The tumble unwinds whether or not anything is happening, so that a landing
+     puts him flat rather than leaving him leaning at the angle he arrived. */
+  /* Two speeds. In the air the angle IS the physics -- it is the direction he
+     is travelling -- so it should follow closely; a slow ease there lags the
+     arc and he comes down still leaning back. On the floor it is the opposite:
+     the tumble has to leave him gradually or he snaps flat the instant he
+     lands. */
+  const kp = 1 - Math.pow(1 - 0.5, dt / (hit.stage === "air" ? 80 : HIT.unwind));
+  hit.pitch += ((hit.on ? hit.want : 0) - hit.pitch) * kp;
   if (!hit.on) return;
   const H1 = figH1(), s = dt / 1000;
-  // slide, decaying. Per second, so a slow frame does not travel further
-  const k = Math.pow(1 / (1 + HIT.drag), s);
+
+  if (hit.stage === "air") {
+    /* The arc, and the turn that goes with it.
+
+       A body thrown across a room does not travel level and does not stay
+       upright, and the thing that reads is not the height -- it is that the up
+       vector KEEPS TURNING all the way round. Going up he is tipped back, feet
+       first, still leaning away from whatever hit him; over the top he comes
+       level; coming down he is head first. That is one number: the angle of
+       his own velocity. Take the arctangent of the vertical against the
+       horizontal, scale it, and the rotation falls out of the physics rather
+       than being animated on top of it. */
+    hit.vy -= HIT.grav * H1 * s;
+    hit.lift += hit.vy * s;
+    /* And a ceiling, which is the top of the picture rather than anything in
+       the room. Sideways he is fenced by what the camera can see; upwards he
+       was not, so a hard throw put him over the top of the frame and the only
+       thing on screen was a pair of shoes. Same bisection, same reason -- and
+       stopping the climb rather than the travel, because you cannot keep
+       somebody in shot vertically by slowing him down horizontally. */
+    if (hit.vy > 0 && !figSeen(world.x, world.z, HIT.edge, hit.lift)) {
+      let lo = 0, hi = hit.lift;
+      for (let i = 0; i < 5; i++) {
+        const m = (lo + hi) / 2;
+        if (figSeen(world.x, world.z, HIT.edge, m)) lo = m; else hi = m;
+      }
+      hit.lift = lo; hit.vy = 0;
+    }
+    const kd = Math.pow(1 / (1 + HIT.air), s);
+    hit.vx *= kd; hit.vz *= kd;
+    const vh = Math.hypot(hit.vx, hit.vz);
+    if (vh > H1 * 0.05) { world.yaw = Math.atan2(hit.vx, hit.vz); world.yawWant = world.yaw; }
+    hit.want = Math.max(-1.4, Math.min(1.4,
+      Math.atan2(-hit.vy, Math.max(vh, H1 * 0.15)) * HIT.spin));
+  } else {
+    // on the floor: slide and stop
+    const kd = Math.pow(1 / (1 + 2.2), s);
+    hit.vx *= kd; hit.vz *= kd;
+    hit.want = 0;
+    if (hit.lift > 0) hit.lift = Math.max(0, hit.lift - H1 * 4 * s);
+  }
+  const wasSeen = figSeen(world.x, world.z, HIT.edge, hit.lift);
+  const px0 = world.x, pz0 = world.z;
   world.x += hit.vx * s; world.z += hit.vz * s;
-  hit.vx *= k; hit.vz *= k;
+
   /* The walls. Same fence walkTo uses, so he cannot be flung anywhere he could
-     not have walked -- and hitting one ends the flight rather than the slide:
-     in the air, the wall IS the landing. */
+     not have walked. */
   const edge = WALK.floor / 2 - 0.4;
   const lx = H1 * Math.min(2.6, edge), lzB = H1 * Math.min(4.5, edge), lzF = H1 * 0.9;
   let wall = 0;
   if (world.x > lx) { world.x = lx; wall = 1; } else if (world.x < -lx) { world.x = -lx; wall = 1; }
   if (world.z > lzF) { world.z = lzF; wall = 1; } else if (world.z < -lzB) { world.z = -lzB; wall = 1; }
-  if (wall) { hit.vx *= -0.25; hit.vz *= -0.25; }
-  if (hit.stage === "air" && (wall || Math.hypot(hit.vx, hit.vz) < H1 * 0.6)) {
-    hitStage("fall"); return;
+  /* A wall takes his speed away and nothing else. It used to end the flight,
+     and measured, that is what went wrong: from the middle of the room the wall
+     is 2.6 heights off and he crosses that in half a second, so he arrived at
+     it AT THE APEX -- still rising, barely turned, and the landing fired while
+     he was as high as he was ever going to get.
+
+     Letting the wall only stop him means what actually happens is what you
+     would expect to happen: up, smack, and then down the face of it, and the
+     whole descending half of the arc -- which is the half where he goes head
+     first -- happens against the wall instead of being skipped. */
+  /* AND THE EDGE OF THE PICTURE, which is the wall that actually matters.
+
+     The room is 2.6 of his heights to either side and the frame is a phone held
+     upright, so the room's walls are nowhere near the ones you can see: thrown
+     hard he sailed past the left edge, hit the real wall out of shot, and lay
+     there. Measured, he came to rest at x = -394 on a 420-pixel screen.
+
+     So the fence is what the camera can see. Only for somebody who was ON
+     screen when he set off -- otherwise anything already outside is frozen
+     where it stands and can never be thrown back in. */
+  if (wasSeen && !figSeen(world.x, world.z, HIT.edge, hit.lift)) {
+    /* Bisected to the edge rather than reverted. Throwing the whole step away
+       looks fine at sixty frames a second, where a step is a twentieth of his
+       height, and falls apart anywhere slower: at a sixth of a second a step is
+       a whole height, so the first one leaves the frame, gets undone, and he
+       never moves at all -- measured, 0.11 heights of travel from a full-speed
+       throw. Five halvings put him within three percent of the edge whatever
+       the frame rate, and cost five projections on the one frame he arrives. */
+    let lo = 0, hi = 1;
+    const ax = world.x - px0, az = world.z - pz0;
+    for (let i = 0; i < 5; i++) {
+      const m = (lo + hi) / 2;
+      if (figSeen(px0 + ax * m, pz0 + az * m, HIT.edge, hit.lift)) lo = m; else hi = m;
+    }
+    world.x = px0 + ax * lo; world.z = pz0 + az * lo;
+    wall = 1;
+  }
+  if (wall) { hit.vx *= -0.2; hit.vz *= -0.2; }
+
+  if (hit.stage === "air") {
+    /* Down, or into something. Straight to lying there: he is already
+       horizontal and mid-tumble, and every clip that would "break the fall"
+       starts from standing -- which is what put him briefly on his feet at the
+       moment of impact, upright and unbothered, before knocking him over. */
+    if (hit.lift <= 0 && hit.vy < 0) {
+      hit.lift = Math.max(0, hit.lift);
+      hit.vx *= 0.3; hit.vz *= 0.3; hit.vy = 0;
+      hitStage("down");
+    }
+    return;
   }
   if (now < hit.until) return;
   if (hit.stage === "stay") hitStage("");
-  else if (hit.stage === "air") hitStage("fall");
   else if (hit.stage === "fall") { hit.vx *= 0.2; hit.vz *= 0.2; hitStage("down"); }
   else if (hit.stage === "down") hitStage("up");
   else hitStage("");
 }
 window.__hit = (dx, dy, sp) => hitGo(dx, dy, sp == null ? 1.2 : sp);
+window.__poke = () => hitPoke();
 
 /* ---------------- the mind ----------------
 
@@ -8270,7 +8477,7 @@ const MIND = {
 
    So ask. Project the two ends of him and see. Both, because close to the lens
    the crop that gets him is the top of the frame, not the side. */
-function figSeen(x, z, m) {
+function figSeen(x, z, m, lift) {
   const T = window.THREE;
   if (!gl.ready || !gl.cam || !gl.stage || !rig.R) return 1;
   gl.stage.updateMatrixWorld(true);
@@ -8282,7 +8489,7 @@ function figSeen(x, z, m) {
      including the one he was already standing on. */
   const f = rig.R.fit, H1 = figH1(), v = new T.Vector3();
   for (const my of [H1 * 0.06, H1 * 1.02]) {
-    v.set(x - f.c[0], world.y + my - f.c[1], z - f.c[2])
+    v.set(x - f.c[0], world.y + (lift || 0) + my - f.c[1], z - f.c[2])
       .applyMatrix4(gl.stage.matrixWorld).project(gl.cam);
     if (!(Math.abs(v.x) < 1 - m && Math.abs(v.y) < 1 - m)) return 0;
   }
@@ -11099,6 +11306,12 @@ const onPick = (e) => {
      underneath and he gets up and walks to where your finger left the glass. */
   if (swipe.used && performance.now() - swipe.used < 500) { swipe.used = 0; return; }
   if (Math.hypot(t.clientX - swipe.x, t.clientY - swipe.y) > Math.min(W, H) * 0.05) return;
+  /* Tap HIM and he takes it. Before the floor, because his feet are on the
+     floor: a tap on his shoes is a tap on him, and walking to where he already
+     stands is not what anybody meant by it. */
+  if (world.on > 0.5 && !hit.on && hitTap(t.clientX, t.clientY)) {
+    e.preventDefault(); hitPoke(); return;
+  }
   /* Tap the floor and he walks there. The little one is not on screen in here
      -- he is standing right in front of you, and a second small him hovering
      over his own head is the "two of him" the perch was built to avoid -- so
@@ -11540,6 +11753,7 @@ function loop() {
   if (rig.on && rig.R && gl.ready && rig.orbFrom < 1e8) {
     const fo = rig.R.fit, H1o = figH1();
     const ow = [world.x, (fo.lo[1] - fo.c[1]) + ORB.y * H1o, world.z + ORB.z * H1o];
+    orbFollow(ow, H1o);
     const kk = scale * formS;
     const oxw = ow[0] * fo.k * kk, oyw = -ow[1] * fo.k * kk, ozw = -ow[2] * fo.k * kk;
     const cyw3 = Math.cos(view.yaw), syw3 = Math.sin(view.yaw);
