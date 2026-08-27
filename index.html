@@ -6334,7 +6334,9 @@ const gl = {
      (2 means nothing does); uHeadLo/uHeadSpan are the borrowed head's own copy
      of uLo/uSpan, because it is measured in its own units and still has to
      wipe on the same clock as the body. */
-  uHeadCut: { value: 2 }, uHeadLo: { value: 0 }, uHeadSpan: { value: 1 }
+  uHeadCut: { value: 2 }, uHeadLo: { value: 0 }, uHeadSpan: { value: 1 },
+  // the inside of his mouth, which the head texture has nothing painted for
+  uCav: { value: null }
 };
 
 /* Injected into whatever material the file brought with it, rather than
@@ -6376,6 +6378,7 @@ function figTextures(mats) {
 function glWipeMat(m, hi, lo, opt) {
   const o = opt || {};
   const cut = o.cut || null;
+  const cav = o.cav || null;
   const uLo = o.lo || gl.uLo, uSpan = o.span || gl.uSpan;
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uWipe = hi;
@@ -6383,20 +6386,33 @@ function glWipeMat(m, hi, lo, opt) {
     sh.uniforms.uLo = uLo;
     sh.uniforms.uSpan = uSpan;
     if (cut) sh.uniforms.uHeadCut = cut;
+    if (cav) sh.uniforms.uCav = cav;
     sh.vertexShader = (cut ? "attribute float headW;\nvarying float vHeadW;\n" : "") +
+      (cav ? "attribute float cavity;\nvarying float vCav;\n" : "") +
       "varying float vFigH;\nuniform float uLo;\nuniform float uSpan;\n" +
       sh.vertexShader.replace("#include <begin_vertex>",
         "#include <begin_vertex>\n  vFigH = (position.y - uLo) / uSpan;"
-        + (cut ? "\n  vHeadW = headW;" : ""));
+        + (cut ? "\n  vHeadW = headW;" : "")
+        + (cav ? "\n  vCav = cavity;" : ""));
     sh.fragmentShader = (cut ? "varying float vHeadW;\nuniform float uHeadCut;\n" : "") +
+      (cav ? "varying float vCav;\nuniform vec3 uCav;\n" : "") +
       "varying float vFigH;\nuniform float uWipe;\nuniform float uWipeLo;\n" +
       sh.fragmentShader.replace("void main() {",
         "void main() {\n  if (vFigH > uWipe || vFigH <= uWipeLo) discard;"
         + (cut ? "\n  if (vHeadW > uHeadCut) discard;" : ""));
+    /* After the map, because the map is what would otherwise win: the head
+       texture has nothing painted for the inside of the mouth, so those
+       fragments come back white and get lit like skin. Overriding the diffuse
+       here rather than in the texture means it costs nothing to change and
+       nobody has to open an image editor. */
+    if (cav)
+      sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>",
+        "#include <map_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uCav, vCav);");
   };
   // or three caches one compiled program for both materials and the second one
   // silently gets the first one's uniforms
-  m.customProgramCacheKey = () => "figwipe" + (lo ? "g" : "t") + (cut ? "c" : "") + (o.key || "");
+  m.customProgramCacheKey = () => "figwipe" + (lo ? "g" : "t") + (cut ? "c" : "")
+                                     + (cav ? "m" : "") + (o.key || "");
   m.needsUpdate = true;
 }
 
@@ -6469,6 +6485,75 @@ function figHeadW(mesh) {
   return w;
 }
 
+/* The inside of his mouth.
+
+   The head texture has nothing painted for it, so the cavity came back white
+   and lit like skin -- which is what you see the moment he opens up. The colour
+   he wants is the one already on the tongue, and there is no separate mesh to
+   put it on: the source file has exactly four objects and the cavity is inside
+   the head with everything else.
+
+   So find it. The tongue IS the mouth, near enough, so its centroid and its
+   radius give the region; and the surfaces that line a cavity are exactly the
+   ones whose normals point back INTO it, which is what separates the inside of
+   a lip from the outside of the same lip a millimetre away. Both tests
+   together, and neither on its own: the radius alone takes the chin and the
+   nostrils, the normal alone takes half the skull.
+
+   Measured on this head: 430 vertices, spanning the width of the mouth and no
+   further, from the back of the throat out to the inner edge of the lips. Done
+   at load rather than in the model, because it is a shader uniform this way and
+   a re-export the other, and nothing about it needs to be permanent. */
+const CAV = { k: 1.6, up: 0.55, dot: 0.05 };
+function figCavity(skins, mats) {
+  const T = window.THREE;
+  gl.uCav.value = null;
+  const tongue = mats.find((m) => /tongue/i.test(m.name || ""));
+  const tSkin = skins.find((o) => [].concat(o.material).some((m) => m === tongue));
+  if (!tongue || !tSkin || !tSkin.geometry.index) return;
+  // the tongue's own vertices, which are the only ones its index touches
+  const ix = tSkin.geometry.index, TP = tSkin.geometry.attributes.position;
+  const seen = new Set();
+  const c = new T.Vector3();
+  for (let i = 0; i < ix.count; i++) {
+    const v = ix.getX(i); if (seen.has(v)) continue; seen.add(v);
+    c.x += TP.getX(v); c.y += TP.getY(v); c.z += TP.getZ(v);
+  }
+  if (!seen.size) return;
+  c.multiplyScalar(1 / seen.size);
+  let R = 0;
+  const q = new T.Vector3();
+  for (const v of seen)
+    R = Math.max(R, q.set(TP.getX(v), TP.getY(v), TP.getZ(v)).distanceTo(c));
+  if (!(R > 0)) return;
+
+  let total = 0;
+  for (const o of skins) {
+    const g = o.geometry, P = g.attributes.position, N = g.attributes.normal;
+    const a = new Float32Array(P.count);
+    if (N && o !== tSkin) {
+      for (let i = 0; i < P.count; i++) {
+        q.set(P.getX(i), P.getY(i), P.getZ(i));
+        /* A ceiling as well as a radius, because a nose is a cavity too. The
+           nostrils pass the normal test perfectly -- they are a hole lined with
+           inward-facing surface, which is what the test is for -- and they sit
+           just far enough above the tongue to be inside the sphere. Seen green
+           on a debug render before anything else went wrong. */
+        if (q.y > c.y + CAV.up * R) continue;
+        const d = q.distanceTo(c);
+        if (d > CAV.k * R || d < 1e-6) continue;
+        const nx = (c.x - q.x) / d, ny = (c.y - q.y) / d, nz = (c.z - q.z) / d;
+        if (N.getX(i) * nx + N.getY(i) * ny + N.getZ(i) * nz <= CAV.dot) continue;
+        a[i] = 1; total++;
+      }
+    }
+    g.setAttribute("cavity", new T.BufferAttribute(a, 1));
+  }
+  gl.uCav.value = new T.Color().copy(tongue.color);
+  console.log("orb mouth:", total, "vertices inside the cavity, painted #"
+              + gl.uCav.value.getHexString());
+}
+
 /* What gets parented is the head's ROOT BONE, not its mesh.
 
    A three.js skinned mesh in the default bind mode cancels its own world matrix
@@ -6525,6 +6610,7 @@ async function glGraft(src, T, body) {
       o.morphTargetDictionary = face.morphTargetDictionary;
     }
   figTextures(mats);
+  figCavity(skins, mats);
 
   /* Its own wipe bounds, because it is measured in its own units. Left on the
      body's and every vertex of it reads as below the floor, so the head would
@@ -6537,7 +6623,8 @@ async function glGraft(src, T, body) {
   }
   gl.hLo = hLo; gl.hHi = hHi;
   for (const m of mats)
-    glWipeMat(m, gl.uTex, null, { lo: gl.uHeadLo, span: gl.uHeadSpan, key: "h" });
+    glWipeMat(m, gl.uTex, null,
+      { lo: gl.uHeadLo, span: gl.uHeadSpan, cav: gl.uCav.value ? gl.uCav : null, key: "h" });
 
   const gm = new T.MeshStandardMaterial({
     color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
@@ -8443,7 +8530,20 @@ function eyesNow(dt, now) {
   if (!gazeQ) { gazeQ = new T.Quaternion(); gazeE = new T.Euler(); }
   if (!rig.eyeB) {
     rig.eyeB = fm.skeleton.bones.filter((b) => /_(l|r)_eye$|left_?eye$|right_?eye$/i.test(b.name));
-    rig.eyeQ = rig.eyeB.map((b) => b.quaternion.clone());
+    /* Stashed on the BONE, not re-read into the rig, and that is the whole of
+       the "his eyes were crossed again the second time" bug.
+
+       Showing a figure that is already loaded skips the load entirely -- same
+       skeleton, same bone objects, still holding the rotation the last frame
+       left on them. But showFigure clears rig.eyeB, so the next capture read
+       "rest" off a bone that was already turned by a gaze and a correction,
+       and applied them again on top. Twice out on the second visit, three
+       times on the third.
+
+       A property on the bone is captured once in the life of that bone: it
+       survives every re-show, and a genuine reload brings new bones which have
+       never been touched. */
+    rig.eyeQ = rig.eyeB.map((b) => b.__gazeRest || (b.__gazeRest = b.quaternion.clone()));
     if (rig.eyeB.length) console.log("orb gaze:", rig.eyeB.map((b) => b.name).join(", "));
   }
   for (let i = 0; i < rig.eyeB.length; i++) {
