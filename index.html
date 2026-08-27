@@ -1096,7 +1096,7 @@ const vis = { on: 0, imgs: {}, seq: null, at0: 0, dur: 0, shape: "rest", el: nul
    mesh" is already computed by the time anyone asks -- and a figure with no
    mouth simply never qualifies and costs nothing. */
 const visMouth = () => {
-  const m = gl.mesh;
+  const m = glFace();
   return !!(rig.on && m && m.__visMap && Object.keys(m.__visMap).length >= 4);
 };
 const visLive = () => vis.on || (rig.on && rig.portrait) || visMouth();
@@ -1536,7 +1536,7 @@ function visLipCal(mesh, map) {
    last one, and that is most of the difference between a slideshow of correct
    poses and something that looks like talking. */
 function visRig(dt) {
-  const mesh = gl.mesh;
+  const mesh = glFace();
   if (!mesh || !mesh.morphTargetInfluences || !mesh.morphTargetInfluences.length) return;
   const map = visRigFind(mesh);
   const RIG = visRigPick(mesh);
@@ -1570,7 +1570,7 @@ function visRig(dt) {
    right before it skins, which is after the mixer, which is the write that
    sticks. */
 function visApplyJaw() {
-  const mesh = gl.mesh;
+  const mesh = glFace();
   if (!mesh || !window.THREE) return;
   const kind = visJawDriver(mesh);
   if (kind === "bone") {
@@ -3178,7 +3178,10 @@ say.addEventListener("keydown", (e) => {
          says the morphs reached the mesh the particles are skinned from. */
       let dbgN = 0;
       const dbg = setInterval(() => {
-        const inf = (gl.mesh && gl.mesh.morphTargetInfluences) || [];
+        // glFace, not gl.mesh: after a graft the mouth is on a different mesh
+        // entirely, and a debug line that reads the wrong one reports a mute
+        // face while the real one is talking.
+        const inf = (glFace() && glFace().morphTargetInfluences) || [];
         let mx = 0; for (const v of inf) if (v > mx) mx = v;
         console.log("mime dbg: shape " + vis.shape + "  jaw " + visJawNow.toFixed(2)
           + "  max infl " + mx.toFixed(2) + "  portrait " + (rig.portrait || 0));
@@ -6231,7 +6234,12 @@ const gl = {
      triangles going through them, which is the shape of a shader problem rather
      than a scene problem. */
   uNone: { value: -1 },
-  uLo: { value: 0 }, uSpan: { value: 1 }
+  uLo: { value: 0 }, uSpan: { value: 1 },
+  /* The graft. uHeadCut is how much head-weight makes a body vertex vanish
+     (2 means nothing does); uHeadLo/uHeadSpan are the borrowed head's own copy
+     of uLo/uSpan, because it is measured in its own units and still has to
+     wipe on the same clock as the body. */
+  uHeadCut: { value: 2 }, uHeadLo: { value: 0 }, uHeadSpan: { value: 1 }
 };
 
 /* Injected into whatever material the file brought with it, rather than
@@ -6270,23 +6278,209 @@ function figTextures(mats) {
     }, null, () => console.log("orb texture missing:", url));
   }
 }
-function glWipeMat(m, hi, lo) {
+function glWipeMat(m, hi, lo, opt) {
+  const o = opt || {};
+  const cut = o.cut || null;
+  const uLo = o.lo || gl.uLo, uSpan = o.span || gl.uSpan;
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uWipe = hi;
     sh.uniforms.uWipeLo = lo || gl.uNone;
-    sh.uniforms.uLo = gl.uLo;
-    sh.uniforms.uSpan = gl.uSpan;
-    sh.vertexShader = "varying float vFigH;\nuniform float uLo;\nuniform float uSpan;\n" +
+    sh.uniforms.uLo = uLo;
+    sh.uniforms.uSpan = uSpan;
+    if (cut) sh.uniforms.uHeadCut = cut;
+    sh.vertexShader = (cut ? "attribute float headW;\nvarying float vHeadW;\n" : "") +
+      "varying float vFigH;\nuniform float uLo;\nuniform float uSpan;\n" +
       sh.vertexShader.replace("#include <begin_vertex>",
-        "#include <begin_vertex>\n  vFigH = (position.y - uLo) / uSpan;");
-    sh.fragmentShader = "varying float vFigH;\nuniform float uWipe;\nuniform float uWipeLo;\n" +
+        "#include <begin_vertex>\n  vFigH = (position.y - uLo) / uSpan;"
+        + (cut ? "\n  vHeadW = headW;" : ""));
+    sh.fragmentShader = (cut ? "varying float vHeadW;\nuniform float uHeadCut;\n" : "") +
+      "varying float vFigH;\nuniform float uWipe;\nuniform float uWipeLo;\n" +
       sh.fragmentShader.replace("void main() {",
-        "void main() {\n  if (vFigH > uWipe || vFigH <= uWipeLo) discard;");
+        "void main() {\n  if (vFigH > uWipe || vFigH <= uWipeLo) discard;"
+        + (cut ? "\n  if (vHeadW > uHeadCut) discard;" : ""));
   };
   // or three caches one compiled program for both materials and the second one
   // silently gets the first one's uniforms
-  m.customProgramCacheKey = () => "figwipe" + (lo ? "g" : "t");
+  m.customProgramCacheKey = () => "figwipe" + (lo ? "g" : "t") + (cut ? "c" : "") + (o.key || "");
   m.needsUpdate = true;
+}
+
+/* ---------------- the graft ----------------
+
+   One character out of two files, because neither one is both.
+
+   colin_slim is rigged, carries thirty-six animations and has a face that
+   cannot move -- it ships with no blend shapes at all. colin_head is morphed to
+   the teeth and has a five-bone skeleton that could not lift a finger. Rather
+   than wait for one file that is both, borrow: stop drawing the body's head and
+   hang the other one off the joint where it used to be. Nothing is re-rigged
+   and nothing is re-exported, and the day a single proper file exists this
+   table gets a line deleted and everything else stays as it is.
+
+   The numbers are a fit, not a convention. `y` is the half foot the two rigs
+   disagree about -- Mixamo puts its head joint at the top of the neck and
+   Character Creator puts its own higher into the skull, so matching them by
+   name sits his chin on his collar.
+
+   `span` is the size, and it is a RATIO on purpose. The obvious way to write it
+   is a scale factor, which is what the prototype used, and it only worked there
+   because the prototype hung the head off nothing: here the anchor is a child
+   of a bone, and a bone's world scale is the whole chain above it -- the
+   armature's own centimetres, the stage's fit, everything. Measured live, that
+   came to 62, so a constant tuned against a plain scene made the head a
+   sixtieth of its size and nothing appeared on screen at all. A ratio between
+   two things measured in the SAME frame has no units to get wrong: how far the
+   head file's root sits below its head joint, against how far the body's hips
+   sit below its head. Both spans are read at graft time and the scale falls
+   out. */
+const GRAFT = {
+  colin_slim: { head: "colin_head", span: 2.2015, y: 0.15, z: 0, rise: 1.5848, cut: 0.90 },
+};
+const graftBuf = {};
+
+/* Which mesh owns the FACE, which after a graft is not the mesh the particles
+   are skinned from. Everything about the mouth, the eyes and the blink asks
+   this; everything about the body and the build still asks gl.mesh. */
+const glFace = () => gl.face || gl.mesh;
+
+/* How much of each vertex belongs to the head, carried into the shader so the
+   head can be thrown away without moving anything.
+
+   The tempting version of this is to scale the head bone to nothing, which is
+   one line and wrong. Measured on colin_slim, 2608 vertices are weighted
+   wholly to the head -- but another 2784 are BLENDED into the neck and
+   shoulders, and collapsing the bone drags every one of those inward. The head
+   goes and a funnel appears where it was, taking the collar and the hood with
+   it.
+
+   Discarding fragments instead leaves the geometry, the skinning and the
+   animation completely untouched. Those triangles simply stop being drawn,
+   along a line that follows the rig's own idea of where the head begins. */
+function figHeadW(mesh) {
+  const g = mesh.geometry;
+  if (g.getAttribute("headW")) return g.getAttribute("headW").array;
+  const sk = mesh.skeleton;
+  let hi = -1;
+  if (sk) sk.bones.forEach((b, i) => { if (/(^|[_:])Head$/i.test(b.name)) hi = i; });
+  const si = g.attributes.skinIndex, sw = g.attributes.skinWeight, P = g.attributes.position;
+  const w = new Float32Array(P.count);
+  if (hi >= 0 && si && sw)
+    for (let i = 0; i < P.count; i++) {
+      let t = 0;
+      for (let k = 0; k < 4; k++) if (si.getComponent(i, k) === hi) t += sw.getComponent(i, k);
+      w[i] = t;
+    }
+  g.setAttribute("headW", new window.THREE.BufferAttribute(w, 1));
+  return w;
+}
+
+/* What gets parented is the head's ROOT BONE, not its mesh.
+
+   A three.js skinned mesh in the default bind mode cancels its own world matrix
+   straight back out of the skinning -- move the mesh and precisely nothing
+   happens on screen. What the shader reads is the bones' world matrices, so the
+   bones are what has to hang on the body. The meshes can then live anywhere,
+   and they live in gl.group so that one removal takes the whole figure away. */
+async function glGraft(src, T, body) {
+  const G = GRAFT[String(src || "").toLowerCase()];
+  if (!G) return;
+  const bones = (body.skeleton && body.skeleton.bones) || [];
+  const headBone = bones.find((b) => /(^|[_:])Head$/i.test(b.name));
+  if (!headBone) { console.log("orb graft: no head bone on " + src); return; }
+
+  /* Where the body stops being a body, measured rather than declared: the
+     lowest vertex that the cut is going to throw away. The build wipe needs it
+     to know when to start drawing the borrowed head, and it is not a number
+     anyone could have written down -- it depends on the threshold. */
+  const w = figHeadW(body), P = body.geometry.attributes.position;
+  let cutY = 1e30, topY = -1e30;
+  for (let i = 0; i < P.count; i++) {
+    const y = P.getY(i);
+    if (y > topY) topY = y;
+    if (w[i] > G.cut && y < cutY) cutY = y;
+  }
+  gl.cutY = cutY < 1e29 ? cutY : topY;
+
+  const key = G.head.toLowerCase();
+  if (!graftBuf[key]) {
+    const r = await fetch("models/" + G.head + ".glb");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    graftBuf[key] = await r.arrayBuffer();
+  }
+  const g = await new Promise((res, rej) =>
+    new window.GLTFLoader().parse(graftBuf[key].slice(0), "", res, rej));
+
+  const skins = [], mats = [];
+  let root = null;
+  g.scene.traverse((o) => {
+    if (o.isSkinnedMesh) {
+      skins.push(o); o.frustumCulled = false;
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
+        if (m && !mats.includes(m)) mats.push(m);
+    }
+    if (o.isBone && !root && /boneroot/i.test(o.name)) root = o;
+  });
+  if (!skins.length || !root) { console.log("orb graft: " + G.head + " has no skin or no root"); return; }
+  // one influence array across the primitives, for the same reason the body does it
+  const face = skins[0];
+  for (const o of skins)
+    if (o !== face && o.morphTargetInfluences && face.morphTargetInfluences
+        && o.morphTargetInfluences.length === face.morphTargetInfluences.length) {
+      o.morphTargetInfluences = face.morphTargetInfluences;
+      o.morphTargetDictionary = face.morphTargetDictionary;
+    }
+  figTextures(mats);
+
+  /* Its own wipe bounds, because it is measured in its own units. Left on the
+     body's and every vertex of it reads as below the floor, so the head would
+     appear the instant the build started and hang in the air over a pile of
+     dots. */
+  let hLo = 1e30, hHi = -1e30;
+  for (const o of skins) {
+    const q = o.geometry.attributes.position;
+    for (let i = 0; i < q.count; i++) { const y = q.getY(i); if (y < hLo) hLo = y; if (y > hHi) hHi = y; }
+  }
+  gl.hLo = hLo; gl.hHi = hHi;
+  for (const m of mats)
+    glWipeMat(m, gl.uTex, null, { lo: gl.uHeadLo, span: gl.uHeadSpan, key: "h" });
+
+  const gm = new T.MeshStandardMaterial({
+    color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
+    roughness: 0.55, metalness: 0, side: T.DoubleSide });
+  glWipeMat(gm, gl.uGhoHi, gl.uGhoLo, { lo: gl.uHeadLo, span: gl.uHeadSpan, key: "hg" });
+  for (const o of skins) {
+    const gh = new T.SkinnedMesh(o.geometry, gm);
+    gh.bind(o.skeleton, o.bindMatrix);
+    gh.frustumCulled = false;
+    o.parent.add(gh);
+    gl.headGhosts.push(gh);
+  }
+
+  /* An anchor rather than the bone itself, so the two files keep their own
+     units: the scale lives here and cannot leak either way. */
+  const anchor = new T.Object3D();
+  /* Solved, not declared -- see the note on `span` above. Everything here is
+     read out of one matrixWorld state, so whatever the stage's scale happens to
+     be at this instant divides straight back out. */
+  gl.group.updateMatrixWorld(true);
+  const hips = bones.find((b) => /(^|[_:])Hips$/i.test(b.name)) || bones[0];
+  const v1 = new T.Vector3(), v2 = new T.Vector3();
+  const bodySpan = headBone.getWorldPosition(v1).distanceTo(hips.getWorldPosition(v2));
+  const sBone = new T.Vector3().setFromMatrixScale(headBone.matrixWorld).x || 1;
+  const K = (G.span * bodySpan) / G.rise / sBone;
+  if (!(K > 0) || !isFinite(K)) { console.log("orb graft: cannot size the head"); return; }
+  anchor.scale.setScalar(K);
+  headBone.add(anchor);
+  anchor.add(root);
+  root.position.set(0, -G.rise + G.y, G.z);
+  gl.group.add(g.scene);
+  gl.headMeshes = skins;
+  gl.face = face;
+  gl.uHeadCut.value = G.cut;
+  console.log("orb graft:", G.head, "on", src + "'s head bone --",
+              Object.keys(face.morphTargetDictionary || {}).length, "blend shapes,",
+              skins.length, "primitives, scale", K.toFixed(3),
+              "(bone scale " + sBone.toFixed(3) + ", body span " + bodySpan.toFixed(2) + ")");
 }
 function threeReady() {
   return window.__three ? Promise.resolve()
@@ -6378,6 +6572,7 @@ function glLoad(buf, src, R) {
       // under root, not stage: the pool is his, and it walks when he does
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
+      gl.face = null; gl.headMeshes = []; gl.headGhosts = [];
       let mesh = null;
       /* ALL of them, not just the first.
 
@@ -6428,6 +6623,12 @@ function glLoad(buf, src, R) {
          an override. If the map really does carry alpha, it is left alone and
          the reason is logged -- silently discarding somebody's cutouts to fix
          their hood would be much worse than the hood. */
+      /* Decided before a single material is compiled: whether this figure is
+         going to borrow a head decides what shader its body gets, and the
+         weights have to exist before the ghost is built because the ghost
+         shares this geometry. */
+      const Gr = GRAFT[String(src || "").toLowerCase()];
+      if (Gr) { figHeadW(mesh); gl.uHeadCut.value = Gr.cut; } else gl.uHeadCut.value = 2;
       const mats = [];
       for (const o of skins)
         for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
@@ -6446,7 +6647,7 @@ function glLoad(buf, src, R) {
                         "write forced on, self-overlap may still sort by index");
           }
         }
-        glWipeMat(m, gl.uTex, null);
+        glWipeMat(m, gl.uTex, null, Gr ? { cut: gl.uHeadCut, key: "c" } : null);
       }
       figTextures(mats);
       /* The ghost: the same geometry and the same skeleton, a second time, in
@@ -6465,7 +6666,7 @@ function glLoad(buf, src, R) {
         color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
         roughness: 0.55, metalness: 0, side: T.DoubleSide
       });
-      glWipeMat(gm, gl.uGhoHi, gl.uGhoLo);
+      glWipeMat(gm, gl.uGhoHi, gl.uGhoLo, Gr ? { cut: gl.uHeadCut, key: "c" } : null);
       const ghost = new T.SkinnedMesh(mesh.geometry, gm);
       ghost.bind(mesh.skeleton, mesh.bindMatrix);
       ghost.frustumCulled = false;
@@ -6497,7 +6698,12 @@ function glLoad(buf, src, R) {
           if (hold && list.length > 1) for (const nm of list) if (haveClip(nm)) clipPoses(nm);
       }, 1200);
       gl.src = src;
-      res(g);
+      /* Last, and allowed to fail. A head that will not load is a figure with
+         no face, which is what he had yesterday -- not a figure that does not
+         appear at all. */
+      glGraft(src, T, mesh).then(() => res(g), (e) => {
+        console.log("orb graft failed:", e.message); res(g);
+      });
     }, rej);
   });
 }
@@ -6627,6 +6833,21 @@ function glFrame(K, FOC) {
   gl.uGhoLo.value = rig.wipe[3];
   gl.ghost.visible = rig.wipe[2] > rig.wipe[3] + 0.001;
   gl.mesh.visible = rig.wipe[3] > 0.001;
+  /* The borrowed head, on the same clock as the body.
+     Its vertices are in its own units, so its uLo and uSpan are solved here
+     rather than stored: put the bottom of it exactly where the body's cut line
+     falls in the build's 0..1, and the top of it a hair over 1. It then arrives
+     as the wipe reaches his neck, which is where a head belongs in the order of
+     a body being drawn from the feet up. Solved every frame because uLo and
+     uSpan belong to the figure and are not set until after it loads. */
+  if (gl.face) {
+    const f0 = Math.min(0.98, (gl.cutY - gl.uLo.value) / (gl.uSpan.value || 1));
+    const band = Math.max(0.02, 1.02 - f0);
+    gl.uHeadSpan.value = ((gl.hHi - gl.hLo) || 1) / band;
+    gl.uHeadLo.value = gl.hLo - f0 * gl.uHeadSpan.value;
+    for (const o of gl.headMeshes) o.visible = gl.mesh.visible;
+    for (const o of gl.headGhosts) o.visible = gl.ghost.visible;
+  }
   gl.R.render(gl.scene, gl.cam);
 }
 
@@ -8091,10 +8312,11 @@ function eyesNow(dt, now) {
   look.x += (look.tx - look.x) * k;
   look.y += (look.ty - look.y) * k;
   const T = window.THREE;
-  if (!T || !gl.mesh || !gl.mesh.skeleton) return;
+  const fm = glFace();
+  if (!T || !fm || !fm.skeleton) return;
   if (!gazeQ) { gazeQ = new T.Quaternion(); gazeE = new T.Euler(); }
   if (!rig.eyeB) {
-    rig.eyeB = gl.mesh.skeleton.bones.filter((b) => /_(l|r)_eye$|left_?eye$|right_?eye$/i.test(b.name));
+    rig.eyeB = fm.skeleton.bones.filter((b) => /_(l|r)_eye$|left_?eye$|right_?eye$/i.test(b.name));
     rig.eyeQ = rig.eyeB.map((b) => b.quaternion.clone());
     if (rig.eyeB.length) console.log("orb gaze:", rig.eyeB.map((b) => b.name).join(", "));
   }
@@ -8118,7 +8340,7 @@ function eyesNow(dt, now) {
 const BLINK = { down: 90, up: 160, gap: [2600, 7000], twice: 0.22 };
 const blink = { at: 0, t: 0, next: 0, ids: null };
 function blinkNow(now) {
-  const m = gl.mesh;
+  const m = glFace();
   if (!m || !m.morphTargetDictionary) return;
   if (blink.ids === null) {
     const d = m.morphTargetDictionary;
@@ -11335,7 +11557,15 @@ function loop() {
            gives a ball that is green towards you and purple at the edges. That
            is a lit sphere. It is not the orb, and side by side with the real
            one it read as a different object entirely. */
-        const w = (1 - orbD[i]) * sizeHiPx * ORB.fat;
+        /* `size` already IS that rule: it was computed above as
+           (1 - distance/radius) * sizeHi against the orb's own deformed
+           boundary. This line asked for it a second time under a name that
+           does not exist, and an undefined `orbD` threw -- silently, inside the
+           particle loop, taking the rest of the frame with it including the
+           viseme driver, so the mouth stopped moving and nothing said why.
+           Only reachable when the orb is collapsed to nothing (orbK 0) while
+           its particles still exist, which is why it survived so long. */
+        const w = size * ORB.fat;
         /* The same asymmetry the field uses -- the palette is not symmetric and
            magenta needs more reach than green -- but 2.4, the field's own
            figure, made the purple so much fatter than the core that lying flat
