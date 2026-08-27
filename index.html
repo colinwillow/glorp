@@ -23,6 +23,34 @@
   html,body{height:100%;background:#0B0B0B;overflow:hidden;
     font-family:'DM Mono',ui-monospace,monospace;-webkit-tap-highlight-color:transparent}
   canvas{display:block;width:100%;height:100%;touch-action:none}
+  /* LIGHT MODE, CHROME ONLY.
+
+     The canvas does its own theming in JS -- see THEME -- and this is the rest
+     of the page catching up. Deliberately a short list rather than a token
+     system: the greens and violets in here were picked against black over a
+     long time and most of them still read on paper, so what is overridden is
+     only what actually breaks, which is the text that was dim on purpose and
+     the panels that were dark boxes.
+
+     The caption and the readouts go DARKER rather than merely different: #4A4A4A
+     was chosen to sit a step above a black background and on paper it is a step
+     above nothing at all. */
+  body.light{background:#F2F1EC}
+  body.light #hud{color:#8A8A82}
+  body.light #meter{color:#6E7A66}
+  body.light #cap{color:#2A2E26}
+  body.light #bareBtn{color:#3F5A32;background:rgba(242,241,236,.78);border-color:#C3CCB8}
+  body.light #panel,body.light #mus{background:#EFEEE7;border-color:#CBD2C0;color:#3A4034}
+  body.light #panel label,body.light #panel span{color:#5A6152}
+  body.light #tr button,body.light #panel button,body.light #mus button{
+    color:#37502C;background:#E4E6DC;border-color:#C3CCB8}
+  body.light #tr button.on,body.light #panel button.on{
+    color:#F2F1EC;background:#4E7A34;border-color:#4E7A34}
+  body.light input[type=text]{background:#E8E9E1;border-color:#C3CCB8;color:#3A4034}
+  body.light input[type=range]::-webkit-slider-runnable-track{background:#CBD2C0}
+  body.light input[type=range]::-moz-range-track{background:#CBD2C0}
+  body.light input[type=range]::-webkit-slider-thumb{background:#4E7A34}
+  body.light input[type=range]::-moz-range-thumb{background:#4E7A34}
   #hud{position:fixed;left:14px;top:calc(14px + env(safe-area-inset-top));
     font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:#4A4A4A;pointer-events:none}
   #meter{position:fixed;left:14px;top:calc(32px + env(safe-area-inset-top));
@@ -3483,7 +3511,8 @@ pgrp.appendChild(prow);
 panel.insertBefore(pgrp, sgrp.nextSibling);
 
 const row = document.createElement("div"); row.id = "row";
-row.innerHTML = '<button id="rst">reset</button><button id="cpy">copy preset</button><button id="bars" class="on">hide bars</button>';
+row.innerHTML = '<button id="rst">reset</button><button id="cpy">copy preset</button>'
+  + '<button id="bars" class="on">hide bars</button><button id="lite">light mode</button>';
 panel.appendChild(row);
 
 document.getElementById("tuneBtn").onclick = (e) => {
@@ -3504,11 +3533,13 @@ function syncPanel() {
 }
 function applyPreset(name) {
   Object.assign(cfg, DEFAULTS, PRESETS[name]);
+  themeApply();                      // which carries its own four palette numbers
   syncPanel();
   pbtns.forEach((btn) => btn.classList.toggle("on", btn.dataset.p === name));
 }
 document.getElementById("rst").onclick = () => {
   Object.assign(cfg, DEFAULTS);
+  themeApply();
   syncPanel();
   pbtns.forEach((btn) => btn.classList.toggle("on", btn.dataset.p === "base"));
 };
@@ -3516,6 +3547,84 @@ document.getElementById("cpy").onclick = (e) => {
   navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
   e.target.textContent = "copied"; setTimeout(() => e.target.textContent = "copy preset", 1400);
 };
+/* ---------------- light and dark ----------------
+
+   Everything in here was built for a black room, and not by accident: the
+   particles are flat fills whose whole vocabulary is BRIGHTER, so the palette
+   climbs from a mid grey base toward a lit green, and the figure sits in front
+   of fog the same colour as the background so its far edge dissolves. Point all
+   of that at white and each piece fails in its own way -- a rising palette runs
+   into the paper, and fog toward black on a white page draws a grey box round
+   him.
+
+   So light is not an inversion, it is a second set of numbers.
+
+   THE PALETTE TURNS ROUND. Dark reads size as light: base 120 with a green
+   coefficient of 7, so a big particle climbs toward 255. On paper that is a
+   pale green on white, which is nothing. Light mode starts low and climbs less
+   -- base 46, green 4.5 -- so size reads as SATURATION against the page instead
+   of as brightness, and the rim keeps its violet by staying dark rather than by
+   going dim. Same shape of ramp, aimed the other way.
+
+   THE FOG FOLLOWS THE BACKGROUND rather than the mood. It is there to dissolve
+   the far edge of the floor into the page, so it has to BE the page; left at
+   0x0B0B0B it would fade the lattice toward black on white, which is the
+   opposite of dissolving.
+
+   AND THE FIGURE NEEDS LESS LIGHT, NOT MORE. He is a PBR model in front of a
+   white field: exposure that reads as lit against black reads as blown out
+   against paper, so it comes down while the environment comes up, which trades
+   key light for fill and keeps the hoodie a colour instead of a highlight.
+
+   The palette numbers are written into cfg rather than layered on top of it, so
+   the tune sliders keep telling the truth -- which means a preset switch
+   overwrites them, which is why applyPreset and reset both call back here. */
+const THEME = {
+  dark: { bg: "#0B0B0B", rgb: "11,11,11", fog: 0x0B0B0B,
+          grid: [0xA855F7, 0x4E9A5C], expo: 1.18, env: 1.0,
+          pal: { rK: -0.5, gK: 7, bK: -2, base: 120 } },
+  /* The grid is the one thing that had to come DOWN in contrast rather than up.
+     On black, 0xA855F7 and 0x4E9A5C are a couple of steps above the floor and
+     read as a faint lattice; the same relationship inverted on paper is a dark
+     line on white, which is graph paper, and it took the whole lower half of
+     the screen. These are the paper equivalent of faint. */
+  light: { bg: "#F2F1EC", rgb: "242,241,236", fog: 0xF2F1EC,
+           grid: [0xB4A2DC, 0xA6C094], expo: 0.92, env: 1.5,
+           pal: { rK: -0.5, gK: 4.5, bK: -1.5, base: 46 } },
+};
+let theme = (() => { try { return localStorage.getItem("orbTheme") === "light" ? "light" : "dark"; }
+                     catch (e) { return "dark"; } })();
+const TH = () => THEME[theme];
+function themeApply() {
+  const t = TH();
+  document.body.classList.toggle("light", theme === "light");
+  Object.assign(cfg, t.pal);            // buildLut re-reads cfg every frame
+  if (typeof ctx !== "undefined" && ctx && typeof W === "number") {
+    ctx.fillStyle = t.bg; ctx.fillRect(0, 0, W, H);
+  }
+  if (gl.scene && gl.scene.fog) gl.scene.fog.color.setHex(t.fog);
+  if (gl.R) { gl.R.toneMappingExposure = t.expo; gl.scene.environmentIntensity = t.env; }
+  /* Rebuilt rather than recoloured: GridHelper bakes its two colours into one
+     vertex-colour buffer at construction, so there is nothing to set.
+
+     Rebuilt HERE and not left for the next load, which is what the first
+     version did -- glLoad is the only other place that makes one, so toggling
+     the theme with him already standing there removed the floor and nothing put
+     it back until the figure was reloaded. It also takes the tap-to-walk
+     raycast with it, which reads as the room having stopped responding. Its
+     transform is set every frame, so putting it straight back is enough. */
+  if (gl.ground && gl.ground.parent) {
+    const T = window.THREE, host = gl.ground.parent;
+    host.remove(gl.ground);
+    gl.ground.geometry.dispose(); gl.ground.material.dispose();
+    gl.ground = T ? makeGround(T) : null;
+    if (gl.ground) host.add(gl.ground);
+  }
+  const b = document.getElementById("lite");
+  if (b) { b.textContent = theme === "light" ? "dark mode" : "light mode";
+           b.classList.toggle("on", theme === "light"); }
+}
+
 /* Remembered, because the whole point of it is the moment somebody is handed
    the phone -- and having to strip the screen down again on every reload would
    mean it never gets used at that moment. */
@@ -3549,6 +3658,13 @@ bareBtn.onclick = (e) => {
 };
 let barsWant = true;
 let showBars = true;
+document.getElementById("lite").onclick = (e) => {
+  e.preventDefault();
+  theme = theme === "light" ? "dark" : "light";
+  try { localStorage.setItem("orbTheme", theme); } catch (e2) {}
+  themeApply();
+  syncPanel();                       // the palette rows just changed under it
+};
 document.getElementById("bars").onclick = (e) => {
   barsWant = !barsWant;
   showBars = barsWant;
@@ -3924,7 +4040,8 @@ function resize() {
   canvas.style.width = W + "px"; canvas.style.height = H + "px";
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   cx = W / 2; cy = H / 2; scale = Math.min(W, H);
-  ctx.fillStyle = "#0B0B0B"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = (typeof TH === "function" ? TH().bg : "#0B0B0B");
+  ctx.fillRect(0, 0, W, H);
 }
 resize();
 window.addEventListener("resize", resize);
@@ -7210,6 +7327,10 @@ function glInit() {
      It is the same trick the hologram floor plays with geometric row spacing,
      for free, and it applies to him too when he walks away. */
   gl.scene.fog = new T.Fog(0x0B0B0B, 0.1, 1);
+  /* The theme was applied at startup, before any of this existed -- so the
+     canvas and the chrome took it and the fog, the exposure and the lattice
+     did not. Ask again now that there is something to set. */
+  themeApply();
   gl.ok = 1;
   return gl.ok;
 }
@@ -8035,7 +8156,7 @@ function makeGround(T) {
   /* A lattice, not a plane. The same language as the hologram's floor and the
      one thing that makes a horizontal surface read as a surface at all when
      there is nothing else in the room to judge it against. */
-  const g = new T.GridHelper(1, 24, 0xA855F7, 0x4E9A5C);
+  const g = new T.GridHelper(1, 24, TH().grid[0], TH().grid[1]);
   g.material.transparent = true;
   g.material.opacity = 0.9;
   g.material.depthWrite = false;
@@ -12869,7 +12990,7 @@ function loop() {
   const trail = rig.on && gl.ready
     ? (rig.portrait ? 0.30 : Math.max(trailBase, Math.min(1, rig.wipe[3] / FIG.top)))
     : trailBase;
-  ctx.fillStyle = "rgba(11,11,11," + trail + ")";
+  ctx.fillStyle = "rgba(" + TH().rgb + "," + trail + ")";
   ctx.fillRect(0, 0, W, H);
 
   /* The figure, rendered on the GPU and drawn in here. This is the one moment
@@ -13879,6 +14000,9 @@ caption("", (standalone ? "home screen app · " : "") + (brain.url
   ? "I\u2019m Glorb. tap enable mic and talk to me \u2014 or say \u201cmenu\u201d"
   : "no brain endpoint set \u2014 open tune and paste the worker url"));
 syncBare();
+/* And the remembered theme, which until now was written down and never read
+   back: a reload came up dark whatever the last choice was. */
+themeApply();
 buildLut(0);
 loop();
 </script>
