@@ -6516,7 +6516,7 @@ function figHeadW(mesh) {
    further, from the back of the throat out to the inner edge of the lips. Done
    at load rather than in the model, because it is a shader uniform this way and
    a re-export the other, and nothing about it needs to be permanent. */
-const CAV = { k: 1.6, up: 0.55, dot: 0.05 };
+const CAV = { k: 1.6, up: 1.25, dot: 0.05 };
 function figCavity(skins, mats) {
   const T = window.THREE;
   gl.uCav.value = null;
@@ -6546,11 +6546,22 @@ function figCavity(skins, mats) {
     if (N && o !== tSkin) {
       for (let i = 0; i < P.count; i++) {
         q.set(P.getX(i), P.getY(i), P.getZ(i));
-        /* A ceiling as well as a radius, because a nose is a cavity too. The
+        /* A ceiling as well as a radius, because a nose is a cavity too: the
            nostrils pass the normal test perfectly -- they are a hole lined with
-           inward-facing surface, which is what the test is for -- and they sit
-           just far enough above the tongue to be inside the sphere. Seen green
-           on a debug render before anything else went wrong. */
+           inward-facing surface, which is exactly what the test is for.
+
+           Where to put the ceiling is not a guess. Counting inward-facing
+           vertices by height above the tongue, in tongue radii, they arrive in
+           two clumps with nothing between them:
+
+               0.0 .. 1.0 R    461 verts     the mouth
+               1.0 .. 1.5 R      1 vert      -
+               1.5 .. 2.5 R    318 verts     the nostrils
+
+           So the cut goes in the empty band. The first attempt put it at 0.55
+           and looked right with the jaw wide, because the tongue was covering
+           what it had lost -- half the mouth, including the roof and the upper
+           gum, which is precisely the white band you see at a talking width. */
         if (q.y > c.y + CAV.up * R) continue;
         const d = q.distanceTo(c);
         if (d > CAV.k * R || d < 1e-6) continue;
@@ -6885,6 +6896,9 @@ function glLoad(buf, src, R) {
          would stutter the thing everyone is looking at. */
       if (gl.mixer) setTimeout(() => {
         for (const nm of Object.keys(gl.clips)) if (/walk|run/.test(nm)) clipSpeed(nm);
+        // every clip, because which ones end where they started is not
+        // guessable from the name -- and pickTurn needs the answer
+        for (const nm of Object.keys(gl.clips)) clipYaw(nm);
         /* Pose signatures for anything that runs as a sequence, for the same
            reason and at the same moment: sampling drives the mixer's clock, and
            doing it at the hand-off would stutter the hand-off. */
@@ -7166,6 +7180,81 @@ function clipSpeed(name) {
   gl.mixer.setTime(was);
   gl.speeds[name] = sp.length ? sp[sp.length >> 1] : 0;
   return gl.speeds[name];
+}
+
+/* HOW FAR ROUND A CLIP LEAVES HIM, measured the same way and for the same
+   reason as clipSpeed above: because the file does not agree with what anyone
+   assumed about it.
+
+   The note that used to sit on the turning code said both turn clips "come back
+   with 0.0 degrees of net yaw", so they were treated as feet doing something
+   while the CONTROLLER changed the heading underneath. Measured properly, off
+   the hips' own heading between the first frame and the last:
+
+       idle_turn_left  +102.2 deg      idle_turn_right  -102.2 deg
+       dance_uprock_01 +124.0 deg      everything else   under 5
+
+   So a pivot was turning him twice -- a hundred degrees from the animation and
+   however much the controller wanted on top -- and then the clip looped and
+   snapped the animation's share back to zero. Over-spin, then reset, which is
+   exactly what it looked like.
+
+   Worth being precise about what is and is not a problem here: SWING inside a
+   clip is fine and often the whole point -- the backflip swings 90 degrees, the
+   ninja 112, the drunk walk 82 -- because it comes back. What breaks is a clip
+   that ENDS somewhere other than where it started, because the next loop has to
+   get back there in one frame. */
+function clipYaw(name) {
+  if (!gl.yaws) gl.yaws = {};
+  if (gl.yaws[name] != null) return gl.yaws[name];
+  gl.yaws[name] = 0;                         // and never try twice, whatever happens
+  const clip = gl.clips && gl.clips[name];
+  if (!clip || !clip.duration || !gl.mixer || !gl.mesh || !gl.mesh.skeleton) return 0;
+  let hips = null;
+  for (const bn of gl.mesh.skeleton.bones) if (/Hips$/i.test(bn.name)) hips = bn;
+  if (!hips) return 0;
+  /* The TWIST about the parent's up axis, not the whole rotation. A hips
+     quaternion carries lean and tilt as well as heading, and only the heading
+     is a turn -- decomposing it is the difference between "he turned round" and
+     "he leaned over". */
+  const twist = (q) => {
+    const s = Math.hypot(q.y, q.w) || 1;
+    return 2 * Math.atan2(q.y / s, q.w / s);
+  };
+  const was = gl.mixer.time, keep = gl.action;
+  for (const a of gl.mixer._actions.slice()) a.stop();
+  const act = gl.mixer.clipAction(clip);
+  act.reset(); act.setEffectiveWeight(1); act.play();
+  const at = (t) => { act.time = t; act.paused = true; gl.mixer.update(0); return twist(hips.quaternion); };
+  let d = at(Math.max(0, clip.duration - 1e-3)) - at(0);
+  while (d > Math.PI) d -= TAU;
+  while (d < -Math.PI) d += TAU;
+  act.paused = false;
+  act.stop();
+  if (keep) { keep.reset(); keep.setEffectiveWeight(1); keep.play(); gl.action = keep; }
+  gl.mixer.setTime(was);
+  gl.yaws[name] = d;
+  return d;
+}
+
+/* What to play while he pivots on the spot.
+
+   A clip that turns him is exactly the wrong thing here, because the controller
+   is already turning him -- so this asks for one that does NOT, and prefers a
+   real turn animation if the file ever ships one that stays put. Until then a
+   walk cycle: feet doing something while the heading changes underneath, which
+   is what the turn clips were wrongly believed to be doing and beats a standing
+   figure rotating like a turret.
+
+   Written as a search rather than a name so that the day a proper in-place turn
+   arrives it gets used with no code change -- it only has to be called
+   something with "turn" in it and end where it began. */
+const TURN_OK = 8 * Math.PI / 180;
+function pickTurn() {
+  const all = Object.keys(gl.clips || {});
+  const still = all.filter((n) => /turn|pivot/i.test(n) && Math.abs(clipYaw(n)) < TURN_OK);
+  if (still.length) return pickOne(still);
+  return haveClip("walk_fwd_normal") ? "walk_fwd_normal" : pickIdle();
 }
 
 /* floor is measured in his own heights, edge to edge. Eleven of them was a
@@ -7705,11 +7794,9 @@ function faceTo(yaw) {
   let dy = yaw - world.yaw;
   while (dy > Math.PI) dy -= TAU;
   while (dy < -Math.PI) dy += TAU;
-  // the shuffle that matches the direction, even though neither clip carries
-  // any rotation of its own -- it is feet doing something while the heading
-  // changes underneath, which beats a standing figure rotating like a turret
-  const tc = dy > 0 ? "idle_turn_left" : "idle_turn_right";
-  if (Math.abs(dy) > 0.12) playClip(haveClip(tc) ? tc : pickIdle(), 0.22);
+  // feet doing something while the heading changes underneath. NOT the turn
+  // clips: those carry a hundred degrees of their own -- see clipYaw
+  if (Math.abs(dy) > 0.12) playClip(pickTurn(), 0.22);
 }
 function stepBy(ax, az) {
   const H1 = figH1();
@@ -7976,7 +8063,11 @@ function mindNow(now) {
       // stops short and square on, rather than walking into the lens
       walkTo(side() * 0.35, MIND.near * H1, 0);
     } else if (what === "retreat") {
-      walkTo(side(), MIND.far * H1, Math.random() < 0.25 ? 1 : 0);
+      /* Walking, never running. A person crossing their own room does not
+         sprint and then stop dead, and at these distances -- two heights, a
+         second and a half -- a run is all acceleration and no travel. Running
+         is something to be asked for. */
+      walkTo(side(), MIND.far * H1, 0);
     } else if (what === "flourish") {
       const nm = pickOne(MIND_ACTS);
       if (nm) {
@@ -8148,8 +8239,7 @@ function updateWorld(dt, now) {
         }
       } else if (Math.abs(dy) > WALK.faceFirst) {
         world.turning = 1;
-        const tc = dy > 0 ? "idle_turn_left" : "idle_turn_right";
-        playClip(haveClip(tc) ? tc : pickIdle(), 0.22);
+        playClip(pickTurn(), 0.22);
       } else {
         /* His own stride rate, not a constant. See clipSpeed: with one number
            for every walk, the strut travelled 45% too fast and the normal walk
