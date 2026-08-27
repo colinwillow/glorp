@@ -3587,10 +3587,28 @@ const THEME = {
      On black, 0xA855F7 and 0x4E9A5C are a couple of steps above the floor and
      read as a faint lattice; the same relationship inverted on paper is a dark
      line on white, which is graph paper, and it took the whole lower half of
-     the screen. These are the paper equivalent of faint. */
+     the screen. These are the paper equivalent of faint.
+
+     THE PALETTE IS THE SAME ON PAPER, and that is a decision rather than an
+     omission. The reasoning for changing it was sound and the result was not:
+     starting low and climbing less -- base 46, green 4.5 -- makes size read as
+     saturation instead of brightness, which is correct, and produces a deep
+     violet and a bottle green that look muddy and heavy against cream. The
+     bright ramp, drawn on paper, keeps the magenta and the acid green, and that
+     is the thing that actually looks alive.
+
+     Worth knowing how that got shipped, because it was invisible from the
+     screenshots at the time. The lookup table only rebuilds when the hue shift
+     or the size range moves, so writing new coefficients into cfg did NOT
+     rebuild it: toggling to light kept whatever table the session had already
+     built, which was this one. So the version that looked right was the dark
+     palette leaking through a staleness bug, and it only stopped looking right
+     once the theme applied at startup and the table got built from the light
+     numbers for the first time. The staleness is fixed below either way -- a
+     toggle that silently does not apply is worse than either palette. */
   light: { bg: "#F2F1EC", rgb: "242,241,236", fog: 0xF2F1EC,
            grid: [0xB4A2DC, 0xA6C094], expo: 0.92, env: 1.5,
-           pal: { rK: -0.5, gK: 4.5, bK: -1.5, base: 46 } },
+           pal: { rK: -0.5, gK: 7, bK: -2, base: 120 } },
 };
 let theme = (() => { try { return localStorage.getItem("orbTheme") === "light" ? "light" : "dark"; }
                      catch (e) { return "dark"; } })();
@@ -3598,7 +3616,8 @@ const TH = () => THEME[theme];
 function themeApply() {
   const t = TH();
   document.body.classList.toggle("light", theme === "light");
-  Object.assign(cfg, t.pal);            // buildLut re-reads cfg every frame
+  Object.assign(cfg, t.pal);
+  lutGen++;                             // or the table keeps the old palette; see above
   if (typeof ctx !== "undefined" && ctx && typeof W === "number") {
     ctx.fillStyle = t.bg; ctx.fillRect(0, 0, W, H);
   }
@@ -4212,6 +4231,7 @@ function barRect(x, y, w, h) {
 const LUT_N = 96;
 let LUT_LO = -90, LUT_HI = 40;
 const lut = new Array(LUT_N);
+let lutGen = 0, lastGen = -1;   // see the rebuild guard in the frame loop
 function toRgb(cr, cg, cb, hueShift) {
   cr /= 255; cg /= 255; cb /= 255;
   const mx = Math.max(cr, cg, cb), mn = Math.min(cr, cg, cb), dd = mx - mn;
@@ -12352,9 +12372,13 @@ function loop() {
                            28 * (hu * hu * (3 - 2 * hu)) + museHue);
   const flat = 0;
   const lo = -3.4 * sizeHiPx;
-  if (shift !== lastShift || flat !== lastFlat || lo !== LUT_LO) {
+  /* lutGen is in here because the table is built from cfg.rK/gK/bK/base and
+     nothing above notices those changing -- so a theme switch, or a preset,
+     rewrote the palette and the field went on drawing itself out of the table
+     it already had. */
+  if (shift !== lastShift || flat !== lastFlat || lo !== LUT_LO || lutGen !== lastGen) {
     LUT_LO = lo; LUT_HI = sizeHiPx; buildLut(shift, flat);
-    lastShift = shift; lastFlat = flat;
+    lastShift = shift; lastFlat = flat; lastGen = lutGen;
   }
   // Vowels really do work this way: /i/ has a high second formant, so a bright
   // centroid spreads the lips wide, and a dark one rounds them tall. jaw then
