@@ -853,7 +853,19 @@ async function ask(text) {
            falls. A firework and a mesh are events in their own right and keep
            firing on arrival. */
         if (ctl.remember) memAdd(guest.name, ctl.remember);
-        if (ctl.show) {
+        /* The body, immediately and separately.
+
+           It is not a "show" -- nothing leaves the ring -- so it neither waits
+           for a word nor counts as having shown something, which would stop the
+           page picking a picture of its own. It goes through sandboxSay, which
+           means the brain reaches the animations through exactly the same door
+           a spoken instruction does: one table, one set of rules, and nothing
+           it can ask for that you could not have asked for out loud. */
+        if (ctl.show && ctl.show.act) {
+          if (world.on > 0.5) sandboxSay(String(ctl.show.act).toLowerCase());
+          delete ctl.show.act;
+        }
+        if (ctl.show && Object.keys(ctl.show).length) {
           shown = true;
           if (ctl.show.shell || ctl.show.model || ctl.show.menu || ctl.show.gallery ||
               ctl.show.figure || ctl.show.pages)
@@ -7838,6 +7850,11 @@ async function musicWant(want) {
 
 function sandboxSay(flat) {
   if (!world.on) return "";
+  /* Said anything to him at all, and the director stands down for a while --
+     not only when the words turn out to be an instruction. Somebody talking is
+     somebody engaged, and a character who wanders off because your sentence
+     did not match a regex is worse than one who never wanders at all. */
+  mindHold();
   /* Out of a pose first. Nothing in the table means "stand up", so a phrase
      that does has to be caught before it can match something that doesn't. */
   if (world.pose && /\b(stand( up)?|get up|sit up|up you get|enough|as you were)\b/.test(flat)) {
@@ -7881,6 +7898,99 @@ function sandboxSay(flat) {
   return "";
 }
 
+/* ---------------- the mind ----------------
+
+   Everything above this is a character who does exactly what he is told and
+   nothing otherwise: told to walk he walks, told to dance he dances, and
+   between instructions he stands on the spot cycling idles. This is the part
+   that gives him something to do when nobody is asking.
+
+   It is deliberately not clever. It owns no movement of its own -- it calls
+   walkTo and playClip exactly the way a spoken instruction does, so anything
+   it can do you could have asked for, and anything you can ask for it will
+   never fight you over. What it adds is a decision and a clock.
+
+   AUTHORITY. The one rule that matters: a person outranks it, always, and it
+   backs off for a while afterwards rather than pouncing the moment you stop
+   talking. Hands off while he is speaking, while the brain is thinking, and
+   for MIND.after past any instruction. mind.mine is how it tells its own
+   walkTo from yours -- without it, the hold it sets on your behalf would fire
+   on its own commands and it would stop itself forever. */
+const MIND = {
+  on: 1,
+  after: 9000,          // hands off this long after anything you say
+  gap: [2600, 8000],    // between decisions, once he has settled
+  near: 0.85,           // how close "come and see you" gets, in heights
+  far: -1.9,            // and how far "wander off" goes
+  wide: 1.7,            // how far to either side he will use
+};
+/* In place, and short. These read as somebody occupying themselves rather than
+   performing -- which is the difference between a character in a room and a
+   character on a stage. */
+const MIND_ACTS = ["idle_stretch", "idle_look_at_nails", "idle_fan_self",
+                   "idle_swat_fly", "idle_happy_bob", "idle_neutral_02"];
+const mind = { at: 0, hold: 0, was: "", mine: 0 };
+function mindHold(ms) {
+  if (mind.mine) return;                 // its own doing, not yours
+  mind.hold = performance.now() + (ms == null ? MIND.after : ms);
+}
+/* Anything the director does goes through here, so the hold above can tell the
+   two apart without every call site having to remember. */
+function mindDo(f) { mind.mine = 1; try { f(); } finally { mind.mine = 0; } }
+
+/* Weighted, and never the same thing twice running. A character who alternates
+   between two behaviours is as obviously a loop as one who has none. */
+function mindPick() {
+  const opts = [["wander", 4], ["flourish", 3], ["visit", 2], ["retreat", 2], ["settle", 3]];
+  let tot = 0;
+  for (const o of opts) { if (o[0] === mind.was) o[1] *= 0.25; tot += o[1]; }
+  let r = Math.random() * tot;
+  for (const o of opts) { r -= o[1]; if (r <= 0) return o[0]; }
+  return "settle";
+}
+
+function mindNow(now) {
+  if (!MIND.on || !rig.on || rig.out || !gl.ready) return;
+  // not while he is still being drawn: the build owns the screen until it ends
+  if (world.on < 0.99) { mind.at = now + 1200; return; }
+  /* Not over a voice, and not over a thought. Wandering off mid-sentence is
+     the single most character-breaking thing this could do. */
+  if (ttsPlaying || brain.busy) { mind.hold = now + 2500; return; }
+  if (now < mind.hold || now < mind.at) return;
+  // busy doing something already -- his own or yours, it makes no difference
+  if (world.walking || world.turning || world.turnOnly) return;
+  if (world.actUntil && now < world.actUntil) return;
+  if (world.seq) return;
+  /* A pose is a place to BE, so it is left alone: he sits until you tell him
+     to get up, which is what makes sitting different from doing. */
+  if (world.pose) return;
+
+  const H1 = figH1();
+  const what = mindPick();
+  mind.was = what;
+  const side = () => (Math.random() * 2 - 1) * MIND.wide * H1;
+  mindDo(() => {
+    if (what === "wander") {
+      walkTo(side(), (MIND.far + Math.random() * 2.4) * H1, 0);
+    } else if (what === "visit") {
+      // stops short and square on, rather than walking into the lens
+      walkTo(side() * 0.35, MIND.near * H1, 0);
+    } else if (what === "retreat") {
+      walkTo(side(), MIND.far * H1, Math.random() < 0.25 ? 1 : 0);
+    } else if (what === "flourish") {
+      const nm = pickOne(MIND_ACTS);
+      if (nm) {
+        const dur = playClip(nm, 0.35, /swat_fly|stretch/.test(nm));
+        world.actUntil = now + dur * 1000;
+      }
+    }
+    // "settle" is the absence of a decision, and it is a third of them on
+    // purpose: something that is always doing something is a screensaver
+  });
+  mind.at = now + MIND.gap[0] + Math.random() * (MIND.gap[1] - MIND.gap[0]);
+}
+window.__mind = (v) => { MIND.on = v ? 1 : 0; return MIND.on; };
+
 function walkTo(x, z, run) {
   /* Fenced. The camera sits about three and a half of his heights away, so a
      tap low on the screen maps to a point almost underneath it -- he walks
@@ -7899,6 +8009,7 @@ function walkTo(x, z, run) {
   world.walking = 1; world.run = run ? 1 : 0; world.turning = 0; world.turnOnly = 0;
   world.actUntil = 0; world.pose = 0;      // you cannot walk and be lying down
   playClip(run ? (haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS)) : pickOne(WALKS), 0.25);
+  mindHold();
 }
 
 /* Where a tap on the floor lands, in the world he stands in. The camera is
@@ -7942,6 +8053,11 @@ function groundAt(sx, sy) {
 
 function updateWorld(dt, now) {
   if (!rig.on || !gl.ready) { world.on = 0; return; }
+  /* Before the walking, not after: the director's job is to set a target, and
+     the code below is what carries him toward one. Deciding after it has
+     already run costs a frame every time and shows up as a hitch at the moment
+     he starts moving. */
+  mindNow(now);
   // the room arrives once he is built, not while he is being drawn
   const want = rig.wipe[3] >= FIG.top && !rig.out ? 1 : 0;
   world.on += (want - world.on) * 0.07;

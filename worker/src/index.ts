@@ -513,7 +513,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const tools: Anthropic.Tool[] = [{
     name: "show",
     description:
-      "Do something with the orb's particles. Give exactly one of text, image, gallery, figure, pages, holo, shape, shell. " +
+      "Do something with the orb's particles, or with Colin's body. Give exactly one of text, image, gallery, figure, pages, holo, shape, shell -- `act` is separate and may accompany any of them or none. " +
       "Most replies should call this not at all -- see the note on showing sparingly. " +
       "text, image and shape make the particles leave their ring, stand as the thing for a moment as you say it, and return. " +
       "shell blows the whole field apart as a firework and lets it fall back -- for congratulations, good news, " +
@@ -566,6 +566,20 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
             "tap through. Use it when somebody asks to see the pictures, the drawings or the " +
             "characters generally -- `image` is for one particular picture, this is for all of them. " +
             "It stays up until they ask to go back.",
+        },
+        act: {
+          type: "string",
+          enum: ["dance", "jump", "wave", "backflip", "stretch", "sit", "kneel",
+                 "lie down", "stand up", "drink", "stumble", "fight", "sneak",
+                 "sad", "happy", "fan", "bored", "swat", "strut", "tiptoe"],
+          description:
+            "Move Colin's body, when he is on screen. This is NOT a way of answering -- it is " +
+            "something he does WHILE you answer, the way a person's body joins in with what they " +
+            "are saying. Use it when the conversation genuinely calls for it: they say something " +
+            "worth celebrating and he jumps, they are leaving and he waves, they are being " +
+            "argumentative and he squares up, the talk turns dull and he looks at his nails. " +
+            "Never as a substitute for words, never twice in a row, and never at all unless he " +
+            "is actually standing there -- you are told when he is.",
         },
         shell: {
           type: "string",
