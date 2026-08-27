@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pull texture</title>
+<body style="background:#0A0D08;color:#8FB37A;font:13px ui-monospace,monospace;padding:20px">
+<pre id="log">working…</pre>
+<script type="importmap">
+{"imports":{"three":"../vendor/three.module.min.js"}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "../vendor/GLTFLoader.js";
+import { DRACOLoader } from "../vendor/DRACOLoader.js";
+
+/* Take the body texture out of one GLB so another can share it.
+
+   colin_animations_02 shipped with no texture at all -- black base colour, no
+   map, UVs intact -- while colin_slim carries a 2048 square of exactly the
+   right thing. Rendered one on the other, they line up perfectly: same UV
+   atlas, same hoodie, same drawstrings, same shoes. So rather than ask for a
+   re-export, lift it.
+
+   Out into images/textures/ rather than into the GLB, for the reason the head's
+   three already live there: the file is sixteen megabytes before any picture is
+   added to it, and a texture kept outside can be swapped without touching the
+   model at all. */
+const el = document.getElementById("log"), out = [];
+const say = (s) => { out.push(s); el.textContent = out.join("\n"); };
+const q = new URLSearchParams(location.search);
+const from = q.get("from") || "colin_slim";
+
+const dl = new DRACOLoader();
+dl.setDecoderPath("../vendor/draco/"); dl.setDecoderConfig({ type: "wasm" });
+const L = new GLTFLoader(); L.setDRACOLoader(dl);
+
+L.load("../models/" + from + ".glb", (g) => {
+  let tex = null;
+  g.scene.traverse((o) => {
+    if (!o.isMesh && !o.isSkinnedMesh) return;
+    for (const m of [].concat(o.material)) if (m && m.map && !tex) tex = m.map;
+  });
+  if (!tex) { say("no base colour texture in " + from); window.__done = 1; window.__fail = 1; return; }
+  const img = tex.image;
+  say("found " + img.width + "x" + img.height + " in " + from);
+  const c = document.createElement("canvas");
+  c.width = img.width; c.height = img.height;
+  const x = c.getContext("2d");
+  x.drawImage(img, 0, 0);
+  /* 0.92 rather than the usual 0.8: this is a base COLOUR map on a character
+     who fills the frame, and webp artefacts in a flat grey hoodie read as dirt.
+     It is still a quarter the size of the PNG it came out of. */
+  window.__b64 = c.toDataURL("image/webp", 0.92).split(",")[1];
+  say("encoded webp, " + Math.round(window.__b64.length * 0.75 / 1024) + " KB");
+  window.__done = 1;
+}, undefined, (e) => {
+  say("LOAD FAILED: " + (e && e.message || e)); window.__done = 1; window.__fail = 1;
+});
+</script>

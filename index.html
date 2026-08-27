@@ -576,7 +576,7 @@ const CAST_OF = {
   // model's name here and the particle face speaks in his voice too.
   colin_slim: "colin", colin_dance: "colin", colin_animations: "colin",
   // and the head with his face and his mouth on it
-  colin_head: "colin",
+  colin_head: "colin", colin_anim2: "colin",
 };
 
 const brain = {
@@ -3286,7 +3286,7 @@ say.addEventListener("keydown", (e) => {
     if (/^(figure|rig|colin)\b/.test(key)) {
       // colin_slim is the one with the 36 clips: the room is only a room if he
       // has something to do in it. colin_dance can only dance.
-      showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_slim");
+      showFigure(what.replace(/^(figure|rig)\s*/i, "").trim() || "colin_anim2");
       return;
     }
     /* /show mime <text> -- run the mouth with no voice. The one instrument this
@@ -4668,7 +4668,7 @@ async function showGallery() {
 const PAGES = [
   { key: "images", kind: "gallery", blurb: "pictures, full size",
     say: /\b(image|images|picture|pictures|photo|photos|gallery)\b/ },
-  { key: "characters", kind: "figure", src: "colin_slim", blurb: "he lives in there",
+  { key: "characters", kind: "figure", src: "colin_anim2", blurb: "he lives in there",
     say: /\b(character|characters|colin|figure|model|models)\b/ },
   { key: "motion", kind: "soon", blurb: "films and loops",
     say: /\b(motion|film|films|video|videos|animation)\b/ },
@@ -6505,8 +6505,28 @@ function glWipeMat(m, hi, lo, opt) {
    out. */
 const GRAFT = {
   colin_slim: { head: "colin_head", span: 2.2015, y: 0.15, z: 0, rise: 1.5848, cut: 0.90 },
+  /* The second body ships its head as its own MESH with its own material,
+     which is a much better place to be than the shader cut: `hide` names it and
+     it simply stops being drawn. Nothing is measured, nothing is thresholded,
+     and no vertex of the neck is at risk. The cut stays for colin_slim, which
+     is one mesh and one material and has no such seam to use. */
+  colin_anim2: { head: "colin_head", span: 2.2015, y: 0.15, z: 0, rise: 1.5848,
+                 hide: "transparent" },
 };
 const graftBuf = {};
+
+/* A texture the model did not bring with it.
+
+   colin_animations_02 exported with no map at all -- black base colour, UVs
+   intact -- and colin_slim carries a 2048 square of exactly the right thing.
+   Rendered one on the other they line up perfectly: same atlas, same hoodie,
+   same shoes. So the body wears the old file's skin, pulled out into
+   images/textures/ by tools/pull_texture.html.
+
+   Keyed by material name, and only applied where the material has no map of its
+   own -- so a later export that DOES carry its texture simply wins, and this
+   table stops mattering without anyone having to remember to delete it. */
+const SKIN = { colin_anim2: { colin_mat: "colin_body" } };
 
 /* Which mesh owns the FACE, which after a graft is not the mesh the particles
    are skinned from. Everything about the mouth, the eyes and the blink asks
@@ -6837,7 +6857,20 @@ function glLoad(buf, src, R) {
          texture, no build wipe, and no visemes: three quarters of his head
          rendering flat white through every stage. */
       const skins = [];
-      g.scene.traverse((o) => { if (o.isSkinnedMesh) { skins.push(o); if (!mesh) mesh = o; } });
+      g.scene.traverse((o) => { if (o.isSkinnedMesh) skins.push(o); });
+      /* The head, dropped before anything else looks at the list -- so it takes
+         no material, no wipe, no ghost and no influence array, and gl.mesh
+         cannot accidentally BE it. */
+      const G0 = GRAFT[String(src || "").toLowerCase()];
+      if (G0 && G0.hide) {
+        const re = new RegExp(G0.hide, "i");
+        for (let i = skins.length - 1; i >= 0; i--) {
+          const tag = (skins[i].name || "") + " "
+            + [].concat(skins[i].material).map((m) => (m && m.name) || "").join(" ");
+          if (re.test(tag)) { skins[i].visible = false; skins.splice(i, 1); }
+        }
+      }
+      mesh = skins[0] || null;
       if (!mesh) return rej(new Error("no skinned mesh for the renderer"));
       for (const o of skins) {
         // never culled: the wipe means most of it is clipped away most of the
@@ -6879,8 +6912,10 @@ function glLoad(buf, src, R) {
          going to borrow a head decides what shader its body gets, and the
          weights have to exist before the ghost is built because the ghost
          shares this geometry. */
-      const Gr = GRAFT[String(src || "").toLowerCase()];
-      if (Gr) { figHeadW(mesh); gl.uHeadCut.value = Gr.cut; } else gl.uHeadCut.value = 2;
+      const Gr = G0;
+      // only the shader cut needs weights; a named mesh is already gone
+      if (Gr && !Gr.hide) { figHeadW(mesh); gl.uHeadCut.value = Gr.cut; }
+      else gl.uHeadCut.value = 2;
       const mats = [];
       for (const o of skins)
         for (const m of (Array.isArray(o.material) ? o.material : [o.material]))
@@ -6899,7 +6934,15 @@ function glLoad(buf, src, R) {
                         "write forced on, self-overlap may still sort by index");
           }
         }
-        glWipeMat(m, gl.uTex, null, Gr ? { cut: gl.uHeadCut, key: "c" } : null);
+        glWipeMat(m, gl.uTex, null, Gr && !Gr.hide ? { cut: gl.uHeadCut, key: "c" } : null);
+      }
+      const sk2 = SKIN[String(src || "").toLowerCase()];
+      if (sk2) for (const m of mats) {
+        const want = sk2[m.name];
+        if (!want || m.map) continue;
+        m.userData.tex = want;
+        // black times any texture is still black; the map is the colour now
+        m.color.setHex(0xffffff);
       }
       figTextures(mats);
       /* The ghost: the same geometry and the same skeleton, a second time, in
@@ -6918,7 +6961,7 @@ function glLoad(buf, src, R) {
         color: 0x2E7A1C, emissive: 0x8FE05A, emissiveIntensity: 0.30,
         roughness: 0.55, metalness: 0, side: T.DoubleSide
       });
-      glWipeMat(gm, gl.uGhoHi, gl.uGhoLo, Gr ? { cut: gl.uHeadCut, key: "c" } : null);
+      glWipeMat(gm, gl.uGhoHi, gl.uGhoLo, Gr && !Gr.hide ? { cut: gl.uHeadCut, key: "c" } : null);
       const ghost = new T.SkinnedMesh(mesh.geometry, gm);
       ghost.bind(mesh.skeleton, mesh.bindMatrix);
       ghost.frustumCulled = false;
@@ -8032,6 +8075,152 @@ function sandboxSay(flat) {
   return "";
 }
 
+/* ---------------- shoving him about ----------------
+
+   Swipe across him and he takes it: staggers if you were gentle, goes over if
+   you were not, slides the way you swiped, lies there a moment and gets up.
+
+   This is not physics and deliberately so. The animations already contain the
+   fall -- five of them, authored, each one a whole convincing spill -- and
+   nothing a solver produces in an evening is going to beat a hand-made one. So
+   the only thing simulated is WHERE he ends up: a velocity along the swipe,
+   decaying, clamped to the room. The clip supplies the performance and the
+   program supplies the travel, which is the division of labour that made the
+   walking work too.
+
+   Every clip in the file has zero root motion -- measured, all forty-nine --
+   so sliding him is not fighting the animation for control of the same value.
+   It is the only way he moves at all. */
+const HIT = {
+  reach: 0.30,      // how near the swipe must pass him, as a fraction of the short side
+  soft: 0.55,       // px/ms: under this it is a shove and he stays up
+  hard: 1.9,        // and over this he leaves the floor first
+  push: 0.055,      // heights per second of travel, per px/ms of swipe
+  cap: 5.5,         // heights per second, whatever the swipe says
+  drag: 2.2,        // how fast the slide dies, per second
+  down: [500, 1400],// how long he stays on the floor
+  hold: 2600,       // how long the director keeps out of it afterwards
+};
+const HIT_STAY = ["reaction_shoved", "reaction_swivel"];
+const HIT_FALL = ["hit_legs_trip_fall", "hit_roll_fall", "hit_shoulder_and_fall",
+                  "hit_stumble_fall", "trip_fall_flat"];
+const HIT_AIR  = ["in_air_floating", "in_air_falling"];
+const HIT_UP   = ["kip_up_from_laying", "stand_up_from_laying"];
+const hit = { on: 0, stage: "", until: 0, vx: 0, vz: 0 };
+
+/* Where a swipe on the glass points in the room he stands in.
+
+   The stage carries the pitch and the yaw, so screen-right is only world-right
+   when the camera happens to be square on. Worked out rather than guessed: a
+   stage-local direction u appears on screen at Rx(pitch)Ry(yaw)u, so the
+   direction that comes back as screen-right is the transpose applied to
+   (1,0,0), which drops to (cos yaw, 0, sin yaw) once the ground plane takes the
+   pitch out of it. Screen-UP lands on (sin yaw, 0, -cos yaw), which at yaw 0 is
+   straight away from the camera -- as it should be. */
+function hitDir(dx, dy) {
+  const cy = Math.cos(view.yaw), sy = Math.sin(view.yaw);
+  const x = dx * cy - dy * sy;
+  const z = dx * sy + dy * cy;
+  const L = Math.hypot(x, z) || 1;
+  return [x / L, z / L];
+}
+
+/* Did the swipe actually cross him, or just the screen next to him? Distance
+   from his chest to the SEGMENT, not to either end -- a swipe that starts and
+   ends well clear of him can still pass straight through. */
+function hitNear(x0, y0, x1, y1) {
+  if (!gl.ready || !gl.cam || !gl.mesh || !gl.mesh.skeleton) return 0;
+  const T = window.THREE;
+  let b = null;
+  for (const bn of gl.mesh.skeleton.bones)
+    if (/Spine1$|Spine2$/i.test(bn.name)) { b = bn; break; }
+  if (!b) for (const bn of gl.mesh.skeleton.bones) if (/Hips$/i.test(bn.name)) b = bn;
+  if (!b) return 0;
+  gl.group.updateMatrixWorld(true);
+  const v = b.getWorldPosition(new T.Vector3()).project(gl.cam);
+  const cx = (v.x * 0.5 + 0.5) * W, cy2 = (-v.y * 0.5 + 0.5) * H;
+  const ax = x1 - x0, ay = y1 - y0;
+  const len2 = ax * ax + ay * ay;
+  const t = len2 ? Math.max(0, Math.min(1, ((cx - x0) * ax + (cy2 - y0) * ay) / len2)) : 0;
+  const d = Math.hypot(x0 + ax * t - cx, y0 + ay * t - cy2);
+  return d < HIT.reach * Math.min(W, H) ? 1 : 0;
+}
+
+/* One swipe, turned into a shove. speed is in px/ms. */
+function hitGo(dx, dy, speed) {
+  if (!world.on || rig.out) return 0;
+  const [ux, uz] = hitDir(dx, dy);
+  const v = Math.min(HIT.cap, speed * HIT.push * 60) * figH1();
+  hit.on = 1; hit.vx = ux * v; hit.vz = uz * v;
+  world.walking = 0; world.turning = 0; world.turnOnly = 0;
+  world.seq = null; world.actUntil = 0;
+  world.pose = 1;                 // he is IN something; nothing else may pose him
+  mindHold(HIT.hold);
+  if (speed < HIT.soft) {
+    /* A shove he rides out. He should also give a little ground -- a man who
+       does not move at all when pushed reads as bolted down. */
+    hit.vx *= 0.5; hit.vz *= 0.5;
+    hitStage("stay");
+  } else hitStage(speed > HIT.hard ? "air" : "fall");
+  return 1;
+}
+
+function hitStage(st) {
+  const now = performance.now();
+  hit.stage = st;
+  const pick = (list) => pickOne(list.filter(haveClip));
+  if (st === "stay") {
+    const nm = pick(HIT_STAY) || pick(HIT_FALL);
+    hit.until = now + (nm ? playClip(nm, 0.12, 1) * 1000 : 400);
+  } else if (st === "air") {
+    const nm = pick(HIT_AIR);
+    // the air clip is a LOOP under him while he travels; the landing ends it
+    hit.until = now + (nm ? playClip(nm, 0.10) * 1000 : 300);
+  } else if (st === "fall") {
+    const nm = pick(HIT_FALL);
+    hit.until = now + (nm ? playClip(nm, 0.10, 1) * 1000 : 700);
+  } else if (st === "down") {
+    if (haveClip("laying_idle_00")) playClip("laying_idle_00", 0.35);
+    hit.until = now + HIT.down[0] + Math.random() * (HIT.down[1] - HIT.down[0]);
+  } else if (st === "up") {
+    const nm = pick(HIT_UP);
+    hit.until = now + (nm ? playClip(nm, 0.3, 1) * 1000 : 600);
+  } else {
+    hit.on = 0; hit.stage = ""; world.pose = 0;
+    playClip(pickIdle(), 0.4);
+    world.idleAt = now + 2500;
+    mindHold(HIT.hold);
+  }
+}
+
+function hitNow(dt, now) {
+  if (!hit.on) return;
+  const H1 = figH1(), s = dt / 1000;
+  // slide, decaying. Per second, so a slow frame does not travel further
+  const k = Math.pow(1 / (1 + HIT.drag), s);
+  world.x += hit.vx * s; world.z += hit.vz * s;
+  hit.vx *= k; hit.vz *= k;
+  /* The walls. Same fence walkTo uses, so he cannot be flung anywhere he could
+     not have walked -- and hitting one ends the flight rather than the slide:
+     in the air, the wall IS the landing. */
+  const edge = WALK.floor / 2 - 0.4;
+  const lx = H1 * Math.min(2.6, edge), lzB = H1 * Math.min(4.5, edge), lzF = H1 * 0.9;
+  let wall = 0;
+  if (world.x > lx) { world.x = lx; wall = 1; } else if (world.x < -lx) { world.x = -lx; wall = 1; }
+  if (world.z > lzF) { world.z = lzF; wall = 1; } else if (world.z < -lzB) { world.z = -lzB; wall = 1; }
+  if (wall) { hit.vx *= -0.25; hit.vz *= -0.25; }
+  if (hit.stage === "air" && (wall || Math.hypot(hit.vx, hit.vz) < H1 * 0.6)) {
+    hitStage("fall"); return;
+  }
+  if (now < hit.until) return;
+  if (hit.stage === "stay") hitStage("");
+  else if (hit.stage === "air") hitStage("fall");
+  else if (hit.stage === "fall") { hit.vx *= 0.2; hit.vz *= 0.2; hitStage("down"); }
+  else if (hit.stage === "down") hitStage("up");
+  else hitStage("");
+}
+window.__hit = (dx, dy, sp) => hitGo(dx, dy, sp == null ? 1.2 : sp);
+
 /* ---------------- the mind ----------------
 
    Everything above this is a character who does exactly what he is told and
@@ -8195,6 +8384,9 @@ function updateWorld(dt, now) {
      the code below is what carries him toward one. Deciding after it has
      already run costs a frame every time and shows up as a hitch at the moment
      he starts moving. */
+  /* Before the mind, and the mind is told to stay out anyway: being thrown
+     across a room is not a moment to decide to go and look at your nails. */
+  hitNow(dt, now);
   mindNow(now);
   // the room arrives once he is built, not while he is being drawn
   const want = rig.wipe[3] >= FIG.top && !rig.out ? 1 : 0;
@@ -9147,7 +9339,7 @@ async function showFigure(src, portrait) {
     rig.feat = null; rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
   }
   takeScreen("figure");
-  src = String(src || "").trim() || "colin_slim";
+  src = String(src || "").trim() || "colin_anim2";
   let R;
   try { R = await loadRig(src); }
   catch (e) { rig.loading = 0; caption(null, "figure " + src + ": " + e.message); return false; }
@@ -9699,7 +9891,7 @@ const TRIGGERS = {
   /* "menu" still works and still means this -- it is what everyone says -- but
      what it opens is the site now, not six satellites on spokes. */
   menu:{pages:true}, pages:{pages:true}, site:{pages:true}, home_page:{pages:true},
-  colin:{figure:"colin_slim"}, sandbox:{figure:"colin_slim"},
+  colin:{figure:"colin_anim2"}, sandbox:{figure:"colin_anim2"},
   figure:{figure:true}, character:{figure:true},
   images:{gallery:true}, gallery:{gallery:true}, pictures:{gallery:true},
   // and back out of any of it
@@ -10479,7 +10671,7 @@ function heardSentence(heard) {
     // the 3D place, before the single-word table -- "show me the 3d characters"
     // has no single word in it that means this
     if (SCENE_SAID.test(flatN) && !rig.on) {
-      setFormation({ figure: "colin_slim" }, 10); caption(heard, ""); return "place";
+      setFormation({ figure: "colin_anim2" }, 10); caption(heard, ""); return "place";
     }
     for (const w of flat.split(" ")) {
       const tg = TRIGGERS[w];
@@ -10827,6 +11019,11 @@ const onPick = (e) => {
     else if (formT > 0.35) { e.preventDefault(); goHome(""); }
     return;
   }
+  /* A DRAG IS NOT A TAP, which never mattered until a drag started meaning
+     something. Without this, a swipe that shoves him also lands on the floor
+     underneath and he gets up and walks to where your finger left the glass. */
+  if (swipe.used && performance.now() - swipe.used < 500) { swipe.used = 0; return; }
+  if (Math.hypot(t.clientX - swipe.x, t.clientY - swipe.y) > Math.min(W, H) * 0.05) return;
   /* Tap the floor and he walks there. The little one is not on screen in here
      -- he is standing right in front of you, and a second small him hovering
      over his own head is the "two of him" the perch was built to avoid -- so
@@ -10861,7 +11058,7 @@ const onPick = (e) => {
    out -- the two gestures a phone has already taught everybody. Measured from
    where the finger went down rather than tracked continuously, because the
    pictures are whole images and there is nothing to drag. */
-const swipe = { x: 0, y: 0, t: 0 };
+const swipe = { x: 0, y: 0, t: 0, used: 0 };
 const onDown = (e) => {
   const t = e.changedTouches ? e.changedTouches[0] : e;
   swipe.x = t.clientX; swipe.y = t.clientY; swipe.t = performance.now();
@@ -10909,6 +11106,28 @@ const onUp = (e) => {
   clearTimeout(dock.held); dock.held = 0;
   if (onBar && quick && !holdFired) { e.preventDefault(); swipe.t = 0; goHome(""); return; }
   if (onBar) { swipe.t = 0; return; }        // a hold, already dealt with
+  /* A SWIPE ACROSS HIM, in the room. Before the gallery guard below, because
+     that guard exists to leave the room alone and this is the one thing in the
+     room that wants an up event.
+
+     Speed is measured over the gesture rather than the last few pixels: a flick
+     is a whole movement and its last frame is the part where the finger is
+     already slowing down to leave the glass. */
+  if (world.on > 0.5 && swipe.t && !hit.on) {
+    const tf = e.changedTouches ? e.changedTouches[0] : e;
+    const fx = tf.clientX - swipe.x, fy = tf.clientY - swipe.y;
+    const took = Math.max(1, performance.now() - swipe.t);
+    const len = Math.hypot(fx, fy);
+    if (len > Math.min(W, H) * 0.06 && hitNear(swipe.x, swipe.y, tf.clientX, tf.clientY)) {
+      if (hitGo(fx, fy, len / took)) {
+        e.preventDefault();
+        // so the tap handler that runs after this does not also walk him there
+        swipe.used = performance.now();
+        swipe.t = 0;
+        return;
+      }
+    }
+  }
   if (!gallery.on || !swipe.t) return;
   const t = e.changedTouches ? e.changedTouches[0] : e;
   /* The little one is handled by onPick, which runs after this. Without this

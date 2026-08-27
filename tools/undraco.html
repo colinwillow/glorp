@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>undraco</title>
+<body style="background:#0A0D08;color:#8FB37A;font:13px ui-monospace,Menlo,monospace;padding:20px">
+<pre id="log">working…</pre>
+
+<script type="importmap">
+{"imports":{"three":"../vendor/three.module.min.js"}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "../vendor/GLTFLoader.js";
+import { DRACOLoader } from "../vendor/DRACOLoader.js";
+import { GLTFExporter } from "../vendor/GLTFExporter.js";
+
+/* ---------------------------------------------------------------------------
+   Take the Draco out of a GLB.
+
+   The app has two readers for the same file and only one of them is three.js.
+   The renderer uses GLTFLoader, which decodes Draco through a wasm module and
+   does not care. The PARTICLES do not: they are built by a small parser in
+   index.html that walks the accessors itself, because it needs the bind pose,
+   the triangle list and the joint weights on the CPU before anything is drawn,
+   and a Draco payload is opaque to it. Hand it a compressed file and it says so
+   and stops, which is what happened -- nothing loaded at all.
+
+   Decoding is a wasm module and about a second of work, so it could be done in
+   the app. It is done here instead, once, because the saving is not worth it:
+   Draco compresses GEOMETRY and this file is mostly animation -- 49 clips over
+   66 bones -- so the compressed 9.5 MB comes back at about 11, and the app gets
+   to keep one code path for reading a model rather than two.
+
+   Open it with ?in=colin_animations_02 and it writes the same name back.
+--------------------------------------------------------------------------- */
+
+const el = document.getElementById("log");
+const out = [];
+const say = (s) => { out.push(s); el.textContent = out.join("\n"); };
+
+const name = new URLSearchParams(location.search).get("in") || "colin_animations_02";
+
+const dl = new DRACOLoader();
+dl.setDecoderPath("../vendor/draco/");
+dl.setDecoderConfig({ type: "wasm" });
+const L = new GLTFLoader();
+L.setDRACOLoader(dl);
+
+L.load("../models/" + name + ".glb", (g) => {
+  say("loaded " + name + ".glb");
+  let meshes = 0, verts = 0, bones = 0;
+  g.scene.traverse((o) => {
+    if (o.isMesh || o.isSkinnedMesh) {
+      meshes++; verts += o.geometry.attributes.position.count;
+      /* The exporter writes what it is given, and what it was given came out of
+         a decoder -- so anything the decoder left behind travels with it. The
+         index in particular comes back as whatever width Draco used, and an
+         index that does not match the vertex count is a file three will load
+         and the hand-rolled parser will not. */
+      if (o.geometry.index && o.geometry.attributes.position.count < 65536
+          && !(o.geometry.index.array instanceof Uint16Array))
+        o.geometry.setIndex(Array.from(o.geometry.index.array));
+    }
+    if (o.isBone) bones++;
+  });
+  say("  " + meshes + " meshes, " + verts + " verts, " + bones + " bones, "
+      + g.animations.length + " clips");
+
+  /* Animations are NOT part of the scene and have to be handed over
+     separately, which is the one thing that quietly loses forty-nine clips if
+     you forget it. */
+  new GLTFExporter().parse(g.scene, (buf) => {
+    const u8 = new Uint8Array(buf);
+    // base64 in chunks: one apply() over eleven megabytes overflows the stack
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000)
+      s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    window.__b64 = btoa(s);
+    window.__done = 1;
+    say("exported " + (buf.byteLength / 1e6).toFixed(2) + " MB, Draco removed");
+  }, (e) => { say("EXPORT FAILED: " + e); window.__done = 1; window.__fail = 1; },
+     { binary: true, onlyVisible: false, animations: g.animations });
+}, undefined, (e) => {
+  say("LOAD FAILED: " + (e && e.message || e));
+  window.__done = 1; window.__fail = 1;
+});
+</script>
