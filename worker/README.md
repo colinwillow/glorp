@@ -110,6 +110,16 @@ model — from a phone, with no access to the Worker log, it was invisible. A 40
 retires the attempt outright; a 429 is a limit that lifts, so that one stands
 off for a minute instead. `GET /persona` reports which model is live.
 
+### Colin's own personality
+
+`ORB_PERSONA_COLIN` is his, and `worker/persona-colin.md` is a first draft to
+paste into it and then argue with. What that variable replaces is the PERSONA
+half only -- the protocol still gets appended, and it now knows whose scene it
+is: with a character id in the request it says the body in the room is YOURS
+rather than describing it in the third person as something you hover over. That
+distinction is not cosmetic. Without it the model is told who it is twice and
+given two different answers, and no amount of personality text survives that.
+
 ### Changing the personality without deploying anything
 
 Set an **`ORB_PERSONA`** variable in the Cloudflare dashboard — Workers &
