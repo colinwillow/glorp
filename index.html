@@ -932,7 +932,27 @@ async function ask(text) {
         if (ctl.legs) clock.legs = ctl.legs;
       } catch (e) { /* a malformed frame must never cost us the reply */ }
     }
-    brain.history.push({ role:"assistant", content: full });
+    /* A REPLY THAT IS NOT THERE MUST NOT BECOME A TURN.
+
+       The worker is one turn and not an agent loop -- Claude can emit text and
+       a tool call together, and the text streams for speech while the call
+       rides out on the end, with no second round trip. Which is fast, and has
+       one hole in it: a turn that is ONLY a tool call has no text, so `full`
+       comes back empty and nothing is ever said. Silence, on a question that
+       was heard, parsed and sent. The remember tool is the likely one -- being
+       told something about a person's dog is exactly what it is for -- and it
+       would fail the same way every time the same sentence was said, which is
+       what makes it read as being ignored rather than as a glitch.
+
+       Pushing that empty string as an assistant turn makes it worse than
+       silence: the API rejects a message with empty content, so the NEXT
+       question fails too. Both turns come out of the history instead, which
+       leaves it valid and leaves the conversation where it was. */
+    if (full.trim()) brain.history.push({ role:"assistant", content: full });
+    else {
+      brain.history.pop();
+      console.log("orb: the brain returned no words -- nothing to say");
+    }
   } catch (err) {
     full = "I couldn't reach my brain.";
     caption(text, full + "  (" + err.message + ")");
@@ -11403,7 +11423,20 @@ let echoSeen = 0, lastLive = "";
    tested; this can. */
 const HOME_SAID = /\b(go|take me|bring me|head|get)? ?(home|back)\b|\b(exit|quit|stop|halt|cancel|dismiss|reset|never ?mind|forget it|close (this|it)|all done|get out of (this|here))\b/;
 
+/* Wrapped so that WHERE A SENTENCE WENT is visible.
+
+   Most of what this function does is decide not to ask the brain -- a command,
+   a place, a page, a name -- and when one of those fires wrongly the symptom is
+   a question that gets no answer, which looks identical to a model that ignored
+   you. It is not identical in here: one route says "act" and the other says
+   "brain". Printing it costs nothing and turns "he just didn't respond" into a
+   one-word answer about which half to look at. */
 function heardSentence(heard) {
+  const route = heardSentence_(heard);
+  if (route !== "brain") console.log("orb heard:", JSON.stringify(heard), "->", route);
+  return route;
+}
+function heardSentence_(heard) {
   // somebody is talking to him: stop, turn round. Before anything is parsed,
   // because it is true whatever the words turn out to be
   attend();
@@ -11432,6 +11465,16 @@ function heardSentence(heard) {
   const flatN = heard.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
   const SCENE_SAID = /\b(3\s?d|three\s?d|threed)\b|\bsandbox\b/;
   const deliberate = flat.split(" ").length <= 2 || ASKED_FOR.test(flat);
+  /* IS THIS AN INSTRUCTION AT ALL? Sits with `brief` and `deliberate` because
+     it is the same kind of test, and it is used by more than one route below --
+     the act table and the box test both name things with ordinary words. A
+     command is SHORT or it is ASKED FOR; and a question is never a command
+     however short it is, which is the half that matters, because "do you ever
+     get bored" is four words and is not a request to look at his nails. */
+  const ACT_ASK = /\b(can you|could you|would you|will you|can we|please|do a|do the|go on|let'?s|lets|show me)\b/;
+  const ACT_NOT = /\b(what if|what do|what does|what are|what is|what s|why|how come|how do|how does|tell me|do you (ever|think|like|remember|know|get|feel)|did you|are you|is it|was it|would it|should i|imagine)\b/;
+  const actOK = !ACT_NOT.test(flat)
+             && (flat.split(" ").length <= 6 || ACT_ASK.test(flat));
   /* An introduction outranks everything, because in the beat after being asked
      "who are you" a bare name is exactly the kind of one-word utterance the
      command table would otherwise grab. Answered here, out loud, with no round
@@ -11600,7 +11643,7 @@ function heardSentence(heard) {
      inside "open the box" would otherwise be caught on the way past and turned
      into a cube. */
   if (/\brag ?doll\b/.test(flat)
-      || /\b(box|physics|gravity|tilt) test\b/.test(flat)
+      || (/\b(box|physics|gravity|tilt) test\b/.test(flat) && !ACT_NOT.test(flat))
       || /\b(open|show|go to|take me to|launch|start|bring up|let me see)\b[^]*\bthe box\b/.test(flat)) {
     caption(null, "opening the ragdoll box");
     setTimeout(() => { location.href = "box-test.html"; }, 350);
@@ -11628,8 +11671,28 @@ function heardSentence(heard) {
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
   /* While he is standing in his room, what he can do outranks the brain. "Do a
-     backflip" is not a question. */
-  if (world.on > 0.5 && sandboxSay(flat)) { caption(heard, ""); return "act"; }
+     backflip" is not a question.
+
+     BUT IT HAS TO ACTUALLY BE A COMMAND, and for a long time this was the only
+     gate in here without that test. Everything else asks first: HOME_SAID needs
+     `brief`, the places need `deliberate`, and the note above them says why --
+     "back" and "home" are ordinary words in the middle of ordinary sentences.
+     The act table is worse than either, because its words are ordinary too and
+     there are nineteen of them: bored, warm, hot, fan, flip, box, down, sad,
+     happy, drink, sit, jump, wave, fight, sneak, trip, stretch, nails, quietly.
+
+     So "do you ever get bored in there" was an instruction to look at his
+     nails, and "is it warm in there" was an instruction to fan himself -- both
+     captioned, both swallowed, neither ever reaching the brain. Ask the same
+     question three times and get silence three times, which is exactly what it
+     looks like from the outside: not a flaky model, a deterministic drop.
+
+     Two tests, because they fail differently. A command is SHORT or it is
+     ASKED FOR -- "backflip", "can you dance for me", "do a stretch". And a
+     question is never a command however it is phrased, so anything opening
+     with what/why/how/tell me/do you ever is a topic even when it is four
+     words long. */
+  if (world.on > 0.5 && actOK && sandboxSay(flat)) { caption(heard, ""); return "act"; }
   /* The places, now that the whole sentence is here to judge. */
   if (deliberate) {
     // the 3D place, before the single-word table -- "show me the 3d characters"
