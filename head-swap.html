@@ -51,10 +51,23 @@ const HUD = document.getElementById("hud");
    ten percent of this is an eye judgement and no measurement replaces it. */
 const FIT = {
   scale: 2.60,     // head units -> body units
-  y: 0.00,         // along the neck, in head units
+  /* Up the neck. Head units are very nearly metres, so this reads as what it
+     is: fifteen centimetres, about half a foot. Sitting the head's own joint on
+     the body's head joint looked correct and was not -- the two rigs do not
+     agree about where a head BEGINS, and the CC one puts its joint higher into
+     the skull, so matching the joints buried the chin in the collar and he had
+     no neck at all. Match what you can see instead of what the files call the
+     same thing. */
+  y: 0.15,
   z: 0.00,         // in and out of the face
   pitch: 0,        // degrees; the head bone is not exactly level
-  cut: 0.50,       // how much head-weight makes a body vertex vanish
+  /* And raising the head opens a hole under the jaw, because the cut took the
+     body's neck away along with its head -- the neck is blended between the two
+     joints, so a cut at half the weight lands halfway up it. Lifting the
+     threshold hands the neck back: at 0.90 only what is nearly pure head goes,
+     which leaves a real neck column running into the collar. Higher still
+     works but brings the hood rim up across the jaw. */
+  cut: 0.90,
 };
 /* Where the head model's own head joint sits above its root. Subtracting it is
    what puts the joint, rather than the root, on the body's neck. */
@@ -203,8 +216,11 @@ function sync() {
   anchor = new THREE.Object3D(); scene.add(anchor);
   if (headRoot) anchor.add(headRoot);
 
-  // frame him: waist to a little over the crown
-  const foot = 0.37, top = 5.0;
+  /* Frame him from the shoes to a little over the crown. The crown is not
+     where the body's rig says it is any more -- it is the borrowed head's, half
+     a foot higher -- so this is measured from the join rather than from
+     HeadTop_End, which now sits somewhere inside his jaw. */
+  const foot = 0.37, top = 5.6;
   cam.position.set(0, (foot + top) / 2, 9.0);
   cam.lookAt(0, (foot + top) / 2 - 0.2, 0);
   resize();
@@ -248,6 +264,7 @@ addEventListener("keydown", (e) => {
 });
 window.__fit = (o) => Object.assign(FIT, o);
 window.__scene = scene;
+window.__cam = () => cam;
 window.__clip = (n) => { const i = clips.findIndex(c => c.name === n); if (i >= 0) { clipAt = i - 1; play(1); } };
 window.__clips = () => clips.map(c => c.name);
 
