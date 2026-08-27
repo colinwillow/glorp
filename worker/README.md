@@ -133,8 +133,12 @@ your own ear.
 
 ### Colin's own personality
 
-`ORB_PERSONA_COLIN` is his, and `worker/persona-colin.md` is a first draft to
-paste into it and then argue with. What that variable replaces is the PERSONA
+He has one already — `PERSONA_COLIN` in `src/index.ts`, compiled in and shipped
+with the deploy, so nothing has to be pasted anywhere for him to be somebody.
+`ORB_PERSONA_COLIN` in the dashboard **overrides** it when set, which keeps the
+phone-editable path for trying something without a deploy while the repo stays
+the default. `worker/persona-colin.md` is the same text with notes on what to
+change and why. `/persona?as=colin` says which of the three is actually in use. What that variable replaces is the PERSONA
 half only -- the protocol still gets appended, and it now knows whose scene it
 is: with a character id in the request it says the body in the room is YOURS
 rather than describing it in the third person as something you hover over. That

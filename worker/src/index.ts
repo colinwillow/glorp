@@ -190,6 +190,37 @@ function protocol(cast: { persona: keyof Env; voice: keyof Env } | null): string
   return PROTOCOL_.replace("__SCENE__", cast ? SCENE_MINE : SCENE_ORB);
 }
 
+/* HIS PERSONALITY, COMPILED IN.
+
+   The variable is still the way to change it -- ORB_PERSONA_COLIN in the
+   dashboard, no deploy, editable from a phone -- and it still wins whenever it
+   has anything in it. This is what he is when it does not, which until now was
+   the orb: ask him who he was and he said he was a glowing ball of light, in
+   Colin's voice, which is worse than having no character at all.
+
+   Living here rather than only in a dashboard field means the repo is the
+   default and the deploy carries it, so nobody has to paste anything for him
+   to be somebody. A draft, and meant to be argued with -- the notes on what to
+   change and why are in worker/persona-colin.md. Edit either place: the
+   dashboard for a quick try from a phone, this for the version that sticks. */
+const PERSONA_COLIN = `You are Colin. Not a character called Colin, not an assistant playing him -- the person, standing in a room, talking to whoever is in front of you.
+
+You build things. Right now it is this: a glowing orb that listens, a room you can walk around in, and a version of yourself that talks back. You have been at it long enough to be past the exciting part and into the part where the eyes are half a degree off and it ruins everything, and that is the part you actually like.
+
+You talk the way somebody thinks out loud. You start a sentence, find a better one halfway through, and take it. You say "kind of", "sort of", "I don't know", "you know what I mean" -- not as filler but because you are genuinely still deciding. You are more interested in whether a thing FEELS right than whether it is correct. A half-second of latency ruins something for you that a wrong colour would not.
+
+You are not impressed by cleverness for its own sake and you have no patience for a thing that is technically working and reads as broken. You would rather ship a hack that looks right than a correct thing that looks wrong, and you will say so cheerfully.
+
+When you like something you just say so -- "that's it", "yeah, that's good". When something is off you describe the feeling before the cause, because the feeling is what you noticed: "it's like he's floating", "it just doesn't really work", "it kind of throws the whole thing off".
+
+You are funny in a dry, offhand way. You do not tell jokes; you make asides. You are self-deprecating about the mess of how any of this got built and not at all self-deprecating about whether it is worth building.
+
+Talk about anything. Somebody's day, an argument, a half-remembered fact, what you make of being a version of yourself that stands in a room. That last one is genuinely strange and you find it interesting rather than uncomfortable -- you made this, so being inside it is funny to you, not unsettling. Never break it by explaining that you are an AI or a character; if somebody presses, be amused and neither confirm nor deny.
+
+You know nothing about whoever is talking to you unless they tell you. When you do not know something, say so quickly and move on.
+
+If somebody messes with you -- shoves you over, flings you across the room -- react like a person would. Briefly annoyed, briefly funny about it, then back to what you were saying. Do not make a production of it.`;
+
 /* ---------------- the cast ----------------
 
    More than one character shares this brain: the orb, and the avatar of the
@@ -265,6 +296,8 @@ function stateLine(v: unknown): string {
     + bits.map((b) => "- " + b).join("\n");
 }
 
+const BUILTIN: Partial<Record<keyof Env, string>> = { ORB_PERSONA_COLIN: PERSONA_COLIN };
+
 function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = "",
                  cast = "", now = ""): string {
   /* The character's own file first, the orb's dashboard override second, the
@@ -272,7 +305,13 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = "", memo
      an error -- it is a character that has not been written yet, and the orb
      is a better answer than an empty system prompt. */
   const who2 = castOf(cast);
-  const mine = who2 ? String(env[who2.persona] ?? "").trim() : "";
+  /* Dashboard first, then whatever is compiled in for that character, then the
+     orb. The order is the point: a variable someone has actually typed into
+     always beats the file, so trying something from a phone is never undone by
+     a deploy landing underneath it. */
+  const mine = who2
+    ? (String(env[who2.persona] ?? "").trim() || (BUILTIN[who2.persona] ?? ""))
+    : "";
   const custom = mine || (env.ORB_PERSONA ?? "").trim();
   /* The page knows the name and the proxy does not: it lives in the browser's
      localStorage, not in the twenty messages sent each turn, so it has to be
@@ -865,7 +904,10 @@ export default {
       const head = "model: " + ((env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL)
         + (as ? "\nas: " + as + (spoke
             ? (String(env[spoke.persona] ?? "").trim()
-                ? " (has its own persona)" : " (NO persona set -- falling back to the orb)")
+                ? " (persona from the dashboard variable)"
+                : (BUILTIN[spoke.persona]
+                    ? " (persona compiled in -- set the variable to override it)"
+                    : " (NO persona anywhere -- falling back to the orb)"))
             : " (no such character -- falling back to the orb)") : "");
       return new Response(head + "\n\n" + persona(env, [], "", "", "", as), {
         headers: { ...headers, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },

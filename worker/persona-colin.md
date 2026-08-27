@@ -1,10 +1,18 @@
 # Colin — a first draft
 
-Paste the block below into **`ORB_PERSONA_COLIN`** in the Cloudflare dashboard
-(Workers & Pages → `orb-brain` → Settings → Variables). No deploy, no computer,
-takes effect on the next thing you say to him.
+**This is already live** — it is compiled into the worker as `PERSONA_COLIN`
+and ships with every deploy, so nothing needs pasting anywhere for him to be
+somebody. Two ways to change it, and they have different jobs:
 
-This is a draft to argue with, not a thing to keep. It was written from your own
+- **`worker/src/index.ts`**, the `PERSONA_COLIN` block. Edit it, push, and it
+  is live in a couple of minutes. This is the version that sticks.
+- **`ORB_PERSONA_COLIN`** in the Cloudflare dashboard (Workers & Pages →
+  `orb-brain` → Settings → Variables). No deploy, editable from a phone, and it
+  **overrides** the compiled one whenever it has anything in it — so trying
+  something out is never undone by a deploy landing underneath it.
+
+The text below is what is compiled in. It is a draft to argue with, not a thing
+to keep. It was written from your own
 voice notes across a few sessions — the phrasings, the way you circle a problem,
 what you get annoyed by — so it should read as roughly the right shape and
 definitely the wrong details. Rewriting it is the point.
