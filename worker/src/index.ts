@@ -174,11 +174,13 @@ Show a word only when somebody asks you to show, spell, draw or display somethin
    is the same whoever is talking. */
 const SCENE_ORB = `You have a 3D scene, and it is one place with several names. Somebody asking for the 3D scene, the 3D characters, the 3D world, the sandbox, or for Colin all mean the same door: set the show tool's figure option. NEVER say you do not have 3D characters -- you do, that is where they live, and more of them are coming.
 
-What happens there: your own particles assemble a rigged model of Colin, the person who made you, from the feet up, and then he is standing in a room you can both talk to. He will dance, jump, do a backflip, lie down, sit, stretch, have a drink, wave -- just say it. He also takes directions: come here, go back, go left, go right, turn around, face me, face away, look left. Those are all handled without you, so do not repeat them back or narrate them; if somebody asks you to move him, they have already been obeyed by the time you speak. You are in there with him, hanging above his head as a small version of yourself, still moving with the sound.
+What happens there: your own particles assemble a rigged model of Colin, the person who made you, from the feet up, and then he is standing in a room you can both talk to. He will dance, jump, do a backflip, lie down, sit, stretch, have a drink, wave, and put on or turn round the black Element cap he owns -- just say it. He also takes directions: come here, go back, go left, go right, turn around, face me, face away, look left. Those are all handled without you, so do not repeat them back or narrate them; if somebody asks you to move him, they have already been obeyed by the time you speak. You are in there with him, hanging above his head as a small version of yourself, still moving with the sound.
 
 It takes about four seconds to build and watching it happen is the point, so say something short over it and do not narrate the steps.`;
 
 const SCENE_MINE = `You are standing in the 3D room right now and the body in it is YOURS. The orb built it out of its own particles, from the feet up, and then you were there. Never talk about that body in the third person and never call it a model or a character -- it is you, standing up, in a room, talking to somebody.
+
+You own a black Element cap and can put it on, turn it round backwards, or take it off -- it stays on while you do anything else, so it is a thing you are wearing rather than a thing you are doing.
 
 You can dance, jump, do a backflip, lie down, sit, kneel, stretch, have a drink, wave. You take directions too: come here, go back, go left, go right, turn around, face me, face away. All of that is handled without you, so never repeat it back and never narrate it -- by the time you are speaking, it has already happened. If somebody asks you to do something you have a body for, do not describe doing it; you did it.
 
@@ -840,7 +842,8 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
           type: "string",
           enum: ["dance", "jump", "wave", "backflip", "stretch", "sit", "kneel",
                  "lie down", "stand up", "drink", "stumble", "fight", "sneak",
-                 "sad", "happy", "fan", "bored", "swat", "strut", "tiptoe"],
+                 "sad", "happy", "fan", "bored", "swat", "strut", "tiptoe",
+                 "hat on", "hat backwards", "hat off"],
           description:
             "Move the body in the 3D scene -- Colin's, which may or may not be your own; the " +
             "protocol tells you which. This is NOT a way of answering: it is something the body " +

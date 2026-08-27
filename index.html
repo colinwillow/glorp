@@ -6818,6 +6818,233 @@ async function glGraft(src, T, body) {
               skins.length, "primitives, scale", K.toFixed(3),
               "(bone scale " + sBone.toFixed(3) + ", body span " + bodySpan.toFixed(2) + ")");
 }
+/* ---------------- the hat ----------------
+
+   A real object he owns, and the first thing in here that is neither rigged nor
+   animated: one mesh, 943 vertices, no skin and no bones. So it cannot be
+   grafted the way the head is -- there is no joint to match by name -- and it
+   is placed instead, which means every number below had to be measured off the
+   two files rather than agreed between them.
+
+   It hangs off the HEAD FILE's root, not the body's head bone. The visible head
+   is colin_head, grafted, and it carries the graft's scale and its half-foot of
+   neck correction; anything hung on the body's joint instead would be sitting
+   in the frame of a head that is not being drawn.
+
+   Three things were measured rather than guessed, and each of them had an
+   obvious wrong answer:
+
+   WHICH WAY IS FORWARD. The hat's bounding box is symmetric front to back
+   (z -0.50 .. +0.50), which is exactly what a brim does NOT look like, so the
+   box says nothing. Slicing it by z does: the crown ends at z = +0.20 and
+   beyond that the geometry is 0.04 tall and 0.29 long. That is the brim, and it
+   points +z. The head is the same test upside down -- at z = +0.16 it is 0.02
+   wide and a third of the way up the face, which is a nose and not a skull. So
+   both files already agree on forward and a hat worn forwards needs no rotation
+   at all.
+
+   HOW BIG. Not one number: the skull is an oval 0.242 across and 0.308 deep,
+   and the hat is very nearly a circle, 0.670 by 0.686. Sized to the width it
+   cuts through the back of his head; sized to the depth it flares at the ears.
+   So the fit is mild and deliberately non-uniform -- width from width, depth
+   from depth -- which is what a cap does on an actual head. It costs nothing
+   visually: the logo is on the front panel, in the x-y plane, and z does not
+   touch it.
+
+   WHERE THE PIVOT IS. The hat's origin is the centre of its opening in x and
+   the plane of it in y, but NOT its centre in z -- the crown sits at z = -0.157
+   because the brim drags the origin forward. Left uncorrected, turning it round
+   swings it a third of a head sideways instead of spinning it on the spot. So
+   the mesh is offset inside a spin node until its crown centre is ON that
+   node's origin, and backwards is then one rotation and nothing else.
+
+   All of it is read from the geometry at attach time rather than written down,
+   so a re-export of either file re-fits itself. */
+const HAT = {
+  file: "element_hat",
+  band: 0.66,      // where the sweatband sits, up the head's own height
+  slack: 1.05,     // a hat is a little bigger than the head that goes in it
+  lift: 0.004,     // and sits a touch proud of the skull rather than on it
+  /* Worn backwards a cap rides up off the brow and tips back, because nothing
+     is holding the front down any more. Small numbers; it reads as wrong long
+     before it reads as much. */
+  rev: { lift: 0.022, tilt: -9 },
+};
+let hatBuf = null;
+
+/* The crown, told from the brim by HEIGHT rather than by position -- the brim
+   is the part of a cap that is flat. Bucketing by z and asking how tall the
+   hat gets in each bucket separates them cleanly here (0.29 tall against 0.04)
+   and would still separate them on a beanie, a bucket hat or a visor. */
+function hatCrown(mesh) {
+  const P = mesh.geometry.attributes.position, N = 48;
+  let z0 = 1e30, z1 = -1e30, y0 = 1e30, y1 = -1e30;
+  for (let i = 0; i < P.count; i++) {
+    const z = P.getZ(i), y = P.getY(i);
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  const H = (y1 - y0) || 1, w = (z1 - z0) / N;
+  const tall = new Float32Array(N).fill(-1e30);
+  for (let i = 0; i < P.count; i++) {
+    const k = Math.min(N - 1, Math.max(0, ((P.getZ(i) - z0) / w) | 0));
+    if (P.getY(i) > tall[k]) tall[k] = P.getY(i);
+  }
+  const isCrown = (z) => tall[Math.min(N - 1, Math.max(0, ((z - z0) / w) | 0))] > y0 + 0.25 * H;
+  /* The opening ring, which is what actually has to fit: the bottom quarter of
+     the crown. Higher up it narrows, and a hat sized on the narrow part of
+     itself ends up a size too small. */
+  let hx = 0, cz0 = 1e30, cz1 = -1e30;
+  for (let i = 0; i < P.count; i++) {
+    const z = P.getZ(i);
+    if (P.getY(i) > y0 + 0.25 * H || !isCrown(z)) continue;
+    const x = Math.abs(P.getX(i));
+    if (x > hx) hx = x;
+    if (z < cz0) cz0 = z; if (z > cz1) cz1 = z;
+  }
+  return { hx, hz: (cz1 - cz0) / 2, mid: (cz0 + cz1) / 2, base: y0 };
+}
+
+/* The head, measured in its own HEAD BONE's space -- which is the one frame
+   here that is both exact and still.
+
+   The obvious way is to walk the vertices through mesh.matrixWorld and back out
+   of the head root's, and it is wrong twice over. A SkinnedMesh does not place
+   its geometry with its matrixWorld -- the bones do, and in the default bind
+   mode the mesh's own matrix is cancelled straight back out of the skinning --
+   so those numbers describe nothing on screen. That measured a band at y 0.442
+   on a head whose band is at 1.68, and sized a 0.308-deep skull at 0.118.
+
+   And even done properly it would be measured through whatever pose he happened
+   to be in when you asked for the hat, so the same hat would fit differently
+   depending on whether his head was turned. A fit must not depend on the frame
+   it was taken on.
+
+   boneInverses[k] is the bind pose by definition: the inverse of that bone's
+   world matrix at the moment the mesh was bound. Run the raw vertices through
+   it and they land in the head bone's REST frame, which is where the hat is
+   then parented -- so it rides the bone, and nothing here has to know what the
+   graft's scale was or which way the body is facing. */
+function hatHead(T, skins) {
+  const sk = skins[0].skeleton;
+  const k = sk.bones.findIndex((b) => /(^|[_:])Head$/i.test(b.name));
+  if (k < 0) { console.log("orb hat: the head file has no head bone"); return null; }
+  const m = new T.Matrix4(), v = new T.Vector3();
+  let y0 = 1e30, y1 = -1e30;
+  const all = [];
+  for (const o of skins) {
+    m.multiplyMatrices(sk.boneInverses[k], o.bindMatrix);
+    const P = o.geometry.attributes.position;
+    for (let i = 0; i < P.count; i++) {
+      v.fromBufferAttribute(P, i).applyMatrix4(m);
+      all.push(v.x, v.y, v.z);
+      if (v.y < y0) y0 = v.y; if (v.y > y1) y1 = v.y;
+    }
+  }
+  const H = (y1 - y0) || 1, band = y0 + HAT.band * H, w = 0.02 * H;
+  let hx = 0, z0 = 1e30, z1 = -1e30, n = 0;
+  for (let i = 0; i < all.length; i += 3) {
+    if (Math.abs(all[i + 1] - band) > w) continue;
+    const x = Math.abs(all[i]), z = all[i + 2];
+    if (x > hx) hx = x;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+    n++;
+  }
+  return n ? { bone: sk.bones[k], hx, hz: (z1 - z0) / 2, mid: (z0 + z1) / 2, y: band, H } : null;
+}
+
+async function hatOn(back) {
+  const T = window.THREE;
+  if (!T || !gl.headMeshes.length) return "";
+  if (!gl.hat) {
+    if (!hatBuf) {
+      const r = await fetch("models/" + HAT.file + ".glb");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      hatBuf = await r.arrayBuffer();
+    }
+    const g = await new Promise((res, rej) =>
+      new window.GLTFLoader().parse(hatBuf.slice(0), "", res, rej));
+    let mesh = null;
+    g.scene.traverse((o) => { if (o.isMesh && !mesh) mesh = o; });
+    if (!mesh) { console.log("orb hat: no mesh in " + HAT.file); return ""; }
+    /* Both sides: a brim is a single sheet in most exports and the underside is
+       what you see for half of every turn he takes. */
+    for (const mt of [].concat(mesh.material)) if (mt) mt.side = T.DoubleSide;
+
+    const C = hatCrown(mesh), h = hatHead(T, gl.headMeshes);
+    if (!h) { console.log("orb hat: cannot measure the head"); return ""; }
+    const sx = (h.hx * HAT.slack) / (C.hx || 1);
+    const sz = (h.hz * HAT.slack) / (C.hz || 1);
+
+    /* pivot carries the fit and the tilt, spin carries which way round it is,
+       and the mesh is offset inside spin so that spinning turns it on the spot
+       -- see the note on the pivot above. */
+    const pivot = new T.Object3D(), spin = new T.Object3D();
+    mesh.position.set(0, -C.base, -C.mid);
+    spin.add(mesh); pivot.add(spin); h.bone.add(pivot);
+    pivot.scale.set(sx, (sx + sz) / 2, sz);
+    gl.hat = { pivot, spin, mesh, h, back: -1 };
+    console.log("orb hat:", HAT.file, "on the head --",
+                "scale " + sx.toFixed(3) + " x " + sz.toFixed(3),
+                "band y " + h.y.toFixed(3),
+                "(head " + (h.hx * 2).toFixed(3) + " wide, " + (h.hz * 2).toFixed(3) + " deep;",
+                "crown " + (C.hx * 2).toFixed(3) + " by " + (C.hz * 2).toFixed(3) + ")");
+  }
+  /* Whatever is wanted NOW: the first call waits on a fetch, and by the time
+     it returns the answer may have been turned round or taken off again. */
+  const H = gl.hat, b = gl.hatBack ? 1 : 0;
+  H.pivot.visible = !!gl.hatOn;
+  if (H.back !== b) {
+    H.back = b;
+    H.spin.rotation.y = b ? Math.PI : 0;
+    H.pivot.rotation.x = b ? HAT.rev.tilt * Math.PI / 180 : 0;
+    H.pivot.position.set(0, H.h.y + HAT.lift * H.h.H + (b ? HAT.rev.lift * H.h.H : 0), H.h.mid);
+  }
+  return b ? "hat backwards" : "hat on";
+}
+function hatOff() {
+  gl.hatOn = 0;
+  if (gl.hat) gl.hat.pivot.visible = false;
+  return "hat off";
+}
+/* Intent, not geometry. The first hat costs a fetch and a parse, so asking
+   whether one is on by looking for the mesh answers NO for as long as that
+   takes -- and the sentence right after "put your hat on" is the one most
+   likely to be "now turn it round". Which was answered by doing nothing. */
+const hatWorn = () => !!gl.hatOn;
+
+/* Said, rather than matched in the big table: a hat is not a clip, so none of
+   the animation machinery applies to it -- no duration, no pose, no idle to
+   return to. He can be wearing it while he does anything else. */
+const HAT_SAY = /\b(hat|cap|snapback|lid)\b/;
+const HAT_OFF = /\b(off|remove|lose|ditch|take it off|no hat|bare ?head)\b/;
+const HAT_REV = /\b(backwards?|back to front|back-to-front|reversed?|other way( round)?|round the other)\b/;
+const HAT_FWD = /\b(forwards?|round the right way|right way|normal(ly)?|properly|the front)\b/;
+const HAT_FLIP = /\b(flip it|turn it (a)?round|spin it (a)?round|switch it (a)?round|the other way( round)?)\b/;
+/* Asked for a picture of a hat, he was putting one on. The show tool draws
+   things; this one is worn. */
+const HAT_SHOW = /\b(picture|photo|image|draw|drawing|spell|emoji|show me a)\b/;
+function hatSay(flat) {
+  /* "Turn it round" is about the hat if he is wearing one, and about nothing at
+     all if he is not -- so the noun is only required when there is no hat on to
+     be talking about. Without this the second half of every exchange misses:
+     you ask for the hat, get it, say "backwards", and are ignored. */
+  const named = HAT_SAY.test(flat);
+  if (!named && !(hatWorn() && (HAT_REV.test(flat) || HAT_FWD.test(flat) || HAT_FLIP.test(flat))))
+    return "";
+  if (named && HAT_SHOW.test(flat)) return "";
+  if (HAT_OFF.test(flat)) { caption(null, "hat off"); return hatOff(); }
+  const back = HAT_REV.test(flat) ? 1
+             : HAT_FWD.test(flat) ? 0
+             : HAT_FLIP.test(flat) && hatWorn() ? (gl.hatBack ? 0 : 1)
+             : hatWorn() ? gl.hatBack : 0;
+  gl.hatOn = 1; gl.hatBack = back;
+  hatOn(back).catch((e) => console.log("orb hat failed:", e.message));
+  const said = back ? "hat backwards" : "hat on";
+  caption(null, said);
+  return said;
+}
+
 function threeReady() {
   return window.__three ? Promise.resolve()
        : new Promise((r) => window.addEventListener("threeready", r, { once: true }));
@@ -6909,6 +7136,10 @@ function glLoad(buf, src, R) {
       if (!gl.pool) gl.pool = makePool(T);
       if (gl.pool.parent !== gl.root) gl.root.add(gl.pool);
       gl.face = null; gl.headMeshes = []; gl.headGhosts = [];
+      /* The hat hangs off the head file's head bone, so the old group takes it
+         away with everything else -- but the handle would survive and point at
+         a mesh that is no longer in the scene. */
+      gl.hat = null; gl.hatOn = 0; gl.hatBack = 0;
       let mesh = null;
       /* ALL of them, not just the first.
 
@@ -8198,6 +8429,12 @@ function sandboxSay(flat) {
     world.idleAt = performance.now() + 5000;
     return "up";
   }
+  /* Before the clips, and it returns straight away: putting a hat on is not
+     something he stops doing to do, so it must not fall through and pick up a
+     pose or an idle timer on the way past. */
+  const hs = hatSay(flat);
+  if (hs) return hs;
+
   for (const [re, list, hold] of ACTS) {
     if (!re.test(flat)) continue;
     // a held act with somewhere to go runs as a sequence rather than a loop
