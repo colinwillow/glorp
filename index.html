@@ -7379,7 +7379,20 @@ function pickTurn() {
    played a forward walk cycle, which is most of the hovering. A walking person
    turns at about 120 deg/s. faceFirst is how far off the target has to be
    before he stops and turns to face it instead of arcing round. */
-const WALK = { turn: 2.1, turnPlace: 1.9, faceFirst: 0.85, arrive: 0.10, floor: 8 };
+/* faceFirst is how far off the target has to be before he stops and turns to
+   face it rather than arcing round, and 0.85 radians -- forty-nine degrees --
+   was far too eager: most places he was sent were past it, so most walks began
+   with a pivot. Which was survivable while the pivot played a shuffle and
+   became obvious the moment it played a WALK CYCLE, because then he is plainly
+   walking and plainly not going anywhere. Measured on a target 130 degrees
+   round: four seconds on the spot before he travelled at all.
+
+   Three things fix it and it needs all three. He arcs for anything under about
+   ninety degrees, so most walks never pivot. The pivot itself is quicker. And
+   he creeps forward while he does it, which is the honest part: a person
+   turning to walk somewhere is already going. */
+const WALK = { turn: 2.1, turnPlace: 4.2, faceFirst: 1.55, turnMove: 0.35,
+               arrive: 0.10, floor: 8 };
 /* The source machine. It stands in the middle of the room, he is built in
    front of it, and the orb lives above it: when the particles assemble him,
    the last arc of the ring does not trace him at all -- it lifts off and
@@ -7506,7 +7519,14 @@ function orbFollow(ow, H1o) {
 // its own painter's-order scratch, since it draws in a pass of its own
 const ordOrb = new Int32Array(MAX), zbufOrb = new Float32Array(MAX);
 
-const ROOM = { back: -0.04, down: 0.09 };
+/* down is how far the room tilts once he is standing in it, and it is a
+   FACE decision rather than a floor one. At 0.09 the total came to 0.14 radians
+   -- eight degrees, near enough level with his chest -- so the camera was
+   under his eyeline: you could see up his nose, and the whole of the sclera
+   under each iris, which reads as a man permanently startled. It is not the
+   eyes; it is the angle. Rendered at 0.14, 0.24 and 0.34 with the pose frozen,
+   the nostrils close up and the eyes settle somewhere past 0.30. */
+const ROOM = { back: -0.04, down: 0.25 };
 // his height in the working space, measured at load
 function figH1() { return rig.R ? (rig.R.fit.hi[1] - rig.R.fit.lo[1]) : 1; }
 
@@ -8439,6 +8459,35 @@ function hitNow(dt, now) {
 window.__hit = (dx, dy, sp) => hitGo(dx, dy, sp == null ? 1.2 : sp);
 window.__poke = () => hitPoke();
 
+/* Something to say for HIMSELF, when he lands.
+
+   The orb greets you when the microphone comes up, and he had nothing: he was
+   assembled out of the floor, which is the most theatrical thing this does, and
+   then stood there in silence waiting to be spoken to. These go through the
+   same remark() the orb's lines do, which means they are spoken in whoever's
+   voice is on screen -- his -- and land as him arriving rather than as an
+   announcement about him.
+
+   Short, and none of them a greeting: he has not gone anywhere, he was just
+   built. */
+const ARRIVE = [
+  "Right. Give me a second, that always feels strange.",
+  "There we go. Feet first, apparently.",
+  "Oh good, I have legs again.",
+  "That never gets less odd.",
+  "Still assembling, hang on. No, that will do.",
+  "Every time. Shoes last.",
+];
+let arriveOf = "";
+function arriveNow() {
+  if (world.on < 0.92 || rig.out) return;
+  const who = CAST_OF[String(rig.src || "").toLowerCase()];
+  if (!who || arriveOf === rig.src) return;
+  arriveOf = rig.src;
+  if (ttsPlaying || brain.busy) return;      // never over something being said
+  remark(ARRIVE);
+}
+
 /* ---------------- the mind ----------------
 
    Everything above this is a character who does exactly what he is told and
@@ -8665,6 +8714,7 @@ function updateWorld(dt, now) {
      he starts moving. */
   /* Before the mind, and the mind is told to stay out anyway: being thrown
      across a room is not a moment to decide to go and look at your nails. */
+  arriveNow();
   hitNow(dt, now);
   mindNow(now);
   // the room arrives once he is built, not while he is being drawn
@@ -8754,6 +8804,14 @@ function updateWorld(dt, now) {
         if (Math.abs(dy) < 0.20) {
           world.turning = 0;
           playClip(world.run && haveClip("run_fwd") ? "run_fwd" : pickOne(WALKS), 0.22);
+        } else {
+          /* Creeping, along the way he is CURRENTLY facing rather than at the
+             target -- which is what makes it an arc into the turn instead of a
+             slide toward somewhere he is not yet pointing. */
+          const sp2 = clipSpeed(world.act) * figH1() * (dt / 1000) * WALK.turnMove;
+          const st2 = Math.min(sp2, d);
+          world.x += Math.sin(world.yaw) * st2;
+          world.z += Math.cos(world.yaw) * st2;
         }
       } else if (Math.abs(dy) > WALK.faceFirst) {
         world.turning = 1;
@@ -8804,6 +8862,7 @@ function worldReset() {
   world.on = 0; world.x = 0; world.y = 0; world.z = 0; world.yaw = 0; world.yawWant = 0;
   world.walking = 0; world.act = ""; world.actUntil = 0; world.idleAt = 0;
   world.pose = 0; world.groundMin = 1e30; world.turning = 0; world.turnOnly = 0;
+  arriveOf = "";
   world.seq = null;
 }
 

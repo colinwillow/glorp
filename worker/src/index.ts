@@ -846,7 +846,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const origin = env.ALLOWED_ORIGIN ?? "*";
     const headers = cors(origin);
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers });
 
@@ -854,8 +855,19 @@ export default {
        dashboard is the one change that needs no deploy, so this is the only way
        to confirm from a phone that the edit took. */
     if (path === "/persona" && request.method === "GET") {
-      return new Response("model: " + ((env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL) +
-                          "\n\n" + persona(env), {
+      /* ?as=colin shows what HE is sent rather than what the orb is, which is
+         the only way to tell "the character variable is empty" from "the
+         character variable is fine and something else is wrong" -- and an empty
+         one is not an error, it is a character nobody has written yet, so it
+         falls back to the orb and says nothing about having done so. */
+      const as = castId(url.searchParams.get("as"));
+      const spoke = castOf(as);
+      const head = "model: " + ((env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL)
+        + (as ? "\nas: " + as + (spoke
+            ? (String(env[spoke.persona] ?? "").trim()
+                ? " (has its own persona)" : " (NO persona set -- falling back to the orb)")
+            : " (no such character -- falling back to the orb)") : "");
+      return new Response(head + "\n\n" + persona(env, [], "", "", "", as), {
         headers: { ...headers, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       });
     }
