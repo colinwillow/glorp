@@ -1170,10 +1170,20 @@ const visLive = () => vis.on || (rig.on && rig.portrait) || visMouth();
    Permissive on purpose: a head with no character attached still mouths
    everything, which is what the mime test and every other figure rely on. It
    only ever holds his mouth shut when somebody ELSE is explicitly being
-   spoken to. */
+   spoken to.
+
+   AND IT ASKS WHO IS SPEAKING NOW, NOT WHO WOULD BE ASKED NEXT. This read
+   castNow() live, which was the same thing right up until the sentence being
+   spoken is the one that BRINGS HIM ON -- ask the orb to show you Colin and
+   castNow() flips to Colin the moment the figure starts loading, so the orb's
+   own answer came out of his mouth while the orb's voice said it. The voice was
+   already pinned to whoever was asked; the mouth was not, so fixing one of them
+   fixed half the report. brain.mouth is that pin: set for exactly as long as a
+   line is playing, and null the rest of the time, when live state is right. */
 const visMine = () => {
   const who = CAST_OF[String(rig.src || "").toLowerCase()] || "";
-  return !who || castNow() === who;
+  if (!who) return true;
+  return (brain.mouth == null ? castNow() : brain.mouth) === who;
 };
 
 function visLoad() {
@@ -2628,6 +2638,9 @@ async function ttsOne(text, wantMarks, prev, next, who) {
 async function playReply(text, as) {
   if (!brain.url) return false;
   const who = as === undefined ? castNow() : as;
+  /* Whose mouth this line belongs to, for as long as it is coming out -- see
+     visMine. Cleared in every exit below, including the failures. */
+  brain.mouth = who;
   // answering is also a reason to be facing the person answered
   attend();
   const parts = ttsSplit(text);
@@ -2662,7 +2675,7 @@ async function playReply(text, as) {
        answer to "is he registering his own word": he was. */
     const finish = () => {
       if (gen !== ttsGen) return;
-      ttsPlaying = false; ttsText = "";
+      ttsPlaying = false; ttsText = ""; brain.mouth = null;
       /* Aborted and restarted rather than merely gated. Recognition has been
          accumulating a transcript of his own voice for the whole reply, and
          that transcript is still sitting in the engine -- left alone it arrives
@@ -3660,7 +3673,7 @@ function wake() {
      have fired on the way out -- iOS sometimes only gives you pagehide. If the
      flag says he is talking and there is nothing scheduled to talk with, he is
      not talking. */
-  if (ttsPlaying && !ttsSrcs.length) { ttsPlaying = false; ttsText = ""; plan = null; }
+  if (ttsPlaying && !ttsSrcs.length) { ttsPlaying = false; ttsText = ""; plan = null; brain.mouth = null; }
   if (!ttsPlaying && sttPaused) resumeSTT();
   if (A && A.stream && A.stream.getAudioTracks().some((t) => t.readyState === "ended")) {
     micState = "denied"; A = null;
@@ -6950,7 +6963,60 @@ function hatHead(T, skins) {
     if (z < z0) z0 = z; if (z > z1) z1 = z;
     n++;
   }
-  return n ? { bone: sk.bones[k], hx, hz: (z1 - z0) / 2, mid: (z0 + z1) / 2, y: band, H } : null;
+  return n ? { bone: sk.bones[k], k, hx, hz: (z1 - z0) / 2, mid: (z0 + z1) / 2, y: band, H } : null;
+}
+
+/* HAIR UNDER A HAT.
+
+   The cap is fitted to his skull and his hair is not on his skull -- it stands
+   about 0.15 off the axis all the way up, where the cap sized to the head is
+   0.13. So 13.5% of the hair above the rim was outside the shell, poking
+   through the crown, worst case a third of a head height. Nothing about the fit
+   fixes that: a hat big enough to swallow the hair is a hat two sizes too big.
+
+   What a real cap does is flatten it, and the cheap version of flattening is to
+   stop drawing it. The hair is its own primitive -- its own material, its own
+   index, sharing the vertex buffer -- so the triangles under the cap can be
+   dropped from the index and put back, with no morph target to sculpt and no
+   re-export. Everything below the rim is untouched: sideburns, the back of the
+   neck, the beard.
+
+   The rim is the PIVOT'S OWN y=0 plane rather than a height, which is what
+   makes the backwards case right for free: tipped back and lifted, the plane
+   tips and lifts with it, so the hair it hides is exactly the hair the cap is
+   now over -- and the fringe at the front, which a backwards cap does show,
+   stays. */
+function hatHair(T, skins, k) {
+  const m = new T.Matrix4(), v = new T.Vector3();
+  for (const o of skins) {
+    if (![].concat(o.material).some((x) => x && /hair/i.test(x.name || ""))) continue;
+    const g = o.geometry, P = g.attributes.position;
+    if (!g.index) return null;
+    m.multiplyMatrices(o.skeleton.boneInverses[k], o.bindMatrix);
+    const pts = new Float32Array(P.count * 3);
+    for (let i = 0; i < P.count; i++) {
+      v.fromBufferAttribute(P, i).applyMatrix4(m);
+      pts[i * 3] = v.x; pts[i * 3 + 1] = v.y; pts[i * 3 + 2] = v.z;
+    }
+    return { mesh: o, index: g.index, pts, cut: {} };
+  }
+  return null;
+}
+function hatHairCut(T, hair, pivot) {
+  const n = new T.Vector3(0, 1, 0).applyEuler(pivot.rotation), p = pivot.position;
+  const q = hair.pts, ix = hair.index.array;
+  const over = (i) => (q[i * 3] - p.x) * n.x + (q[i * 3 + 1] - p.y) * n.y
+                    + (q[i * 3 + 2] - p.z) * n.z > 0;
+  /* All three, not any: dropping a triangle with one corner under the cap eats
+     into the hair that is still supposed to show, and the boundary row is what
+     reads as the hair going under the rim rather than stopping at it. */
+  const keep = [];
+  for (let t = 0; t + 2 < ix.length; t += 3) {
+    const a = ix[t], b = ix[t + 1], c = ix[t + 2];
+    if (over(a) && over(b) && over(c)) continue;
+    keep.push(a, b, c);
+  }
+  return keep;
 }
 
 async function hatOn(back) {
@@ -6983,7 +7049,7 @@ async function hatOn(back) {
     mesh.position.set(0, -C.base, -C.mid);
     spin.add(mesh); pivot.add(spin); h.bone.add(pivot);
     pivot.scale.set(sx, (sx + sz) / 2, sz);
-    gl.hat = { pivot, spin, mesh, h, back: -1 };
+    gl.hat = { pivot, spin, mesh, h, back: -1, hair: hatHair(T, gl.headMeshes, h.k) };
     console.log("orb hat:", HAT.file, "on the head --",
                 "scale " + sx.toFixed(3) + " x " + sz.toFixed(3),
                 "band y " + h.y.toFixed(3),
@@ -7000,12 +7066,25 @@ async function hatOn(back) {
     H.pivot.rotation.x = b ? HAT.rev.tilt * Math.PI / 180 : 0;
     H.pivot.position.set(0, H.h.y + HAT.lift * H.h.H + (b ? HAT.rev.lift * H.h.H : 0), H.h.mid);
   }
+  hatFlat(T);
   return b ? "hat backwards" : "hat on";
 }
 function hatOff() {
   gl.hatOn = 0;
-  if (gl.hat) gl.hat.pivot.visible = false;
+  if (gl.hat) { gl.hat.pivot.visible = false; hatFlat(window.THREE); }
   return "hat off";
+}
+/* Whichever index the current state wants -- cut for the way it is being worn,
+   whole again the moment it comes off. Both cuts are worked out once and kept,
+   because turning a cap round is something you do repeatedly and walking
+   sixteen hundred triangles each time is not free at 60fps. */
+function hatFlat(T) {
+  const H = gl.hat;
+  if (!H || !H.hair) return;
+  if (!gl.hatOn) { H.hair.mesh.geometry.setIndex(H.hair.index); return; }
+  const key = H.back ? "back" : "fwd";
+  if (!H.hair.cut[key]) H.hair.cut[key] = hatHairCut(T, H.hair, H.pivot);
+  H.hair.mesh.geometry.setIndex(H.hair.cut[key]);
 }
 /* Intent, not geometry. The first hat costs a fetch and a parse, so asking
    whether one is on by looking for the mesh answers NO for as long as that
@@ -10743,7 +10822,7 @@ function hush() {
   if (!ttsPlaying) return;
   ttsGen++;                                  // the clip being stopped says nothing
   ttsStop();
-  ttsPlaying = false; ttsText = ""; plan = null;
+  ttsPlaying = false; ttsText = ""; plan = null; brain.mouth = null;
   echoUntil = performance.now() + 200;
 }
 function goHome(why) {
