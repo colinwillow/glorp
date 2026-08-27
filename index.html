@@ -254,7 +254,7 @@ const DEFAULTS = {
      him stops him. gapMs is the whole latency story in a noisy room: recognition
      will happily sit on a finished sentence for seconds waiting for the music to
      stop. */
-  gapMs:620, barge:4, volume:3.4, snap:0.3, flashMs:1100
+  gapMs:620, barge:4, volume:4.5, snap:0.3, flashMs:1100
 };
 const cfg = Object.assign({}, DEFAULTS);
 
@@ -987,15 +987,36 @@ function ensureTtsCtx() {
        next room. Boost, then limit: gain alone would just clip the peaks into
        distortion, and a compressor alone cannot make anything louder.
 
-       The analyser stays where it was, tapping the signal BEFORE the boost.
-       The mouth animation is tuned against those numbers, and moving the tap
-       would have quietly re-tuned the speaking state along with the volume. */
+       And then MAKE UP what the limiter took, which is the part that was
+       missing. A WebAudio compressor has no makeup gain of its own, so pushing
+       harder into a -6 dB ceiling bought a little more average level and gave
+       the whole ceiling away: peaks landed at -3 dBFS with the phone at maximum,
+       and next to a music track it read as half as loud.
+
+       Measured offline through this exact graph, on a syllable-rate source at
+       three different input levels spanning 3.3x:
+
+           before  rms 0.108 / 0.181 / 0.245   spread 2.26x
+           after   rms 0.196 / 0.221 / 0.257   spread 1.31x   (music sits at 0.22)
+
+       So the quiet end comes up by 81% and, more useful than the loudness, the
+       three land within a third of each other instead of a factor of two. A
+       lower threshold with a gentler ratio is what does that -- it is levelling
+       rather than limiting, which is the right instrument for a voice whose
+       render level nobody controls. Peak 0.93 with no clipped samples.
+
+       The analyser stays where it was, tapping the signal BEFORE all of it. The
+       mouth animation is tuned against those numbers, and moving the tap would
+       have quietly re-tuned the speaking state along with the volume. */
     ttsGain = ttsCtx.createGain();
     ttsGain.gain.value = cfg.volume;
     const lim = ttsCtx.createDynamicsCompressor();
-    lim.threshold.value = -6; lim.knee.value = 0; lim.ratio.value = 20;
+    lim.threshold.value = -18; lim.knee.value = 2; lim.ratio.value = 8;
     lim.attack.value = 0.003; lim.release.value = 0.25;
-    ttsAn.connect(ttsGain); ttsGain.connect(lim); lim.connect(ttsCtx.destination);
+    const makeup = ttsCtx.createGain();
+    makeup.gain.value = 1.52;
+    ttsAn.connect(ttsGain); ttsGain.connect(lim);
+    lim.connect(makeup); makeup.connect(ttsCtx.destination);
     ttsFreq = new Uint8Array(ttsAn.frequencyBinCount);
     ttsPrev = new Float32Array(ttsAn.frequencyBinCount);
     ttsTime = new Float32Array(ttsAn.fftSize);
@@ -3550,10 +3571,33 @@ micBtn.onclick = async () => {
    Everything here is a resume rather than a request: the permission is still
    granted, so none of it needs another gesture. Only a track that has actually
    ENDED does, and that is worth saying rather than silently doing nothing. */
+/* Leaving mid-sentence, which is what made him go deaf.
+
+   A reply is a scheduled buffer with an onended on it, and that is what clears
+   ttsPlaying and puts the ears back on. Background the app and the
+   AudioContext suspends: the buffer never reaches its end, onended never fires,
+   and ttsPlaying stays true for the rest of the session. Nothing is spoken and
+   nothing is heard either -- the line that decides whether to answer a sentence
+   reads `if (!lastHeard || sttPaused || ttsPlaying || brain.busy) return`, so
+   every word after that is taken in and dropped. Come back and he is sitting
+   there apparently fine, and completely unreachable.
+
+   So stop the speech on the way out. Nobody is listening to it anyway. */
+function sleep() {
+  if (document.visibilityState === "visible") return;
+  if (ttsPlaying) hush();
+}
+
 function wake() {
   if (document.visibilityState !== "visible") return;
   if (A && A.ac && A.ac.state === "suspended") A.ac.resume();
   if (ttsCtx && ttsCtx.state === "suspended") ttsCtx.resume();
+  /* And again on the way back in, because visibilitychange is not guaranteed to
+     have fired on the way out -- iOS sometimes only gives you pagehide. If the
+     flag says he is talking and there is nothing scheduled to talk with, he is
+     not talking. */
+  if (ttsPlaying && !ttsSrcs.length) { ttsPlaying = false; ttsText = ""; plan = null; }
+  if (!ttsPlaying && sttPaused) resumeSTT();
   if (A && A.stream && A.stream.getAudioTracks().some((t) => t.readyState === "ended")) {
     micState = "denied"; A = null;
     micBig.classList.remove("off"); micBig.style.animation = "";
@@ -3568,7 +3612,10 @@ function wake() {
      is foregrounded. */
   if (recOn && rec && !sttPaused) { recRunning = 0; recKick(350); }
 }
-document.addEventListener("visibilitychange", wake);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") wake(); else sleep();
+});
+window.addEventListener("pagehide", sleep);
 window.addEventListener("pageshow", wake);
 window.addEventListener("focus", wake);
 
@@ -10757,6 +10804,7 @@ const onMove = (e) => {
 };
 /* Down highlights, up picks -- so a thumb can slide between them and land
    somewhere deliberate, rather than firing whatever it touched first. */
+const TAP = { sky: 0 };            // see the note at the foot of onPick
 const onPick = (e) => {
   const t = e.changedTouches ? e.changedTouches[0] : e;
   /* The little one is the way back, from anything. It is the only thing on
@@ -10792,6 +10840,18 @@ const onPick = (e) => {
       return;
     }
   }
+  /* IN THE ROOM, a tap that misses the floor does nothing.
+
+     It used to leave, on the reasoning that the little orb is not on screen in
+     there so the sky is the way out. That is true and it is still not worth it:
+     the room is the one place you want to poke at him -- flick him, shove him,
+     whatever comes next -- and every one of those gestures starts with a touch
+     that is not on the floor. Losing the whole scene because a flick began an
+     inch high is not a trade anybody would take.
+
+     The ways out that remain are the dock bar and saying so. Set TAP.sky to 1
+     to put it back. */
+  if (world.on > 0.5 && !TAP.sky) return;
   /* A model or a hologram has nothing else to touch, so a tap anywhere leaves
      it. Not the gallery -- there a tap is how you open a picture -- and not a
      word, which is gone in half a second anyway. */
