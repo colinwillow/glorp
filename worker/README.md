@@ -110,6 +110,20 @@ model — from a phone, with no access to the Worker log, it was invisible. A 40
 retires the attempt outright; a 429 is a limit that lifts, so that one stands
 off for a minute instead. `GET /persona` reports which model is live.
 
+### Two of them in the room
+
+The page sends a character id and the Worker looks up the persona and the voice
+from it. Which id it sends is the page's business, and in the 3D scene it is
+whoever is standing there — so you are talking to Colin from the moment he
+arrives until you leave. Saying the orb's name reaches the orb instead, saying
+his brings him back, and it sticks until you change it: a conversation is with
+somebody, and having to re-address every line would be a walkie-talkie.
+
+His mouth follows the same answer. It used to follow whichever head was on
+screen, which was right while only one thing could talk; now the orb answering
+over his shoulder leaves his lips shut, which is much stranger to watch when it
+is wrong than the wrong voice on its own.
+
 ### How the voice is performed
 
 `ELEVEN_STABILITY`, `ELEVEN_SIMILARITY`, `ELEVEN_STYLE`, `ELEVEN_SPEAKER_BOOST`

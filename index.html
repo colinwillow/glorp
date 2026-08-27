@@ -579,6 +579,32 @@ const CAST_OF = {
   colin_head: "colin", colin_anim2: "colin",
 };
 
+/* WHO YOU ARE TALKING TO, when there are two of them in the room.
+
+   The default is whoever is standing there: walk into the 3D scene and you are
+   talking to Colin, and stay talking to him until you leave. But the orb is
+   still up there, and it is odd not to be able to reach it -- so say its name
+   and it answers instead, and say his and you are back.
+
+   Sticky rather than per-sentence. A conversation is with somebody; having to
+   re-address every line would be a walkie-talkie, and forgetting who you meant
+   between two sentences is worse than either.
+
+   `null` means nobody in particular, so use the scene's own default. Empty
+   string means the orb explicitly -- which is also what the orb IS, an empty
+   cast -- and anything else is a cast id. */
+const SAY_ORB = /\bglorb\b|\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\s+(the\s+)?orb\b|\b(ask|tell|talk to)\s+(the\s+)?orb\b/;
+const SAY_HIM = /\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\s+col+in\b|\b(ask|tell|talk to)\s+col+in\b/;
+const castNow = () => (brain.talkTo == null ? (brain.persona || "") : brain.talkTo);
+function castHeard(flat) {
+  if (!world.on || !brain.persona) return;      // only where there are two of them
+  if (SAY_ORB.test(flat)) {
+    if (castNow() !== "") { brain.talkTo = ""; caption(null, "talking to the orb"); }
+  } else if (SAY_HIM.test(flat)) {
+    if (castNow() !== brain.persona) { brain.talkTo = null; caption(null, "talking to colin"); }
+  }
+}
+
 const brain = {
   url: stored("orbBrain") === null ? DEFAULT_BRAIN : stored("orbBrain"),
   /* Left blank on purpose, and the blank is load-bearing. The Worker resolves
@@ -813,7 +839,7 @@ async function ask(text) {
          to travel with every turn or the model forgets it mid-conversation. */
       body: JSON.stringify({ messages: brain.history, images: imageList || [],
                              // who is speaking; the Worker maps it to a persona
-                             persona: brain.persona || undefined,
+                             persona: castNow() || undefined,
                              // and what is on screen while it answers
                              state: worldState(),
                              guest: guest.name || "",
@@ -1133,6 +1159,21 @@ const visMouth = () => {
   return !!(rig.on && m && m.__visMap && Object.keys(m.__visMap).length >= 4);
 };
 const visLive = () => vis.on || (rig.on && rig.portrait) || visMouth();
+/* AND WHETHER IT SHOULD BE HIS MOUTH MOVING.
+
+   The visemes follow whichever head is on screen, which was right while only
+   one thing could talk. Now the orb can answer over his shoulder -- and when it
+   did, his lips moved to the orb's words, which is the second half of what was
+   reported and much stranger to watch than the wrong voice on its own.
+
+   Permissive on purpose: a head with no character attached still mouths
+   everything, which is what the mime test and every other figure rely on. It
+   only ever holds his mouth shut when somebody ELSE is explicitly being
+   spoken to. */
+const visMine = () => {
+  const who = CAST_OF[String(rig.src || "").toLowerCase()] || "";
+  return !who || castNow() === who;
+};
 
 function visLoad() {
   if (vis.el) return;
@@ -1579,7 +1620,7 @@ function visRig(dt) {
   if (!mesh || !mesh.morphTargetInfluences || !mesh.morphTargetInfluences.length) return;
   const map = visRigFind(mesh);
   const RIG = visRigPick(mesh);
-  const shape = visLive() ? vis.shape : "rest";
+  const shape = visLive() && visMine() ? vis.shape : "rest";
   const target = RIG[shape] || RIG.rest;
   /* Closing your lips is a movement, not a relaxation. Opening fast and closing
      slow reads well for a face relaxing, and badly for an M: the jaw was still
@@ -2544,7 +2585,7 @@ async function ttsOne(text, wantMarks, prev, next) {
        another, and this is what puts the shape back without giving up the
        start-on-the-first-sentence trick that made him quick. */
     body: JSON.stringify({ text, voice: brain.voice || undefined,
-                           persona: brain.persona || undefined,
+                           persona: castNow() || undefined,
                            prev: prev || undefined, next: next || undefined,
                            marks: wantMarks ? 1 : undefined })
   });
@@ -9675,16 +9716,21 @@ async function showFigure(src, portrait) {
   rig.portrait = portrait ? 1 : 0;
   // a reply spoken while this is in flight still wants timestamps
   rig.loading = 1;
-  /* Whose body is on screen is who is talking. Set before the load rather than
-     after it, so a sentence answered while he is still assembling is already
-     answered by him. */
-  brain.persona = CAST_OF[String(src || "").trim().toLowerCase()] || "";
   if (!rig.portrait) {
     rig.isEye = null; rig.eyeSlot = null; rig.eyeBones = null;
     rig.feat = null; rig.eb = null; rig.pose = null; rig.zLo = 0; rig.zHi = 0;
   }
   takeScreen("figure");
   src = String(src || "").trim() || "colin_anim2";
+  /* Whose body is on screen is who is talking. AFTER the default is filled in,
+     and that one line was the whole bug: the brain's own show tool sends
+     `figure: true` rather than a name, so src arrived empty, the cast came back
+     empty, and the orb answered in the orb's voice -- while Colin's mouth moved,
+     because the visemes follow whichever head is on screen and knew nothing
+     about it. Set before the LOAD, though, so a sentence answered while he is
+     still assembling is already answered by him. */
+  brain.persona = CAST_OF[src.toLowerCase()] || "";
+  brain.talkTo = null;
   let R;
   try { R = await loadRig(src); }
   catch (e) { rig.loading = 0; caption(null, "figure " + src + ": " + e.message); return false; }
@@ -9801,7 +9847,7 @@ function figClear() {
   mini.set = 0;
   rig.orbN = 0; rig.oH = null;
   // his body is gone, so the orb has the microphone back
-  brain.persona = "";
+  brain.persona = ""; brain.talkTo = null;
   worldReset();
   rig.on = 0; rig.R = null; rig.ord = null; rig.out = 0; rig.hold = 0;
   rig.portrait = 0; rig.pose = null;
@@ -10793,6 +10839,7 @@ function heardSentence(heard) {
   // because it is true whatever the words turn out to be
   attend();
   const flat = heard.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+  castHeard(flat);
   /* A phrase, not a word. Nobody says a command as one word -- "can you go
      home" was caught by nothing, went to the brain, and came back as "I do not
      know where you are" from an orb that had in fact just gone home. */
