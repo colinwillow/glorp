@@ -15,9 +15,20 @@ keep_vars = true
 # can spend your tokens.
 [vars]
 ALLOWED_ORIGIN = "https://colinwillow.github.io"
-# Default voice. The page can override it per request from the tune panel,
-# and GET /voices lists what this account actually has.
+# Default voice -- who speaks when nobody in particular is on screen. The page
+# can override it per request from the tune panel, and GET /voices lists what
+# this account actually has.
 ELEVEN_VOICE_ID = "wyWA56cQNU2KqUW4eCsI"
+# And Colin's, cloned from his own voice. One variable per character, named
+# ELEVEN_VOICE_<ID> to match the row in CASTS -- the page sends the id "colin"
+# and the worker looks the voice up here, so a stranger with the endpoint can
+# pick a character that exists and nothing else.
+#
+# In the file rather than the dashboard because a voice id is not a secret (the
+# API key is) and this way it deploys itself. Dashboard still wins for anything
+# NOT listed here -- see keep_vars above -- but a key that is listed is set from
+# the file on every deploy, so change it here.
+ELEVEN_VOICE_COLIN = "kJWUfEv4iADM2zGU2fOf"
 
 # The shared memory. OPTIONAL, and commented out on purpose: a binding naming a
 # namespace that does not exist fails the deploy, and this Worker deploys from a
