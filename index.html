@@ -6511,8 +6511,29 @@ function figTextures(mats) {
     }, null, () => console.log("orb texture missing:", url));
   }
 }
+/* NOT THE FOG, THOUGH.
+
+   The fog exists to dissolve the far edge of the floor lattice into the dark
+   instead of ending it at a visible line, and the note where it is set says it
+   applies to him too when he walks away, as though that were a bonus. It is
+   not. The fog is linear from FOC*1.05 to FOC*2.6 toward #0B0B0B and he STANDS
+   at FOC, so walking backwards puts him straight into it. Measured against the
+   room he can actually reach: 28% faded one height back, 56% at the wander
+   director's far limit, 77% at 2.6 heights, and 100% -- solid fog colour, gone
+   -- at 3.4, which a flick reaches easily.
+
+   Worth being clear that the lights were never the problem. They are two
+   DirectionalLights and an environment map; directional light does not fall off
+   with distance at all, so nothing was failing to reach him. He was being
+   painted over.
+
+   So the figure opts out and the floor keeps its dissolve. He loses the
+   atmospheric depth cue, which is a real loss and a far smaller one than
+   disappearing: perspective still shrinks him and the fogged floor still
+   recedes behind him, so depth still reads. */
 function glWipeMat(m, hi, lo, opt) {
   const o = opt || {};
+  m.fog = false;
   const cut = o.cut || null;
   const cav = o.cav || null;
   const uLo = o.lo || gl.uLo, uSpan = o.span || gl.uSpan;
@@ -7035,7 +7056,7 @@ async function hatOn(back) {
     if (!mesh) { console.log("orb hat: no mesh in " + HAT.file); return ""; }
     /* Both sides: a brim is a single sheet in most exports and the underside is
        what you see for half of every turn he takes. */
-    for (const mt of [].concat(mesh.material)) if (mt) mt.side = T.DoubleSide;
+    for (const mt of [].concat(mesh.material)) if (mt) { mt.side = T.DoubleSide; mt.fog = false; }
 
     const C = hatCrown(mesh), h = hatHead(T, gl.headMeshes);
     if (!h) { console.log("orb hat: cannot measure the head"); return ""; }
@@ -8088,6 +8109,41 @@ function pickOne(list) {
    the number that comes out is in body heights and means the same thing for
    any model that gets loaded here later. */
 const POSE_N = 48;
+/* THE FEET SLIDE BETWEEN IDLES, AND THIS IS NOT WHERE TO FIX IT.
+
+   Reported as sliding during the weight-shift idle. Measured on the running
+   app, against his own height: inside one locked idle the hips travel 14.3% of
+   body height and the feet 1.9% and 1.4%. Planted. The clip data agrees --
+   forward kinematics over idle_neutral_00 gives 0.5 units of hip sweep and 0.0
+   at both toes. Nothing slides inside a clip. Let the idles change and the feet
+   jump to 7.4% and 9.2% with the hips unchanged and zero yaw: it is the
+   HAND-OFF, and a blind crossfade drags his feet from one stance to the other.
+
+   The obvious fix is to route idle changes through clipLink the way the dances
+   already are. It was built and measured and it does nothing: same pair, same
+   fade, blind 10.2% against matched 10.1%. Two reasons, and the second is the
+   real one.
+
+   First, poseRead subtracts the hips from every bone below -- its own first row
+   is therefore always zero -- so the signature describes a SHAPE and not a
+   stance. Adding the hips' floor position as two more dimensions was tried too:
+   still 10.3% against 10.4%.
+
+   Second, and why no amount of matching helps: the idle pairs score 0.064
+   apart, which is not "nearly identical". It is an RMS of 0.064 BODY HEIGHTS
+   per joint. These clips were authored standing in genuinely different places,
+   and there is no instant in either of them where the feet agree. Choosing a
+   better moment cannot fix a thing that is never true.
+
+   What would fix it is root compensation -- taking the stance difference at the
+   hand-off and translating him by it, so the feet stay put and the body moves
+   instead, which is what a weight shift is. That has a real consequence to
+   decide first: he then drifts a little further each time he changes idle.
+
+   (And check the harness before believing any of this: the first version of the
+   A/B started the outgoing clip ON its exit phase and then let it run 0.9s
+   before switching, so the switch never landed on the matched instant and the
+   two arms were identical for a reason that had nothing to do with matching.) */
 const POSE_BONES = ["mixamorig_Hips", "mixamorig_Spine1", "mixamorig_Head",
   "mixamorig_LeftArm", "mixamorig_LeftForeArm", "mixamorig_LeftHand",
   "mixamorig_RightArm", "mixamorig_RightForeArm", "mixamorig_RightHand",
