@@ -2529,7 +2529,7 @@ function ttsSplit(text) {
   return out;
 }
 
-async function ttsOne(text, wantMarks) {
+async function ttsOne(text, wantMarks, prev, next) {
   const res = await fetch(new URL("/speak", brain.url), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -2538,8 +2538,14 @@ async function ttsOne(text, wantMarks) {
        between lip sync and a guess, and the reply that introduces him is
        spoken while he is still arriving -- the one reply most worth getting
        right. */
+    /* The neighbours, so the piece is performed as part of a whole rather than
+       as its own little speech. See request stitching in the worker: splitting
+       the reply is what made him read one sentence after another after
+       another, and this is what puts the shape back without giving up the
+       start-on-the-first-sentence trick that made him quick. */
     body: JSON.stringify({ text, voice: brain.voice || undefined,
                            persona: brain.persona || undefined,
+                           prev: prev || undefined, next: next || undefined,
                            marks: wantMarks ? 1 : undefined })
   });
   if (!res.ok) {
@@ -2569,6 +2575,8 @@ async function ttsOne(text, wantMarks) {
 
 async function playReply(text) {
   if (!brain.url) return false;
+  // answering is also a reason to be facing the person answered
+  attend();
   const parts = ttsSplit(text);
   if (!parts.length) return false;
   const wantMarks = (visLive() || rig.loading) ? 1 : 0;
@@ -2580,7 +2588,7 @@ async function playReply(text) {
        and the sentence failed. Resuming is free when it is already running. */
     if (ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
     let first;
-    try { first = await ttsOne(parts[0], wantMarks); }
+    try { first = await ttsOne(parts[0], wantMarks, "", parts[1] || ""); }
     catch (e) {
       // 501 just means no voice key is set; anything else is worth showing
       if (e.status !== 501) caption(null, "voice: " + ((e.body || e.message) + "").slice(0, 160));
@@ -2674,7 +2682,10 @@ async function playReply(text) {
     (async () => {
       for (let k = 1; k < parts.length; k++) {
         let g;
-        try { g = await ttsOne(parts[k], wantMarks); }
+        try {
+          g = await ttsOne(parts[k], wantMarks,
+                           parts.slice(0, k).join(" "), parts[k + 1] || "");
+        }
         catch (e) {
           console.log("orb voice: piece " + (k + 1) + " of " + parts.length
                       + " failed -- " + (e.message || e));
@@ -8245,14 +8256,75 @@ const MIND = {
   gap: [2600, 8000],    // between decisions, once he has settled
   near: 0.85,           // how close "come and see you" gets, in heights
   far: -1.9,            // and how far "wander off" goes
-  wide: 1.7,            // how far to either side he will use
+  wide: 1.7,            // how far to either side he will TRY for
+  edge: 0.10,           // and how much of the frame he must stay inside
 };
+
+/* Would he still be on screen standing there?
+
+   The room is eight of his heights across and the frame is a phone held
+   upright, so most of the floor he is allowed to walk on cannot be seen. He was
+   wandering out of shot and staying there, which reads as broken rather than as
+   autonomous -- and no constant fixes it, because how much floor is visible
+   depends on the camera, which moves.
+
+   So ask. Project the two ends of him and see. Both, because close to the lens
+   the crop that gets him is the top of the frame, not the side. */
+function figSeen(x, z, m) {
+  const T = window.THREE;
+  if (!gl.ready || !gl.cam || !gl.stage || !rig.R) return 1;
+  gl.stage.updateMatrixWorld(true);
+  /* Through the fit, which is the part that catches you out: the group is
+     shifted by -fit.c so that he hangs on the origin, so stage-local y zero is
+     his MIDDLE and not the floor. Probing at y = 0 and y = one height put both
+     samples a whole body too high -- his head came out at the very top of the
+     frame while he was standing comfortably inside it, so every spot failed,
+     including the one he was already standing on. */
+  const f = rig.R.fit, H1 = figH1(), v = new T.Vector3();
+  for (const my of [H1 * 0.06, H1 * 1.02]) {
+    v.set(x - f.c[0], world.y + my - f.c[1], z - f.c[2])
+      .applyMatrix4(gl.stage.matrixWorld).project(gl.cam);
+    if (!(Math.abs(v.x) < 1 - m && Math.abs(v.y) < 1 - m)) return 0;
+  }
+  return 1;
+}
+
+/* A place he can go that you can still see him in. Pull it in until it fits
+   rather than clamping to a rectangle -- the visible region is a trapezium and
+   a rectangle either wastes half of it or lets a corner out. */
+function mindSpot(x, z) {
+  for (let k = 0; k < 7; k++) {
+    if (figSeen(x, z, MIND.edge)) return [x, z];
+    x *= 0.76; z *= 0.76;
+  }
+  return [0, 0];
+}
 /* In place, and short. These read as somebody occupying themselves rather than
    performing -- which is the difference between a character in a room and a
    character on a stage. */
 const MIND_ACTS = ["idle_stretch", "idle_look_at_nails", "idle_fan_self",
                    "idle_swat_fly", "idle_happy_bob", "idle_neutral_02"];
 const mind = { at: 0, hold: 0, was: "", mine: 0 };
+/* TURN AND LOOK AT ME.
+
+   He was wandering off mid-conversation and answering over his shoulder, and
+   the only way to get him back was to tap the floor in front of you. Which is
+   not a bug in the wandering -- a person crossing a room and being spoken to
+   stops and turns, and then carries on afterwards. So: somebody talks, he
+   stops what he was doing and squares up.
+
+   A pose is exempt. If he is sitting or lying down he can answer from there,
+   and standing up to be spoken to would be worse than not turning at all. */
+function attend() {
+  if (!world.on || rig.out || hit.on || world.pose) return;
+  mindHold();
+  world.walking = 0; world.turning = 0;
+  let dy = FACE.me - world.yaw;
+  while (dy > Math.PI) dy -= TAU;
+  while (dy < -Math.PI) dy += TAU;
+  if (Math.abs(dy) > 0.18) faceTo(FACE.me);
+}
+
 function mindHold(ms) {
   if (mind.mine) return;                 // its own doing, not yours
   mind.hold = performance.now() + (ms == null ? MIND.after : ms);
@@ -8294,16 +8366,16 @@ function mindNow(now) {
   const side = () => (Math.random() * 2 - 1) * MIND.wide * H1;
   mindDo(() => {
     if (what === "wander") {
-      walkTo(side(), (MIND.far + Math.random() * 2.4) * H1, 0);
+      walkTo(...mindSpot(side(), (MIND.far + Math.random() * 2.4) * H1), 0);
     } else if (what === "visit") {
       // stops short and square on, rather than walking into the lens
-      walkTo(side() * 0.35, MIND.near * H1, 0);
+      walkTo(...mindSpot(side() * 0.35, MIND.near * H1), 0);
     } else if (what === "retreat") {
       /* Walking, never running. A person crossing their own room does not
          sprint and then stop dead, and at these distances -- two heights, a
          second and a half -- a run is all acceleration and no travel. Running
          is something to be asked for. */
-      walkTo(side(), MIND.far * H1, 0);
+      walkTo(...mindSpot(side(), MIND.far * H1), 0);
     } else if (what === "flourish") {
       const nm = pickOne(MIND_ACTS);
       if (nm) {
@@ -10444,6 +10516,9 @@ let echoSeen = 0, lastLive = "";
 const HOME_SAID = /\b(go|take me|bring me|head|get)? ?(home|back)\b|\b(exit|quit|stop|halt|cancel|dismiss|reset|never ?mind|forget it|close (this|it)|all done|get out of (this|here))\b/;
 
 function heardSentence(heard) {
+  // somebody is talking to him: stop, turn round. Before anything is parsed,
+  // because it is true whatever the words turn out to be
+  attend();
   const flat = heard.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
   /* A phrase, not a word. Nobody says a command as one word -- "can you go
      home" was caught by nothing, went to the brain, and came back as "I do not

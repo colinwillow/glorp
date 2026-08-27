@@ -8,6 +8,14 @@ export interface Env {
   /** Override in wrangler.toml [vars]; GET /voices lists what this account has. */
   ELEVEN_VOICE_ID?: string;
   ELEVEN_MODEL_ID?: string;
+  /** How the voice is performed. All optional, all 0..1 except speed, all
+   *  dashboard variables so they can be dialled against your own ear without a
+   *  deploy. See VOICE below for what each one does. */
+  ELEVEN_STABILITY?: string;
+  ELEVEN_SIMILARITY?: string;
+  ELEVEN_STYLE?: string;
+  ELEVEN_SPEAKER_BOOST?: string;
+  ELEVEN_SPEED?: string;
   /** e.g. https://colinwillow.github.io */
   ALLOWED_ORIGIN?: string;
   /** Who the orb is. Set it in the dashboard to change the personality with
@@ -338,6 +346,38 @@ const pick = (a: string[]) => a[Math.floor(Math.random() * a.length)];
 
    Set ORB_MODEL in the Cloudflare dashboard to put a bigger one back; that is
    what the dial is for, and it needs no deploy. */
+/* HOW IT IS PERFORMED, as opposed to what it says.
+
+   Four numbers, and only one of them is obvious. STABILITY is backwards from
+   how it reads: high is not "good", it is FLAT -- the model stops varying and
+   every sentence comes out at the same pitch and pace, which is exactly the
+   complaint. Low is expressive and, past a point, unpredictable. STYLE pushes
+   the delivery further towards however the voice was performed in the clip it
+   was cloned from, and costs a little latency. SIMILARITY is how hard it holds
+   to the original timbre; too high and it starts reproducing the room the
+   recording was made in along with the voice.
+
+   These are a starting point for a conversational character and not a
+   discovered optimum -- they are dashboard variables precisely because the only
+   instrument that settles them is somebody's ear. SPEED is deliberately not
+   sent unless it is set: not every model takes it, and an unsupported field is
+   a 422 rather than something ignored. */
+function voiceSettings(env: Env) {
+  const num = (v: unknown, d: number, lo: number, hi: number) => {
+    const n = parseFloat(String(v ?? ""));
+    return isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d;
+  };
+  const vs: Record<string, number | boolean> = {
+    stability: num(env.ELEVEN_STABILITY, 0.40, 0, 1),
+    similarity_boost: num(env.ELEVEN_SIMILARITY, 0.80, 0, 1),
+    style: num(env.ELEVEN_STYLE, 0.35, 0, 1),
+    use_speaker_boost: String(env.ELEVEN_SPEAKER_BOOST ?? "1").trim() !== "0",
+  };
+  const sp = String(env.ELEVEN_SPEED ?? "").trim();
+  if (sp) vs.speed = num(sp, 1, 0.5, 1.5);
+  return vs;
+}
+
 const DEFAULT_MODEL = "claude-haiku-4-5";
 
 /* What actually worked, remembered for the life of the isolate. An attempt that
@@ -366,12 +406,34 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
   if (!env.ELEVENLABS_API_KEY) {
     return new Response("No ELEVENLABS_API_KEY on this Worker.", { status: 501, headers });
   }
-  let body: { text?: string; voice?: string; marks?: unknown; persona?: unknown };
+  let body: { text?: string; voice?: string; marks?: unknown; persona?: unknown;
+              prev?: unknown; next?: unknown };
   try { body = (await request.json()) as typeof body; }
   catch { return new Response("invalid JSON body", { status: 400, headers }); }
 
   const text = (body.text ?? "").trim();
   if (!text) return new Response("body must be { text: \"...\" }", { status: 400, headers });
+
+  /* WHAT CAME BEFORE AND WHAT COMES NEXT.
+
+     The page speaks a reply a sentence at a time so it can start on the first
+     one instead of waiting for the whole paragraph -- which fixed the wait and
+     broke the delivery. Each sentence was being rendered by a model that had
+     never seen the others, so every one of them opened cold and closed flat:
+     no run-on, no lift into a comma, none of the shape a person puts across a
+     whole thought. Read a passage in one request and it is all there. Read it
+     in four and it is four passages.
+
+     ElevenLabs calls the cure request stitching, and it costs nothing: hand it
+     the neighbouring text and it conditions the prosody on it. Same audio for
+     this sentence, but performed as though the ones either side exist.
+
+     Bounded and scrubbed like everything else that arrives in a body. */
+  const near = (v: unknown, n: number) =>
+    (typeof v === "string" ? v : "").replace(/[^\x20-\x7E]/g, " ").trim().slice(-n) || undefined;
+  const prevText = near(body.prev, 400);
+  const nextText = (typeof body.next === "string"
+    ? body.next.replace(/[^\x20-\x7E]/g, " ").trim().slice(0, 400) : "") || undefined;
 
   /* Four places a voice can come from, and the order is the point.
 
@@ -413,7 +475,12 @@ async function speak(request: Request, env: Env, headers: Record<string, string>
       "content-type": "application/json",
       accept: wantMarks ? "application/json" : "audio/mpeg",
     },
-    body: JSON.stringify({ text, model_id: model }),
+    body: JSON.stringify({
+      text, model_id: model,
+      ...(prevText ? { previous_text: prevText } : {}),
+      ...(nextText ? { next_text: nextText } : {}),
+      voice_settings: voiceSettings(env),
+    }),
   });
 
   if (!res.ok) {

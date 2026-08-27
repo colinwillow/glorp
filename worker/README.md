@@ -110,6 +110,27 @@ model — from a phone, with no access to the Worker log, it was invisible. A 40
 retires the attempt outright; a 429 is a limit that lifts, so that one stands
 off for a minute instead. `GET /persona` reports which model is live.
 
+### How the voice is performed
+
+`ELEVEN_STABILITY`, `ELEVEN_SIMILARITY`, `ELEVEN_STYLE`, `ELEVEN_SPEAKER_BOOST`
+and `ELEVEN_SPEED`, all dashboard variables, all optional. Stability is the one
+that reads backwards: high is not "good", it is FLAT — the model stops varying
+and every sentence comes out at the same pitch and pace. Low is expressive and,
+far enough down, unpredictable. Style pushes the delivery towards however the
+voice was performed in the clip it was cloned from. Defaults are 0.40 / 0.80 /
+0.35 / on, which is a starting point for a conversational character and not a
+discovered optimum — the only instrument that settles these is an ear.
+
+`ELEVEN_SPEED` is not sent at all unless it is set: not every model accepts it,
+and an unsupported field is a 422 rather than something quietly ignored.
+
+`ELEVEN_MODEL_ID` picks the voice model. `eleven_flash_v2_5` is compiled in and
+is the fastest tier; `eleven_multilingual_v2` is the expressive one and costs
+latency. Since the page now speaks a sentence at a time, that latency is paid
+once on the first sentence rather than on the whole reply — which makes the
+expensive model much more affordable than it used to be. Worth trying against
+your own ear.
+
 ### Colin's own personality
 
 `ORB_PERSONA_COLIN` is his, and `worker/persona-colin.md` is a first draft to
