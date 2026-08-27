@@ -207,7 +207,7 @@ https://orb-brain.<you>.workers.dev/persona
 ```
 
 Look for a distinctive sentence from `PROTOCOL` — currently *"short is for
-saying the thing quickly, never for saying less of it."* `PROTOCOL` is compiled
+saying the thing quickly. It is never for saying less of it."* `PROTOCOL` is compiled
 into the code and is appended after `PERSONA`, so unlike the persona half it
 **cannot** be overridden by the dashboard's `ORB_PERSONA` variable. That makes
 it a true test of whether the code deployed, rather than of what somebody typed

@@ -956,7 +956,7 @@ function answerVisual(text, ms) {
    channels off its own voice that listening reads off the microphone, which is
    what the drive seam was for. The scripted plan stays as the fallback for
    when no voice is configured or the request fails. */
-let ttsCtx = null, ttsAn = null, ttsSrc = null, ttsFreq = null, ttsTime = null, ttsPrev = null;
+let ttsCtx = null, ttsAn = null, ttsFreq = null, ttsTime = null, ttsPrev = null;
 let ttsGain = null;
 let ttsPlaying = false;
 const tts = { scale:0, spectrum:new Float32Array(BANDS), turbulence:0, impulse:0, hue:0 };
@@ -1207,7 +1207,8 @@ function visTighten(seq) {
   return out.filter((e) => e.t1 > e.t0);
 }
 
-function visFromMarks(a) {
+function visFromMarks(a, off, add) {
+  const O = off || 0;
   const ch = a.characters || [];
   const t0 = a.character_start_times_seconds || [];
   const t1 = a.character_end_times_seconds || [];
@@ -1215,7 +1216,7 @@ function visFromMarks(a) {
   const seq = [];
   for (let i = 0; i < ch.length; i++) {
     const c = String(ch[i]).toLowerCase();
-    const s0 = +t0[i], s1 = +(t1[i] != null ? t1[i] : t0[i]);
+    const s0 = +t0[i] + O, s1 = +(t1[i] != null ? t1[i] : t0[i]) + O;
     if (!(s1 >= s0)) continue;
     let sh;
     if (c >= "a" && c <= "z") sh = VIS_OF[c] || "etc";
@@ -1228,8 +1229,13 @@ function visFromMarks(a) {
     else seq.push({ sh, t0: s0, t1: s1 });
   }
   const out = visTighten(seq);
-  vis.seq = out.length ? out : null;
-  vis.dur = out.length ? out[out.length - 1].t1 : 0;
+  /* Appended, not replaced, because a reply is spoken in pieces now and each
+     piece brings its own alignment starting from zero. `off` is where that
+     piece was actually scheduled, so the timeline stays one continuous thing
+     and the mouth never notices there was a seam. */
+  vis.seq = add && vis.seq && vis.seq.length ? vis.seq.concat(out)
+          : (out.length ? out : null);
+  vis.dur = vis.seq && vis.seq.length ? vis.seq[vis.seq.length - 1].t1 : 0;
   vis.marked = 1;
   // at0 is set when the clip actually starts, not here
 }
@@ -2447,72 +2453,111 @@ function beatWarp(dur) {
 }
 
 let ttsGen = 0;
+let ttsSrcs = [];
+function ttsStop() {
+  for (const s of ttsSrcs) { try { s.stop(); } catch (e) {} }
+  ttsSrcs = [];
+}
+
+/* A SENTENCE AT A TIME, and it is the whole answer to the wait.
+
+   Nothing here streams. The page asked for one clip of the entire reply and
+   then stood still until every sample of it existed: synthesised, base64'd --
+   which is a third more bytes again -- downloaded, and decoded. All of that is
+   linear in how much he decided to say, so letting him speak in paragraphs
+   tripled the silence before he made a sound, with the text sitting finished on
+   screen the whole time, which is the worst possible way to wait.
+
+   Cut it at sentence ends instead. Ask for the first one alone, start playing
+   it, and fetch the next while it plays -- and since SPEAKING a sentence takes
+   several times longer than making one, the pipeline stays ahead and it comes
+   out as one continuous voice. The wait is now the cost of ONE sentence
+   whatever the length of the answer, which takes length out of the latency
+   budget and puts it back where it belongs, in the writing.
+
+   The first piece is deliberately smaller than the rest. It is the only one
+   anybody ever waits for. */
+const TTS_CHUNK = { first: 110, rest: 260 };
+function ttsSplit(text) {
+  const t = String(text || "").trim();
+  if (!t) return [];
+  // sentence ends only -- a seam mid-clause is audible, a seam at a full stop is not
+  const bits = (t.match(/[^.!?…]+(?:[.!?…]+["')\]]*\s*|\s*$)/g) || [t])
+    .filter((b) => b.trim());
+  if (bits.length < 2 || t.length <= TTS_CHUNK.first) return [t];
+  const out = [];
+  let cur = "";
+  for (const b of bits) {
+    const cap = out.length ? TTS_CHUNK.rest : TTS_CHUNK.first;
+    if (cur && (cur.length + b.length) > cap) { out.push(cur.trim()); cur = b; }
+    else cur += b;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+async function ttsOne(text, wantMarks) {
+  const res = await fetch(new URL("/speak", brain.url), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    /* marks whenever anything on screen has a mouth, and while a figure is
+       still LOADING too: they cost a third more bytes and are the difference
+       between lip sync and a guess, and the reply that introduces him is
+       spoken while he is still arriving -- the one reply most worth getting
+       right. */
+    body: JSON.stringify({ text, voice: brain.voice || undefined,
+                           persona: brain.persona || undefined,
+                           marks: wantMarks ? 1 : undefined })
+  });
+  if (!res.ok) {
+    const e = new Error("HTTP " + res.status);
+    e.status = res.status;
+    e.body = await res.text().catch(() => "");
+    throw e;
+  }
+  /* A non-audio 200 -- an error page, a redirect, an HTML shell -- otherwise
+     fails deep inside decodeAudioData as "Unable to decode audio data", which
+     says nothing about what actually came back. */
+  const ctype = res.headers.get("content-type") || "";
+  const marked = /json/i.test(ctype);
+  if (!marked && !/audio|octet-stream/i.test(ctype))
+    throw new Error("expected audio, got " + (ctype || "no content-type"));
+  let marks = null, raw;
+  if (marked) {
+    const j = await res.json();
+    const bin = atob(j.audio_base64 || "");
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    raw = u8.buffer;
+    marks = j.normalized_alignment || j.alignment || null;
+  } else raw = await res.arrayBuffer();
+  return { audio: await ttsCtx.decodeAudioData(raw), marks };
+}
+
 async function playReply(text) {
   if (!brain.url) return false;
+  const parts = ttsSplit(text);
+  if (!parts.length) return false;
+  const wantMarks = (visLive() || rig.loading) ? 1 : 0;
   try {
-    const res = await fetch(new URL("/speak", brain.url), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      // marks whenever anything on screen has a mouth: they cost a third more
-      // bytes and are the difference between lip sync and a guess
-      /* marks while a figure is still LOADING too. They cost a third more
-         bytes and are the difference between lip sync and a guess, and the
-         reply that introduces him is spoken while he is still arriving --
-         which is the one reply most worth getting right. */
-      body: JSON.stringify({ text, voice: brain.voice || undefined,
-                             persona: brain.persona || undefined,
-                             marks: (visLive() || rig.loading) ? 1 : undefined })
-    });
-    if (!res.ok) {
-      // 501 just means no voice key is set; anything else is worth showing
-      if (res.status !== 501) caption(null, "voice: " + (await res.text()).slice(0, 160));
-      return false;
-    }
-    // A non-audio 200 -- an error page, a redirect, an HTML shell -- otherwise
-    // fails deep inside decodeAudioData as "Unable to decode audio data",
-    // which says nothing about what actually came back.
-    const ctype = res.headers.get("content-type") || "";
-    const marked = /json/i.test(ctype);
-    if (!marked && !/audio|octet-stream/i.test(ctype)) {
-      caption(null, "voice: expected audio, got " + (ctype || "no content-type"));
-      return false;
-    }
     ensureTtsCtx();
     /* Resumed here, every time. iOS suspends an AudioContext whenever the page
        loses focus, and a permission dialog counts -- so the context built during
        the tap was already asleep by the time the first sentence tried to play,
        and the sentence failed. Resuming is free when it is already running. */
     if (ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
-    /* Two shapes of reply now. With marks it is JSON -- base64 audio and a
-       start and end time for every character -- so the bytes have to be
-       unpacked before they can be decoded. */
-    let marks = null, raw;
-    if (marked) {
-      const j = await res.json();
-      const bin = atob(j.audio_base64 || "");
-      const u8 = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-      raw = u8.buffer;
-      marks = j.normalized_alignment || j.alignment || null;
-    } else raw = await res.arrayBuffer();
-    const audio = await ttsCtx.decodeAudioData(raw);
-    if (ttsSrc) { try { ttsSrc.stop(); } catch (e) {} }
-    ttsSrc = ttsCtx.createBufferSource();
-    ttsSrc.buffer = audio;
-    ttsSrc.connect(ttsAn);
-    /* Built unconditionally, and that matters more than it looks.
+    let first;
+    try { first = await ttsOne(parts[0], wantMarks); }
+    catch (e) {
+      // 501 just means no voice key is set; anything else is worth showing
+      if (e.status !== 501) caption(null, "voice: " + ((e.body || e.message) + "").slice(0, 160));
+      return false;
+    }
+    ttsStop();
+    const gen = ++ttsGen;
+    const t0 = ttsCtx.currentTime + 0.05;
+    let at = t0, placed = 0, ended = 0, expect = parts.length;
 
-       This used to be gated on visLive() -- read once, here, the instant the
-       audio was decoded. Ask to see his head and the answer comes back while
-       the model is still loading, so at this line there is no rig, no mouth,
-       and no timeline is built at all: the one reply that introduces him is
-       the one he does not move his mouth for, and every reply after it works
-       fine, which is exactly the shape of bug nobody can reproduce on demand.
-
-       Building is a string parse and costs nothing. Whether the mouth actually
-       MOVES is already decided every frame in visRig, which reads visLive()
-       there -- so the gate stays, it just stops being a race. */
-    if (marks) visFromMarks(marks); else visBuild(text, audio.duration);
     /* Only the clip that is actually playing gets to say the talking has
        stopped. Interrupting one -- which happens whenever a second line starts
        before the first has finished -- fires the OLD source's onended, and that
@@ -2521,9 +2566,8 @@ async function playReply(text) {
 
        That is the whole of the "it goes to pages on its own" bug, and the
        answer to "is he registering his own word": he was. */
-    const gen = ++ttsGen;
-    ttsSrc.onended = () => {
-      if (gen !== ttsGen) return;            // a clip that was cut short
+    const finish = () => {
+      if (gen !== ttsGen) return;
       ttsPlaying = false; ttsText = "";
       /* Aborted and restarted rather than merely gated. Recognition has been
          accumulating a transcript of his own voice for the whole reply, and
@@ -2535,8 +2579,41 @@ async function playReply(text) {
       pauseSTT();
       setTimeout(resumeSTT, cfg.echoTail);
     };
+    /* Counted, rather than hung off "the last one": which one is last is not
+       known until the fetching either finishes or gives up. */
+    const onEnd = () => { if (gen !== ttsGen) return; ended++; if (ended >= expect) finish(); };
+
+    const place = (g) => {
+      const src = ttsCtx.createBufferSource();
+      src.buffer = g.audio;
+      src.connect(ttsAn);
+      /* Never in the past. If a piece arrives after the one before it has
+         finished -- slow network, long sentence -- start() with a stale time
+         plays it immediately anyway, so take the REAL time and offset the mouth
+         by that rather than by where it was meant to go. A late seam is a small
+         gap; a late seam with the visemes still on the old clock is a mouth out
+         of sync for the whole rest of the reply. */
+      const when = Math.max(ttsCtx.currentTime + 0.01, at);
+      src.onended = onEnd;
+      src.start(when);
+      ttsSrcs.push(src);
+      if (g.marks) visFromMarks(g.marks, when - t0, placed > 0);
+      placed++;
+      at = when + g.audio.duration;
+      planMs = (at - t0) * 1000;
+    };
+
     plan = null;                          // real audio outranks the guess
-    planMs = audio.duration * 1000;
+    place(first);
+    /* Without marks the timeline is a guess from the text and a duration, and
+       only the first piece's duration is known yet -- so scale it by how much
+       of the reply that piece was. Nothing reads this path unless something
+       with a mouth is on screen, and then marks were asked for. */
+    if (!first.marks) {
+      const est = first.audio.duration * (text.length / (parts[0].length || 1));
+      visBuild(text, est);
+      planMs = est * 1000;
+    }
     // the slider has to reach a node that already exists, not only a new one
     if (ttsGain) ttsGain.gain.value = cfg.volume;
     ttsPlaying = true;
@@ -2554,10 +2631,28 @@ async function playReply(text) {
        happen before the first sample is heard. Every mouth was running that
        much ahead of the voice, constantly, which is exactly the lag it looked
        like it had. */
-    vis.at0 = performance.now();
-    ttsSrc.start();
+    vis.at0 = performance.now() + (t0 - ttsCtx.currentTime) * 1000;
     mark("audio");
     reportTiming();
+
+    /* The rest, in flight while the first is already being heard. Deliberately
+       not awaited: this function's promise has always meant "he has started
+       talking", and every caller was written against that. */
+    (async () => {
+      for (let k = 1; k < parts.length; k++) {
+        let g;
+        try { g = await ttsOne(parts[k], wantMarks); }
+        catch (e) {
+          console.log("orb voice: piece " + (k + 1) + " of " + parts.length
+                      + " failed -- " + (e.message || e));
+          expect = placed;
+          if (ended >= expect) finish();
+          return;
+        }
+        if (gen !== ttsGen) return;       // hushed, or a newer reply took over
+        place(g);
+      }
+    })();
     return true;
   } catch (err) {
     caption(null, "voice failed: " + err.message);
@@ -8297,7 +8392,38 @@ function floatNow(t) {
    Wander, with the occasional return to centre and a long hold. Eyes are
    conjugate, so both take the same angles; that they move TOGETHER is most of
    what stops it reading as a doll. */
-const EYES = { reach: 0.34, ease: 0.10, hold: [0.7, 3.4] };
+const D2R = Math.PI / 180;
+/* `rest` is PER EYE, and that is the whole of the cross-eyed look.
+
+   The bones are fine -- measured, an eye bone's world forward at zero gaze is
+   (-0.014, -0.117, 0.993) against the head's own (-0.014, -0.113, 0.994), which
+   is the same direction to within a fifth of a degree. What is off is the
+   eyeball GEOMETRY: the two balls were modelled looking slightly inward, and
+   not by the same amount, so at rest both irises sit toward the nose and one
+   sits further than the other.
+
+   That asymmetry is why a single global offset could not work and made it
+   worse when tried: rotating both the same way fixes one eye and walks the
+   other one out into a divergent stare. Each eye needs its own, and the signs
+   are opposite because "outward" is opposite for the two of them. */
+const EYES = {
+  /* Smaller than it was. The per-eye correction below fixes where the eyes
+     REST, and the two eyeballs are still not each other's mirror, so the
+     further the wander pushes them the more that asymmetry shows. It was
+     always meant to read as micro-movement rather than as looking about the
+     room, and thirteen degrees does that and keeps both eyes in the part of
+     their travel where they agree. */
+  reach: 0.24, ease: 0.10, hold: [0.7, 3.4],
+  /* Measured on colin_head with the mixer frozen so every shot was the same
+     pose -- without that the idle turns his head between frames and you end up
+     comparing two different faces. The two numbers are not each other's
+     negative because the two eyeballs are not each other's mirror. */
+  rest: { l: { yaw: -10, pitch: 0 }, r: { yaw: 16, pitch: 0 } },
+};
+window.__eyes = (ly, lp, ry, rp) => {
+  EYES.rest.l = { yaw: ly || 0, pitch: lp || 0 };
+  EYES.rest.r = { yaw: ry || 0, pitch: rp || 0 };
+};
 const look = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
 function eyesNow(dt, now) {
   if (now > look.next) {
@@ -8323,8 +8449,21 @@ function eyesNow(dt, now) {
   for (let i = 0; i < rig.eyeB.length; i++) {
     // yaw about the head's up, pitch about its right. The eye bones were baked
     // with no rotation of their own, so their axes are the head's axes.
+    /* Plus this eye's own neutral -- see EYES.rest.
+
+       Set with a screen rather than by code, and two attempts to do better
+       than that failed and are worth recording so nobody repeats them: the
+       outermost vertices of an eyeball turn out to be its BACK, not its
+       cornea, and a principal-axis fit disagrees with itself between the two
+       eyes because the mesh is nowhere near a solid of revolution. There is no
+       reliable geometric mark for where a stylised eye is looking. So these
+       are constants, they belong to this head, and __eyes(ly, lp, ry, rp) sets
+       them live if they ever need redoing. */
+    const fix = /_l_eye$|left_?eye$/i.test(rig.eyeB[i].name) ? EYES.rest.l : EYES.rest.r;
     rig.eyeB[i].quaternion.copy(rig.eyeQ[i])
-      .multiply(gazeQ.setFromEuler(gazeE.set(-look.y * EYES.reach, look.x * EYES.reach, 0, "YXZ")));
+      .multiply(gazeQ.setFromEuler(gazeE.set(
+        -look.y * EYES.reach + fix.pitch * D2R,
+        look.x * EYES.reach + fix.yaw * D2R, 0, "YXZ")));
   }
 }
 /* Blinking, for whenever the shape exists.
@@ -9374,7 +9513,7 @@ function menuPoints() {
 function hush() {
   if (!ttsPlaying) return;
   ttsGen++;                                  // the clip being stopped says nothing
-  try { if (ttsSrc) ttsSrc.stop(); } catch (e) {}
+  ttsStop();
   ttsPlaying = false; ttsText = ""; plan = null;
   echoUntil = performance.now() + 200;
 }
