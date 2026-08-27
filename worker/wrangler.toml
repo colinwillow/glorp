@@ -30,6 +30,19 @@ ELEVEN_VOICE_ID = "wyWA56cQNU2KqUW4eCsI"
 # the file on every deploy, so change it here.
 ELEVEN_VOICE_COLIN = "kJWUfEv4iADM2zGU2fOf"
 
+# How it is performed. Stability reads backwards: high is not "good", it is
+# FLAT -- the model stops varying and every sentence lands at the same pitch and
+# pace. Down from the 0.40 default because the complaint is that he reads
+# rather than talks, and pausing and intonation are exactly what stability
+# suppresses. Style pushes the delivery further towards however the voice was
+# performed in the clip it was cloned from.
+#
+# Both are per-account rather than per-character today. If the orb ends up
+# wanting a different setting from his, that is a second pair of variables and a
+# lookup, not a rethink.
+ELEVEN_STABILITY = "0.28"
+ELEVEN_STYLE = "0.45"
+
 # The shared memory. OPTIONAL, and commented out on purpose: a binding naming a
 # namespace that does not exist fails the deploy, and this Worker deploys from a
 # push to main -- so a wrong id here takes the brain down rather than leaving a

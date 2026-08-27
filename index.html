@@ -826,6 +826,7 @@ async function ask(text) {
   setState("thinking");
 
   let full = "", shown = false, pendingShow = null;   // the brain may pick the picture itself
+  const askedAs = castNow();                         // who is answering, before any tool moves it
   try {
     const res = await fetch(brain.url, {
       method: "POST",
@@ -914,7 +915,7 @@ async function ask(text) {
   /* Hold in thinking until the voice is ready, so the mouth starts when the
      sound does. Mouthing early and letting audio catch up puts the two out of
      step, which reads worse than the wait. */
-  const spoke = await playReply(full);
+  const spoke = await playReply(full, askedAs);
   // playReply reports once audio starts; without a voice nothing ever would,
   // and the legs before the voice are exactly the ones worth seeing
   if (!spoke) { planSpeech(full); reportTiming(); }
@@ -1688,6 +1689,11 @@ function visApplyJaw() {
    kick from a bass note held through the bar -- and the cones want the kick.
    Fast up, slow down, which is what a speaker cone does. */
 const BOX = {
+  /* Off. It arrives whenever a dance does, unasked, and it is one more object
+     in a room that has not decided what is in it yet. The model, the loader and
+     the cone pumping all stay -- this is a flag, not a deletion, so turning it
+     back on is one word. */
+  use: 0,
   obj: null, loading: 0, on: 0, pump: 0,
   /* All in his heights. The room is framed far tighter than it looks -- at his
      depth the screen is only about half his height wide either side of him --
@@ -1725,7 +1731,7 @@ function boomBox() {
 
 /* Called every frame from the same place the floor and the pool are placed. */
 function boomBoxFrame(dt) {
-  const want = (world.seq && world.on > 0.5) ? 1 : 0;
+  const want = (BOX.use && world.seq && world.on > 0.5) ? 1 : 0;
   if (want && !BOX.obj) boomBox();
   BOX.on += (want - BOX.on) * (1 - Math.pow(1 - 0.06, dt / 16.67));
   if (!BOX.obj) return;
@@ -2570,7 +2576,7 @@ function ttsSplit(text) {
   return out;
 }
 
-async function ttsOne(text, wantMarks, prev, next) {
+async function ttsOne(text, wantMarks, prev, next, who) {
   const res = await fetch(new URL("/speak", brain.url), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -2585,7 +2591,7 @@ async function ttsOne(text, wantMarks, prev, next) {
        another, and this is what puts the shape back without giving up the
        start-on-the-first-sentence trick that made him quick. */
     body: JSON.stringify({ text, voice: brain.voice || undefined,
-                           persona: castNow() || undefined,
+                           persona: who || undefined,
                            prev: prev || undefined, next: next || undefined,
                            marks: wantMarks ? 1 : undefined })
   });
@@ -2614,8 +2620,14 @@ async function ttsOne(text, wantMarks, prev, next) {
   return { audio: await ttsCtx.decodeAudioData(raw), marks };
 }
 
-async function playReply(text) {
+/* `as` is who WROTE it, which is not always who is on screen by the time it is
+   spoken. Ask the orb to bring Colin up and the orb answers, in the orb's
+   words, about Colin in the third person -- and then the figure lands, the cast
+   switches, and that sentence comes out in COLIN's voice talking about himself
+   as though he were somebody else. The reply carries its author with it now. */
+async function playReply(text, as) {
   if (!brain.url) return false;
+  const who = as === undefined ? castNow() : as;
   // answering is also a reason to be facing the person answered
   attend();
   const parts = ttsSplit(text);
@@ -2629,7 +2641,7 @@ async function playReply(text) {
        and the sentence failed. Resuming is free when it is already running. */
     if (ttsCtx.state === "suspended") { try { await ttsCtx.resume(); } catch (e) {} }
     let first;
-    try { first = await ttsOne(parts[0], wantMarks, "", parts[1] || ""); }
+    try { first = await ttsOne(parts[0], wantMarks, "", parts[1] || "", who); }
     catch (e) {
       // 501 just means no voice key is set; anything else is worth showing
       if (e.status !== 501) caption(null, "voice: " + ((e.body || e.message) + "").slice(0, 160));
@@ -2725,7 +2737,7 @@ async function playReply(text) {
         let g;
         try {
           g = await ttsOne(parts[k], wantMarks,
-                           parts.slice(0, k).join(" "), parts[k + 1] || "");
+                           parts.slice(0, k).join(" "), parts[k + 1] || "", who);
         }
         catch (e) {
           console.log("orb voice: piece " + (k + 1) + " of " + parts.length
@@ -7076,6 +7088,7 @@ function glLoad(buf, src, R) {
    projection. */
 function glFrame(K, FOC) {
   const T = window.THREE;
+  if (!pvTmp) { pvTmp = new T.Vector3(); pvRot = new T.Vector3(); }
   if (gl.W !== W || gl.H !== H) { gl.R.setSize(W, H, false); gl.W = W; gl.H = H; }
   gl.cam.aspect = W / H;
   gl.cam.fov = 2 * Math.atan((H / 2) / FOC) * 180 / Math.PI;
@@ -7097,7 +7110,31 @@ function glFrame(K, FOC) {
   floatNow(performance.now() * 0.001);
   eyesNow(gl.dt || 16.67, performance.now());
   blinkNow(performance.now());
-  gl.root.position.set(world.x + flo.x, world.y + hit.lift + flo.y, world.z + flo.z);
+  /* HE TURNS ABOUT HIS HIPS, not about the root.
+
+     The root is where the model hangs from, and where his body sits relative to
+     it is whatever the clip says. Standing, that is 50% up him and nobody would
+     notice. In the air it is not: measured mid-flight, the pivot sat at 200% of
+     his height on one frame and -234% on the next -- his whole body BELOW the
+     point it was turning about, then entirely above it. That is a weight on the
+     end of a rod, which is what it looked like.
+
+     Rotating about an arbitrary point p is the same rotation plus a
+     translation of p - Rp, and p is just the hips in the root's own frame. It
+     is measured from LAST frame's matrices, which is safe and not circular:
+     shifting the root moves the hips and the root by the same amount, so their
+     difference does not depend on the shift. Only bothered with while he is
+     actually turning, so nothing about walking round a room changes. */
+  let pvx = 0, pvy = 0, pvz = 0;
+  if (Math.abs(hit.pitch) > 0.001 && rig.hipB) {
+    gl.root.updateMatrixWorld(true);
+    const pv = gl.root.worldToLocal(rig.hipB.getWorldPosition(pvTmp));
+    pvRot.copy(pv).applyEuler(gl.root.rotation);
+    pvx = pv.x - pvRot.x; pvy = pv.y - pvRot.y; pvz = pv.z - pvRot.z;
+  }
+  gl.root.position.set(world.x + flo.x + pvx,
+                       world.y + hit.lift + flo.y + pvy,
+                       world.z + flo.z + pvz);
   /* YXZ, so the tumble is about HIS right and not the world's.
 
      With the default XYZ the x-rotation is applied last and is therefore a
@@ -7530,6 +7567,7 @@ const ORB = { z: -0.9, y: 1.15, k: 0.80, fat: 1, tempo: 1.0,
               share: 0.13, full: 0.55, rate: 0.010 };
 // where it is on screen this frame, and how big -- see the physics loop
 let orbCX = 0, orbCY = 0, orbK = 1, orbT = 1;
+let pvTmp = null, pvRot = null;   // scratch for the pivot, built once three is up
 /* THE ORB DOES NOT TRACK HIM, IT FOLLOWS HIM.
 
    Its place was computed straight from his -- behind him, above him, exactly,
@@ -8769,7 +8807,14 @@ function updateWorld(dt, now) {
   const want = rig.wipe[3] >= FIG.top && !rig.out ? 1 : 0;
   world.on += (want - world.on) * 0.07;
   if (gl.mixer) gl.mixer.update(dt / 1000);
-  if (rig.lowY != null && rig.R) {
+  /* Not while he is off the floor. The ground follow plants his lowest point
+     on the floor, which is exactly right for a walk and exactly wrong for a
+     clip where his legs are tucked under him -- measured, world.y swung from
+     -0.61 to +0.05 across two frames of a flight, dragging his body away from
+     wherever it was turning about. The lift owns his height in the air; this
+     re-acquires the moment he lands. */
+  if (hit.on && hit.stage === "air") world.groundMin = 1e30;
+  else if (rig.lowY != null && rig.R) {
     /* Falls instantly, rises only while he is holding a pose. Since-start
        alone was not enough: the crossfade INTO a pose is a blend, so the first
        few frames of "lay down" are still mostly the idle he was standing in and
@@ -9825,6 +9870,12 @@ async function showFigure(src, portrait) {
      does not, and nobody has to remember to say so. */
   rig.floats = 0;
   rig.eyeB = null; blink.ids = null; blink.next = 0;
+  // the point he turns about when he is thrown -- see glFrame
+  rig.hipB = null;
+  try {
+    const bs2 = (gl.mesh && gl.mesh.skeleton && gl.mesh.skeleton.bones) || [];
+    rig.hipB = bs2.find((b) => /(^|[_:])Hips$/i.test(b.name)) || null;
+  } catch (e) {}
   try {
     const bs = (gl.mesh && gl.mesh.skeleton && gl.mesh.skeleton.bones) || [];
     rig.floats = bs.length && !bs.some((b) => /foot|toe/i.test(b.name)) ? 1 : 0;
