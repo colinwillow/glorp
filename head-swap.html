@@ -1,0 +1,303 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>head swap</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070A; overflow: hidden; }
+  canvas { display: block; }
+  #hud, #keys, #back {
+    position: fixed; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    color: #7E9A6A; white-space: pre; }
+  #hud { left: 10px; top: 10px; }
+  #keys { left: 10px; bottom: 10px; color: #4E6440; }
+  #back { right: 12px; top: 10px; color: #9CB98A; text-decoration: none;
+          border: 1px solid #2E3A26; border-radius: 14px; padding: 4px 12px; }
+</style>
+<body>
+<div id="hud">loading…</div>
+<div id="keys">[ ] size · arrows move · , . tilt · w s cut · h head · m mouth · n p clip</div>
+<a id="back" href="index.html">← orb</a>
+
+<script type="importmap">
+{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/"}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { DRACOLoader } from "./vendor/DRACOLoader.js";
+import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
+
+/* ---------------------------------------------------------------------------
+   One character out of two files.
+
+   The body is rigged and carries thirty-six animations and no face. The head
+   is morphed to the teeth and carries no skeleton worth the name. Rather than
+   wait for one file that is both, borrow: hide the body's head, and hang the
+   other one off the joint where it used to be.
+
+   This is not a bodge peculiar to us -- it is how modular characters have been
+   built for twenty years, a head mesh on a head socket. What makes it worth
+   trying HERE is that it costs no modelling: nothing is re-rigged, nothing is
+   re-exported, and the day a single proper file exists this page is deleted
+   and nothing else changes.
+--------------------------------------------------------------------------- */
+
+const HUD = document.getElementById("hud");
+
+/* The alignment, and all of it is guessable because the two files are only in
+   different UNITS, not different worlds. The body measures about 2.6 units to
+   the metre and the head measures about one, so the size is very nearly that
+   ratio and everything else is a nudge. Live on the keys, because the last
+   ten percent of this is an eye judgement and no measurement replaces it. */
+const FIT = {
+  scale: 2.60,     // head units -> body units
+  y: 0.00,         // along the neck, in head units
+  z: 0.00,         // in and out of the face
+  pitch: 0,        // degrees; the head bone is not exactly level
+  cut: 0.50,       // how much head-weight makes a body vertex vanish
+};
+/* Where the head model's own head joint sits above its root. Subtracting it is
+   what puts the joint, rather than the root, on the body's neck. */
+const HEAD_RISE = 1.5848;
+
+const R = new THREE.WebGLRenderer({ antialias: true });
+R.setPixelRatio(Math.min(2, devicePixelRatio));
+R.toneMapping = THREE.ACESFilmicToneMapping;
+R.toneMappingExposure = 1.0;
+document.body.appendChild(R.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070A);
+const pmrem = new THREE.PMREMGenerator(R);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+const cam = new THREE.PerspectiveCamera(32, 1, 0.1, 200);
+scene.add(new THREE.HemisphereLight(0xBFD9FF, 0x20180F, 1.1));
+const key = new THREE.DirectionalLight(0xFFF3E0, 2.2);
+key.position.set(2.5, 5, 4); scene.add(key);
+
+const dl = new DRACOLoader();
+dl.setDecoderPath("./vendor/draco/"); dl.setDecoderConfig({ type: "wasm" });
+const L = new GLTFLoader(); L.setDRACOLoader(dl);
+const load = (u) => new Promise((res, rej) => L.load(u, res, undefined, rej));
+
+let body = null, bodySkin = null, mixer = null, clips = [], clipAt = 0, action = null;
+let headBone = null, headRoot = null, headMeshes = [], anchor = null;
+let showHead = 0;                       // the body's own head: off by default
+
+/* ---- hiding the body's head ----
+
+   The obvious move is a transparent material on the head, and it is not
+   available: the body is ONE mesh with ONE material, so anything done to the
+   material happens to the shoes as well.
+
+   The second move is to scale the head bone to nothing, which is one line and
+   wrong. Measured on this file, 2608 vertices are weighted wholly to the head
+   but another 2784 are BLENDED between the head and the neck and shoulders --
+   collapsing the bone drags all of those inward and the collar and the hood
+   crumple with it. The head goes; a funnel appears where it was.
+
+   So do not move anything. Carry each vertex's head-weight into the shader and
+   throw away the fragments above a threshold. The geometry is untouched, the
+   skinning is untouched, the animation is untouched -- those triangles simply
+   stop being drawn, along a line that follows the rig's own idea of where the
+   head begins. And the threshold is a live number, so where the cut lands is
+   something to look at rather than something to re-export. */
+function headWeights(mesh) {
+  const sk = mesh.skeleton;
+  let hi = -1;
+  sk.bones.forEach((b, i) => { if (/(^|[_:])Head$/.test(b.name)) hi = i; });
+  const si = mesh.geometry.attributes.skinIndex, sw = mesh.geometry.attributes.skinWeight;
+  const w = new Float32Array(si.count);
+  for (let i = 0; i < si.count; i++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) if (si.getComponent(i, k) === hi) s += sw.getComponent(i, k);
+    w[i] = s;
+  }
+  mesh.geometry.setAttribute("headW", new THREE.BufferAttribute(w, 1));
+  return hi;
+}
+
+const uCut = { value: FIT.cut }, uShow = { value: 0 };
+function cutHead(mat) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uCut = uCut;
+    sh.uniforms.uShow = uShow;
+    sh.vertexShader = "attribute float headW;\nvarying float vHeadW;\n" +
+      sh.vertexShader.replace("#include <begin_vertex>",
+        "#include <begin_vertex>\n  vHeadW = headW;");
+    sh.fragmentShader = "varying float vHeadW;\nuniform float uCut;\nuniform float uShow;\n" +
+      sh.fragmentShader.replace("void main() {",
+        "void main() {\n  if (uShow < 0.5 && vHeadW > uCut) discard;");
+  };
+  mat.needsUpdate = true;
+}
+
+/* ---- the textures the head came with ---- */
+function headTextures(mats) {
+  for (const m of mats) {
+    const nm = m.userData && m.userData.tex;
+    if (!nm || m.map) continue;
+    new THREE.TextureLoader().load("images/textures/" + nm + ".webp", (t) => {
+      t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+      m.map = t; m.color.setHex(0xffffff); m.needsUpdate = true;
+    }, null, () => console.log("head-swap: no texture", nm));
+  }
+}
+
+/* ---- the join ----
+
+   The head's ROOT BONE is what gets parented, not the mesh. A three.js skinned
+   mesh in the default bind mode cancels its own world matrix out of the
+   skinning entirely -- move the mesh and nothing happens -- so parenting the
+   mesh would do exactly nothing. What the shader actually reads is the bones'
+   world matrices, so the bones are what has to be hung on the body.
+
+   And they hang off a plain Object3D rather than off the head bone directly,
+   for one reason: whatever else is done to that bone should not reach the
+   head. The anchor copies the bone's position and rotation each frame and
+   supplies its own scale, so the two files keep their own units and a change
+   to one cannot silently rescale the other. */
+function sync() {
+  if (!anchor || !headBone) return;
+  headBone.matrixWorld.decompose(anchor.position, anchor.quaternion, new THREE.Vector3());
+  anchor.scale.setScalar(FIT.scale);
+  if (FIT.pitch) anchor.rotateX(FIT.pitch * Math.PI / 180);
+  headRoot.position.set(0, -HEAD_RISE + FIT.y, FIT.z);
+  anchor.updateMatrixWorld(true);
+}
+
+(async () => {
+  const gb = await load("models/colin_slim.glb");
+  gb.scene.traverse((o) => {
+    if (o.isSkinnedMesh && !bodySkin) { bodySkin = o; }
+    if (o.isMesh) o.frustumCulled = false;
+    if (o.isBone && /(^|[_:])Head$/.test(o.name)) headBone = o;
+  });
+  body = gb.scene; scene.add(body);
+  headWeights(bodySkin);
+  for (const m of (Array.isArray(bodySkin.material) ? bodySkin.material : [bodySkin.material])) {
+    /* This file is exported alphaMode BLEND, which switches depth WRITING off,
+       which is why the sleeves speckle where the hood crosses the shoulder: a
+       mesh with no depth write cannot sort against itself. The orb does the
+       careful version of this -- it reads the texture's minimum alpha first and
+       only promotes to fully opaque when there are no real cutouts to lose --
+       and here, where nothing is riding on it, forcing the write back on is
+       enough and cannot discard anything. */
+    m.depthWrite = true; m.needsUpdate = true;
+    cutHead(m);
+  }
+  clips = gb.animations || [];
+  mixer = new THREE.AnimationMixer(bodySkin);
+  clipAt = Math.max(0, clips.findIndex((c) => /idle_neutral_00/.test(c.name)));
+  play(0);
+
+  const gh = await load("models/colin_head.glb");
+  const mats = [];
+  gh.scene.traverse((o) => {
+    if (o.isSkinnedMesh) { headMeshes.push(o); o.frustumCulled = false;
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material])) mats.push(m); }
+    if (o.isBone && /BoneRoot/.test(o.name)) headRoot = o;
+  });
+  headTextures(mats);
+  scene.add(gh.scene);
+  anchor = new THREE.Object3D(); scene.add(anchor);
+  if (headRoot) anchor.add(headRoot);
+
+  // frame him: waist to a little over the crown
+  const foot = 0.37, top = 5.0;
+  cam.position.set(0, (foot + top) / 2, 9.0);
+  cam.lookAt(0, (foot + top) / 2 - 0.2, 0);
+  resize();
+  console.log("head-swap: body verts", bodySkin.geometry.attributes.position.count,
+              "head prims", headMeshes.length, "clips", clips.length);
+})().catch((e) => { HUD.textContent = "failed: " + e.message; });
+
+function play(d) {
+  if (!clips.length) return;
+  clipAt = (clipAt + d + clips.length) % clips.length;
+  const next = mixer.clipAction(clips[clipAt]);
+  next.reset().fadeIn(0.25).play();
+  if (action && action !== next) action.fadeOut(0.25);
+  action = next;
+}
+
+function resize() {
+  R.setSize(innerWidth, innerHeight);
+  cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+
+addEventListener("keydown", (e) => {
+  const k = e.key;
+  if (k === "[") FIT.scale *= 0.98;
+  else if (k === "]") FIT.scale *= 1.02;
+  else if (k === "ArrowUp") FIT.y += 0.01;
+  else if (k === "ArrowDown") FIT.y -= 0.01;
+  else if (k === "ArrowRight") FIT.z += 0.01;
+  else if (k === "ArrowLeft") FIT.z -= 0.01;
+  else if (k === ",") FIT.pitch -= 1;
+  else if (k === ".") FIT.pitch += 1;
+  else if (k === "w") FIT.cut = Math.min(1, FIT.cut + 0.05);
+  else if (k === "s") FIT.cut = Math.max(0, FIT.cut - 0.05);
+  else if (k === "h") showHead = showHead ? 0 : 1;
+  else if (k === "m") mime = mime ? 0 : 1;
+  else if (k === "n") play(1);
+  else if (k === "p") play(-1);
+  else return;
+  e.preventDefault();
+});
+window.__fit = (o) => Object.assign(FIT, o);
+window.__scene = scene;
+window.__clip = (n) => { const i = clips.findIndex(c => c.name === n); if (i >= 0) { clipAt = i - 1; play(1); } };
+window.__clips = () => clips.map(c => c.name);
+
+/* ---- and it talks while it does that ----
+
+   The point of the whole arrangement, and the one part that could plausibly
+   have fought itself: the body's animation is driving BONES and the face is
+   driving MORPH TARGETS, on two different meshes with two different skeletons.
+   They never meet. Nothing the mixer does to a hip can reach a viseme, and
+   nothing a viseme does to a lip can reach the hips.
+
+   So this is not lip sync -- it is a loop through the mouth shapes at speaking
+   speed, which is all that is needed to see that the two systems ignore each
+   other while he dances. */
+const MIME = ["V_Open", "V_Explosive", "V_Wide", "V_Tight_O", "V_Dental_Lip", "V_Affricate"];
+let mime = 1, mimeT = 0;
+function mimeNow(dt) {
+  if (!headMeshes.length) return;
+  const d = headMeshes[0].morphTargetDictionary || {};
+  const jaw = d.Jaw_Open != null ? "Jaw_Open" : "jaw_open";
+  mimeT += dt;
+  const at = (mimeT * 4.2) % MIME.length, i = at | 0, f = at - i;
+  for (const m of headMeshes) {
+    const inf = m.morphTargetInfluences, dd = m.morphTargetDictionary;
+    if (!inf || !dd) continue;
+    for (const n of MIME) if (dd[n] != null) inf[dd[n]] = 0;
+    if (dd[jaw] != null) inf[dd[jaw]] = mime ? 0.10 + 0.34 * (0.5 - 0.5 * Math.cos(mimeT * 9)) : 0;
+    if (!mime) continue;
+    const a = MIME[i], b2 = MIME[(i + 1) % MIME.length];
+    if (dd[a] != null) inf[dd[a]] = (1 - f) * 0.8;
+    if (dd[b2] != null) inf[dd[b2]] = f * 0.8;
+  }
+}
+
+let last = performance.now();
+function frame() {
+  requestAnimationFrame(frame);
+  const now = performance.now(), dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (mixer) mixer.update(dt);
+  mimeNow(dt);
+  scene.updateMatrixWorld(true);
+  sync();
+  uCut.value = FIT.cut; uShow.value = showHead;
+  R.render(scene, cam);
+  HUD.textContent =
+    "size " + FIT.scale.toFixed(3) + "   y " + FIT.y.toFixed(2) +
+    "   z " + FIT.z.toFixed(2) + "   tilt " + FIT.pitch + "°" +
+    "\ncut " + FIT.cut.toFixed(2) + "   body head " + (showHead ? "shown" : "hidden") +
+    "   mouth " + (mime ? "talking" : "still") +
+    "\n" + (clips[clipAt] ? clips[clipAt].name : "—");
+}
+frame();
+</script>
