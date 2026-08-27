@@ -193,7 +193,10 @@ fallback, not the normal path.
 The connection lives entirely in the Cloudflare dashboard, so it leaves **no
 trace in this repo** — no `.github/workflows`, nothing in `wrangler.toml`.
 Reading the repo and concluding "this has not been deployed" is wrong, and has
-been got wrong from inside a sandbox more than once. Nor can it be checked by
+been got wrong from inside a sandbox more than once — including once after
+reading this very paragraph, by an agent that then told him to go and run
+`wrangler deploy`. There is no `.github/workflows` because there does not need
+to be one. The absence is the design, not a gap. Nor can it be checked by
 curl from every environment: sandboxed sessions may have a network policy that
 403s `*.workers.dev` at the proxy before the request leaves the machine.
 
@@ -203,11 +206,15 @@ curl from every environment: sandboxed sessions may have a network policy that
 https://orb-brain.<you>.workers.dev/persona
 ```
 
-Look for a distinctive sentence from `PROTOCOL` — currently *"This is a
-CONVERSATION, not a menu system."* `PROTOCOL` is compiled into the code and is
-appended after `PERSONA`, so unlike the persona half it **cannot** be overridden
-by the dashboard's `ORB_PERSONA` variable. That makes it a true test of whether
-the code deployed, rather than of what somebody typed into a text field.
+Look for a distinctive sentence from `PROTOCOL` — currently *"short is for
+saying the thing quickly, never for saying less of it."* `PROTOCOL` is compiled
+into the code and is appended after `PERSONA`, so unlike the persona half it
+**cannot** be overridden by the dashboard's `ORB_PERSONA` variable. That makes
+it a true test of whether the code deployed, rather than of what somebody typed
+into a text field.
+
+Change the marker whenever `PROTOCOL` changes, or the check silently passes on
+the build before last: any sentence still present in both is a test of nothing.
 
 The one real failure mode: a build that **failed** leaves the previous version
 serving, silently. `tsc` has broken twice here on backticks inside template
