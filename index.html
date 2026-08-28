@@ -9078,6 +9078,61 @@ function hitNow(dt, now) {
 window.__hit = (dx, dy, sp) => hitGo(dx, dy, sp == null ? 1.2 : sp);
 window.__poke = () => hitPoke();
 
+/* AND SOMETHING TO SAY ABOUT BEING TOLD WHAT TO DO.
+
+   Told to sit down he sat down, in silence, which is obedient and is not the
+   character. He is a smart-arse; being ordered about is exactly the material.
+
+   Said HERE rather than by the brain, and that is the whole point of it. "Sit
+   down" does not need a language model, and a round trip to get "fine" back a
+   second and a half later is worse than useless -- the joke is the timing. This
+   is one short TTS request and nothing else, so the line lands while he is
+   still moving.
+
+   Keyed loosely to what he was told, because a put-upon "fine" is right for
+   being moved about and wrong for being asked to dance, which wants the other
+   kind of ego. Anything that matches nothing gets the general pool. */
+const GRUMBLE = [
+  [/sit|kneel|lay|lie|laying|down/, [
+    "Fine.", "Okay?", "Is this better? Jeez.", "There. Sitting.",
+    "Happy now?", "Sure, why not.", "Great. Love it down here."]],
+  [/dance|breakdance|uprock|move|groove/, [
+    "Oh, we're doing this.", "You're lucky I'm good at this.",
+    "This is the only one I'm doing.", "Don't make it weird.",
+    "I do take requests, apparently."]],
+  [/flip|somersault|jump|hop|leap/, [
+    "Show off, by proxy.", "That's the one, is it?", "Every time. Fine.",
+    "You're going to want that again in a minute, aren't you."]],
+  [/wave|hello|hi\b/, ["Hi.", "Waving. Riveting.", "Hello to you as well."]],
+  [/fight|box|square|ninja|karate|sneak/, [
+    "Careful.", "You started it.", "I'm not actually going to hit you."]],
+  [/drink|drunk|beer|pint/, ["Don't mind if I do.", "It's five somewhere."]],
+  [/hat|cap/, ["Suits me.", "Yeah it does.", "Bold of you to direct my wardrobe."]],
+  [/stretch|warm|hot|fan/, ["Getting old.", "Needed that, actually."]],
+  [/bored|boring|nails/, ["Yeah, alright.", "I was getting to that."]],
+  [/sad|upset|sulk/, ["I'm fine.", "Thanks for that."]],
+  [/come|here|go|back|left|right|turn|face|walk|strut|tiptoe/, [
+    "Alright, alright.", "Moving.", "Anywhere else?", "Here?",
+    "You could just ask nicely.", "I'm not a drone."]],
+];
+const GRUMBLE_ANY = ["Fine.", "Okay?", "Sure.", "If you like.", "Done.",
+                     "Anything else?", "Whatever you say."];
+/* Not on every single one. A comeback lands because it is a comeback and stops
+   being one when it is a reflex -- three commands in a row and the third should
+   just get done. Also silent while anything is being said, for the same reason
+   the arrival lines are. */
+const GRUMBLE_GAP = 2600;
+let grumbleAt = 0;
+function grumble(flat) {
+  const now = performance.now();
+  if (ttsPlaying || brain.busy || now < grumbleAt) return;
+  grumbleAt = now + GRUMBLE_GAP;
+  if (Math.random() < 0.22) return;             // sometimes he just does it
+  const said = String(world.act || "") + " " + flat;
+  for (const [re, lines] of GRUMBLE) if (re.test(said)) { remark(lines); return; }
+  remark(GRUMBLE_ANY);
+}
+
 /* Something to say for HIMSELF, when he lands.
 
    The orb greets you when the microphone comes up, and he had nothing: he was
@@ -11670,29 +11725,33 @@ function heardSentence_(heard) {
   }
   // a command already carried out here is already answered
   if (localTook) { localTook = 0; caption(heard, ""); return "local"; }
-  /* While he is standing in his room, what he can do outranks the brain. "Do a
-     backflip" is not a question.
+  /* While he is standing in his room, what he can do outranks the brain -- and
+     the interesting part is WHEN it stops outranking it.
 
-     BUT IT HAS TO ACTUALLY BE A COMMAND, and for a long time this was the only
-     gate in here without that test. Everything else asks first: HOME_SAID needs
-     `brief`, the places need `deliberate`, and the note above them says why --
-     "back" and "home" are ordinary words in the middle of ordinary sentences.
-     The act table is worse than either, because its words are ordinary too and
-     there are nineteen of them: bored, warm, hot, fan, flip, box, down, sad,
-     happy, drink, sit, jump, wave, fight, sneak, trip, stretch, nails, quietly.
+     The act table matches nineteen ordinary words anywhere in a sentence:
+     bored, warm, hot, fan, flip, box, down, sad, happy, drink, sit, jump, wave,
+     fight, sneak, trip, stretch, nails, quietly. So "do you ever get bored in
+     there" made him look at his nails and "is it warm in there" made him fan
+     himself -- which is FUNNY and worth keeping, and it was the swallowing that
+     was the bug: captioned, dropped, never sent, so the same question got
+     silence every time it was asked.
 
-     So "do you ever get bored in there" was an instruction to look at his
-     nails, and "is it warm in there" was an instruction to fan himself -- both
-     captioned, both swallowed, neither ever reaching the brain. Ask the same
-     question three times and get silence three times, which is exactly what it
-     looks like from the outside: not a flaky model, a deterministic drop.
+     So the act always fires and `actOK` no longer decides whether to move him.
+     It decides WHAT HE OWES YOU FOR IT.
 
-     Two tests, because they fail differently. A command is SHORT or it is
-     ASKED FOR -- "backflip", "can you dance for me", "do a stretch". And a
-     question is never a command however it is phrased, so anything opening
-     with what/why/how/tell me/do you ever is a topic even when it is four
-     words long. */
-  if (world.on > 0.5 && actOK && sandboxSay(flat)) { caption(heard, ""); return "act"; }
+     A pure command -- short, or asked for -- is answered here, out loud, with
+     no round trip. "Sit down" does not need a language model and it does not
+     want the second of latency one would cost; it wants "fine" immediately.
+
+     Anything else -- a question, a sentence that merely happens to contain
+     `warm` -- moves him AND falls through to the brain, so he does the thing
+     and still answers what you actually asked. The protocol already tells him
+     the movement has happened by the time he speaks, so he will not narrate it,
+     and worldState carries what he is doing. */
+  if (world.on > 0.5 && sandboxSay(flat)) {
+    if (actOK) { caption(heard, ""); grumble(flat); return "act"; }
+    // moved, and still owes you an answer: keep going
+  }
   /* The places, now that the whole sentence is here to judge. */
   if (deliberate) {
     // the 3D place, before the single-word table -- "show me the 3d characters"
