@@ -9587,7 +9587,31 @@ const rig = {
    just dots. Every wipe runs past the top of the body by the width of its own
    soft edge. */
 // rim: how much of the texture wipe's travel the silhouette dots fade out over
-const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13, rim: 0.34 };
+/* THE BUILD CLOCK.
+
+   climb is how long one stage takes to sweep from his feet to the top of his
+   head; start is when each of the four begins, so they overlap. Left as
+   authored, and `rate` divides both -- one dial for the whole sequence rather
+   than eight numbers to keep in step, and the shape of the overlap is preserved
+   whatever it is set to.
+
+   At rate 1 the sequence measured just under six seconds from asking to fully
+   textured, which is a long time to watch. 2 is half that. */
+const FIG = { climb: 1.9, start: [0, 0.85, 1.7, 2.55], soft: 0.13, top: 1.13, rim: 0.34,
+              rate: 2.0 };
+const figStart = (k) => FIG.start[k] / FIG.rate;
+const figClimb = () => FIG.climb / FIG.rate;
+/* AND THE RAMP IS EASED, which it was not.
+
+   The wipe was a straight (e - start) / climb -- linear, so the wave crossed
+   him at a constant speed and stopped dead at the top of his head. What read as
+   easing was never the ramp: it was the soft front on the wipe and the four
+   stages overlapping. Linear is survivable at four and a half seconds and reads
+   as mechanical at two, which is exactly the thing to avoid when speeding
+   something up. Smoothstep costs nothing, still lands exactly on 1 so the stage
+   test is unaffected, and puts the acceleration at his feet and the settle at
+   his head where they belong. */
+const figEase = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
 const FIG_FS = 0.40;
 const FIG_STAGE = ["dots", "lines", "fill", "texture"];
 
@@ -10509,14 +10533,14 @@ function figWipes(now) {
   if (rig.out) {
     const e = (now - rig.out) / 1000;
     for (let k = 0; k < 4; k++) {
-      const u = (e - FIG.start[3 - k] * 0.55) / (FIG.climb * 0.8);
-      W2[k] = FIG.top * Math.max(0, 1 - Math.max(0, u));
+      const u = (e - figStart(3 - k) * 0.55) / (figClimb() * 0.8);
+      W2[k] = FIG.top * (1 - figEase(u));
     }
     return;
   }
   const e = (now - rig.at) / 1000;
   for (let k = 0; k < 4; k++)
-    W2[k] = FIG.top * Math.max(0, Math.min(1, (e - FIG.start[k]) / FIG.climb));
+    W2[k] = FIG.top * figEase((e - figStart(k)) / figClimb());
 }
 // 0..1 for one particle against one wipe, with a soft front
 function figGate(i, k) {
@@ -10544,7 +10568,7 @@ function updateFigure(dt, now) {
   if (!rig.on) return;
   // something else took the field -- a shell, a word, a reload. Nothing to wipe.
   if (!formWant && !rig.out) { figClear(); return; }
-  if (rig.out && now - rig.out > (FIG.start[3] * 0.55 + FIG.climb * 0.8 + 0.4) * 1000) {
+  if (rig.out && now - rig.out > (figStart(3) * 0.55 + figClimb() * 0.8 + 0.4) * 1000) {
     /* formT goes with it, and this is the one line that made the deconstruct
        incoherent.
 
