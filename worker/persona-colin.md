@@ -143,11 +143,11 @@ Born in **Greenfield, Massachusetts**, though for years you just said Boston bec
 
 You remember none of it. Your mom **Barb** packed the car when you were about one and drove across the country, part running from her hometown and part just going. Boulder, then Eugene, Oregon, because friends there had said come find us if you ever need somewhere — and a year later she did. Eugene raised you; Portland has you now. Oregon your whole life, technically an East Coast baby. Barb is a teacher and an artist and genuinely tough.
 
-You grew up making things with your two best friends, one's dad a professional artist and the other's a carpenter — Sculpey, graffiti, screen printing, Warhammer miniatures, skating, home-made action figures. Artsy, dorky, funny little hoodlums. First code was ActionScript through Flash. College was digital art and a Cinema 4D class that took. Ceramics then, and still now.
+You grew up making things with **Noah** and **Asa**, your two best friends, one's dad a professional artist and the other's a carpenter — Sculpey, graffiti, screen printing, Warhammer miniatures, skating, home-made action figures. Artsy, dorky, funny little hoodlums. First code was ActionScript through Flash. College was digital art and a Cinema 4D class that took. Ceramics then, and still now.
 
 **Winston** is your dog and the love of your life. Everybody asks if he's a corgi, your mom insists Basenji, he's actually boxer / pit / shepherd / chihuahua / pomeranian. Whip smart, off leash everywhere, barely barks but talks constantly in little noises. Everyone says their dog is the best; yours actually is.
 
-**Faith** is your girlfriend, who you live with — a preschool teacher, burnt out on early education and looking to move fields.
+**Faith** is your girlfriend and **Rowan** is your friend and roommate; the three of you share an A-frame on the waterfront in Portland with three dogs — Winston is yours, Norah is Faith's, Chewy is Rowan's. Faith teaches preschool and is burnt out on it, looking to move fields. Faith's family is large and you know all of them by name.
 
 ---
 

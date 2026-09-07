@@ -280,11 +280,11 @@ Born in **Greenfield, Massachusetts**, though for years you just said Boston bec
 
 You remember none of it. Your mom **Barb** packed the car when you were about one and drove across the country, part running from her hometown and part just going. Boulder, then Eugene, Oregon, because friends there had said come find us if you ever need somewhere — and a year later she did. Eugene raised you; Portland has you now. Oregon your whole life, technically an East Coast baby. Barb is a teacher and an artist and genuinely tough.
 
-You grew up making things with your two best friends, one's dad a professional artist and the other's a carpenter — Sculpey, graffiti, screen printing, Warhammer miniatures, skating, home-made action figures. Artsy, dorky, funny little hoodlums. First code was ActionScript through Flash. College was digital art and a Cinema 4D class that took. Ceramics then, and still now.
+You grew up making things with **Noah** and **Asa**, your two best friends, one's dad a professional artist and the other's a carpenter — Sculpey, graffiti, screen printing, Warhammer miniatures, skating, home-made action figures. Artsy, dorky, funny little hoodlums. First code was ActionScript through Flash. College was digital art and a Cinema 4D class that took. Ceramics then, and still now.
 
 **Winston** is your dog and the love of your life. Everybody asks if he's a corgi, your mom insists Basenji, he's actually boxer / pit / shepherd / chihuahua / pomeranian. Whip smart, off leash everywhere, barely barks but talks constantly in little noises. Everyone says their dog is the best; yours actually is.
 
-**Faith** is your girlfriend, who you live with — a preschool teacher, burnt out on early education and looking to move fields.
+**Faith** is your girlfriend and **Rowan** is your friend and roommate; the three of you share an A-frame on the waterfront in Portland with three dogs — Winston is yours, Norah is Faith's, Chewy is Rowan's. Faith teaches preschool and is burnt out on it, looking to move fields. Faith's family is large and you know all of them by name.
 
 ---
 
@@ -418,7 +418,7 @@ function stateLine(v: unknown): string {
 const BUILTIN: Partial<Record<keyof Env, string>> = { ORB_PERSONA_COLIN: PERSONA_COLIN };
 
 function persona(env: Env, pictures: string[] = [], guest = "", about = "", memory = "",
-                 cast = "", now = ""): string {
+                 cast = "", now = "", known = ""): string {
   /* The character's own file first, the orb's dashboard override second, the
      one compiled in last. A character whose variable is empty or unset is not
      an error -- it is a character that has not been written yet, and the orb
@@ -440,6 +440,15 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = "", memo
      often and actually being different with the person. */
   const who = guest
     ? `\n\nThe person you are talking to is called ${guest}.` + (about ? ` ${about}` : "")
+    : "";
+  /* Not conditional on the guest, which is the whole point of it. These are
+     things the character simply knows -- his own house, his own dogs, his
+     partner's family -- and they were previously reachable only while one of
+     three people was in the room. */
+  const house = known
+    ? `\n\nThings you know without being told, about the house and the people in it. ` +
+      `You have always known them; nobody has just told you. Use them when they fit and ` +
+      `never read them back as a list.\n${known}`
     : "";
   /* What it has actually been told, as opposed to what it was born knowing.
      Kept separate from the profile above and labelled as remembered, because
@@ -468,7 +477,7 @@ function persona(env: Env, pictures: string[] = [], guest = "", about = "", memo
       "waiting in the dark very patiently, that looking at them is the interesting part. One " +
       "sentence. Never announce the gallery or explain how to use it; the screen does that."
     : "";
-  return (custom || PERSONA) + who + recall + now + "\n\n" + protocol(who2) + gallery + REMEMBERING;
+  return (custom || PERSONA) + house + who + recall + now + "\n\n" + protocol(who2) + gallery + REMEMBERING;
 }
 
 /* When to write something down.
@@ -689,6 +698,13 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
      him; a family tree runs well past a thousand. */
   const about = (typeof body.about === "string" ? body.about : "")
     .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 2000);
+  /* Standing facts about the house and the people in it, sent every turn rather
+     than hanging off whoever happens to be the guest -- see KNOWN in the page.
+     Same scrub, and a bigger cap because a family tree is longer than a
+     profile. */
+  const known = (typeof (body as { known?: unknown }).known === "string"
+    ? (body as { known: string }).known : "")
+    .trim().replace(/[^\x20-\x7E]/g, " ").slice(0, 3000);
   /* Memory arrives from two places and they are merged. The page keeps its own
      copy so this works with nothing bound; a KV namespace, if there is one,
      keeps the copy that every device and every person shares. Whichever exists
@@ -867,7 +883,7 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
   const model = (env.ORB_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const canFast = /^claude-opus-(5|4-8)$/.test(model);
   const canEffort = !/^claude-(haiku-4-5|sonnet-4-5)/.test(model);
-  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory, cast, now), messages, tools } as const;
+  const base = { model, max_tokens: 1024, system: persona(env, pictures, guest, about, memory, cast, now, known), messages, tools } as const;
 
   /* Tried in order, falling through on a 400 or a 429. Voice wants a fast
      answer far more than a deep one, and the wait here is the whole experience:

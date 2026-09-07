@@ -874,6 +874,8 @@ async function ask(text) {
                              guest: guest.name || "",
                              // one line of who they are, when it is somebody it knows
                              about: (profileOf(guest.name) || {}).is || "",
+                             // the house and the family, every turn, guest or no guest
+                             known: KNOWN,
                              /* and everything it has been told since. Sent every turn
                                 for the same reason the name is: the twenty messages the
                                 proxy holds are a conversation, not a memory. */
@@ -2886,6 +2888,35 @@ const guest = { name: "", asked: 0 };
 const HOUSE = "The three of them -- Colin, Faith and Rowan -- live together in an A-frame " +
   "house with big windows, on the waterfront in Portland, Oregon, with three dogs: " +
   "Winston (Colin's), Norah (Faith's) and Chewy (Rowan's). ";
+
+/* Faith's family, lifted out of her profile so it can be known WITHOUT her
+   being the one in the room. */
+const FAMILY =
+  "Faith's family is big and Colin knows all of them: parents Patience and Scott " +
+  "Udall, who are Mormon -- Faith and her siblings grew up in it and none of them " +
+  "are now. Older brother Addison. Older brother Robert, who goes by Wade, with two " +
+  "dogs called Fire and Ella. Older sister Charity, married to Preston, with a small " +
+  "son called Jackson -- Jax. Younger sister Joy, who has just had a daughter. " +
+  "Younger sister Hope, married to Moussa, who is in the Navy and is originally from " +
+  "Senegal; they live in Japan now, and Moussa used to live with Faith and Colin in " +
+  "Portland. ";
+
+/* STANDING KNOWLEDGE, AND WHY IT IS NOT A PROFILE.
+
+   Everything above used to reach the prompt only through `about`, which is the
+   profile of WHOEVER IS BEING TALKED TO -- and only Colin, Faith and Rowan have
+   one. So the house, the three dogs, the roommate and the whole family tree
+   were known exactly while one of those three was the guest, and vanished the
+   moment anybody else was. Introduce Faith's sister and her son to it and it
+   forgets that Charity and Jackson exist, which is precisely the wrong moment
+   and precisely what happened.
+
+   The mistake was filing facts about HIS OWN LIFE under the person he happens
+   to be speaking to. This block goes up every turn, whoever is there and
+   whoever is answering -- Colin because it is his house, the orb because it
+   lives in it. Profiles stay for what is true of a particular guest, and for
+   the greeting. */
+const KNOWN = HOUSE + FAMILY;
 const PROFILES = {
   colin: {
     is: "Colin made you -- the field, the voice, the room, all of it. He is the " +
@@ -2902,15 +2933,7 @@ const PROFILES = {
         "making a joke of it. She likes sleeping and is a great believer in " +
         "naps, eats cottage cheese, goes on walks, and paints. She lived with " +
         "Colin in Portland. " +
-        "Her family is big and you know it: parents Patience and Scott Udall, " +
-        "who are Mormon; Faith grew up in it and so did the others, and none of " +
-        "the siblings are now. Older brother Addison. Older brother Robert, who " +
-        "goes by Wade, with two dogs called Fire and Ella. Older sister Charity, " +
-        "married to Preston, with a small son called Jackson -- Jax. Younger " +
-        "sister Joy, who has just had a daughter. Younger sister Hope, married " +
-        "to Moussa, who is in the Navy and is originally from Senegal; the two " +
-        "of them live in Japan now, and Moussa used to live with Faith and Colin " +
-        "in Portland. " + HOUSE +
+        // her family is in KNOWN now, which goes up every turn whoever is here
         "Use any of it when it fits and never recite it as a list.",
     greet: ["{}! Sit down, have a nap, tell me everything.",
             "Ah, {}. How's Norah?",
