@@ -621,9 +621,60 @@ const CAST_OF = {
    `null` means nobody in particular, so use the scene's own default. Empty
    string means the orb explicitly -- which is also what the orb IS, an empty
    cast -- and anything else is a cast id. */
-const SAY_ORB = /\bglorb\b|\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\s+(the\s+)?orb\b|\b(ask|tell|talk to)\s+(the\s+)?orb\b/;
-const SAY_HIM = /\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\s+col+in\b|\b(ask|tell|talk to)\s+col+in\b/;
+/* glob and globe are in there because that is what the recogniser hears. It has
+   never once returned "glorb" for a name it does not know, and a switch that
+   only works when dictation gets a made-up word right is a switch that does not
+   work. */
+const SAY_TO = "(talk to|speak to|switch to|put|give me|back to|hand (it |me )?(back )?to|let me (talk|speak) to)";
+const SAY_ORB = new RegExp("\\b(glorb|glob|globe)\\b"
+  + "|\\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\\s+(the\\s+)?orb\\b"
+  + "|\\b(ask|tell|" + SAY_TO + ")\\s+(the\\s+)?(orb|glorb|glob|globe)\\b");
+const SAY_HIM = new RegExp("\\b(hey|hi|hello|ok|okay|yo|oi|excuse me)\\s+col+in\\b"
+  + "|\\b(ask|tell|" + SAY_TO + ")\\s+col+in\\b");
 const castNow = () => (brain.talkTo == null ? (brain.persona || "") : brain.talkTo);
+/* What to call each of them when quoting one to the other. "" is the orb, and
+   it is a real id rather than an absence -- see CASTS in the worker. */
+const CAST_NAME = { "": "Glorb, the orb", colin: "Colin" };
+const castName = (w) => CAST_NAME[w] || w || "someone else";
+
+/* ONE TRANSCRIPT, READ DIFFERENTLY BY EACH OF THEM.
+
+   The characters already had their own persona and their own voice, and
+   switching worked: say "hey Glorb" and the id changes, the worker resolves a
+   different prompt and a different voice, and the orb answers in the orb's
+   voice. It still came out as Colin, and the reason was not in any of that.
+
+   Both of them were reading and writing ONE list of messages. So the orb was
+   handed twenty turns in which the ASSISTANT -- itself, as far as the API is
+   concerned -- had been dry and smug and calling itself the compressed edition,
+   and then asked who it was. A system prompt does not win that argument;
+   demonstrated behaviour in the transcript beats description every time, which
+   is the same reason the voice samples were making him ramble.
+
+   So the log keeps who said what, and each character is handed a view of it:
+   its own lines as ITS OWN, everybody else's quoted inside the other side of
+   the conversation. Nothing is hidden -- the orb still knows what Colin just
+   said, which is what makes handing back and forth feel like one room rather
+   than two tabs -- but it can no longer mistake his lines for its own memory of
+   speaking. That generalises to as many characters as you like: the cast table
+   is the only thing that has to grow. */
+function castMsgs(cast) {
+  const out = [];
+  const add = (role, text) => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    /* Merged when two land in a row, which happens every time somebody else's
+       line is folded in ahead of yours. The API wants the roles to alternate. */
+    if (last && last.role === role) last.content += "\n" + text;
+    else out.push({ role, content: text });
+  };
+  for (const e of brain.log) {
+    if (e.role === "user") add("user", e.text);
+    else if (e.who === cast) add("assistant", e.text);
+    else add("user", "(" + castName(e.who) + ", to the same person, said: " + e.text + ")");
+  }
+  return out;
+}
 function castHeard(flat) {
   if (!world.on || !brain.persona) return;      // only where there are two of them
   if (SAY_ORB.test(flat)) {
@@ -643,7 +694,9 @@ const brain = {
      voice of his own. */
   voice: stored("orbVoice") || "",
   persona: "",
-  history: [],
+  /* The room's transcript, not one character's. Every line carries its author
+     so each of them can be handed its own view -- see castMsgs. */
+  log: [],
   busy: false
 };
 
@@ -848,9 +901,9 @@ async function ask(text) {
   brain.busy = true;
   clock.t0 = performance.now(); clock.firstTok = clock.lastTok = clock.audio = 0; clock.claudeMs = 0;
   clock.endpoint = endpointMs; endpointMs = 0; clock.via = ""; clock.legs = null;
-  brain.history.push({ role:"user", content:text });
+  brain.log.push({ role: "user", text });
   // the proxy is stateless, so trimming here is what bounds the token bill
-  if (brain.history.length > 20) brain.history.splice(0, brain.history.length - 20);
+  if (brain.log.length > 24) brain.log.splice(0, brain.log.length - 24);
   setState("thinking");
 
   let full = "", shown = false, pendingShow = null;   // the brain may pick the picture itself
@@ -866,7 +919,8 @@ async function ask(text) {
       /* And who it is talking to. The name is the page's to know -- it is in
          localStorage, not in the twenty messages the proxy is sent -- so it has
          to travel with every turn or the model forgets it mid-conversation. */
-      body: JSON.stringify({ messages: brain.history, images: imageList || [],
+      // built for whoever was asked: their lines as theirs, everyone else's quoted
+      body: JSON.stringify({ messages: castMsgs(askedAs), images: imageList || [],
                              // who is speaking; the Worker maps it to a persona
                              persona: castNow() || undefined,
                              // and what is on screen while it answers
@@ -946,19 +1000,17 @@ async function ask(text) {
        would fail the same way every time the same sentence was said, which is
        what makes it read as being ignored rather than as a glitch.
 
-       Pushing that empty string as an assistant turn makes it worse than
-       silence: the API rejects a message with empty content, so the NEXT
-       question fails too. Both turns come out of the history instead, which
-       leaves it valid and leaves the conversation where it was. */
-    if (full.trim()) brain.history.push({ role:"assistant", content: full });
-    else {
-      brain.history.pop();
-      console.log("orb: the brain returned no words -- nothing to say");
-    }
+       Pushing that empty string as a turn would make it worse than silence:
+       the API rejects a message with empty content, so the NEXT question would
+       fail too. Nothing is pushed, and the question stays in the log -- with
+       the transcript keyed by author, two questions in a row simply merge into
+       one user turn, so it stays valid without anything being thrown away. */
+    if (full.trim()) brain.log.push({ role: "assistant", who: askedAs, text: full });
+    else console.log("orb: the brain returned no words -- nothing to say");
   } catch (err) {
     full = "I couldn't reach my brain.";
     caption(text, full + "  (" + err.message + ")");
-    brain.history.pop();
+    brain.log.pop();                       // the question got no answer; drop it
   }
 
   brain.busy = false;
