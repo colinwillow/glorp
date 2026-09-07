@@ -742,6 +742,8 @@ function worldState() {
   if (safe(() => !!photo.img, false)) st.picture = safe(() => formLabel, "") || true;
   if (safe(() => menuOn, false)) st.menu = true;
   if (safe(() => !!vis.on, false)) st.mouthTest = true;
+  const g = safe(() => griefState(), undefined);
+  if (g) st.roughedUp = g;
   if (safe(() => !!A, false)) st.mic = "live";
   return Object.keys(st).length ? st : undefined;
 }
@@ -8956,6 +8958,103 @@ function hitTap(x, y) {
   return c && Math.hypot(x - c[0], y - c[1]) < HIT.poke * Math.min(W, H) ? 1 : 0;
 }
 
+/* ---------------- what you have been doing to him ----------------
+
+   Knocking him over was, until now, a thing that happened to a puppet: the
+   clips played, he got up, and the character on the other end of the microphone
+   had no idea any of it had occurred. You could put him on the floor eight
+   times and then ask him how his day was going.
+
+   So it is counted. Not really as a NUMBER -- the number is a means -- but as a
+   sense of having been messed with, which does two things. It gives him
+   something to say when he gets back up, said here rather than by the brain
+   because the joke is the timing and a round trip to get "ow" back two seconds
+   later is worse than silence. And it goes up with every question after that,
+   so it colours the CONVERSATION too: he is not answering you the same way
+   after the fifth time.
+
+   IT FORGIVES. A tally that only climbs turns him into a martyr an hour later
+   over something you did once, so it sheds a point every forty seconds or so
+   and a real gap wipes it. Being annoyed is funny; holding a grudge across a
+   session is not.
+
+   A TEMPERAMENT, NOT A LADDER. Past the top tier he picks one of four ways to
+   take it -- cross, sulking, hurt, up for it -- and STAYS in it until he has
+   calmed down, because a character who is angry then sad then aggressive in
+   three consecutive lines is not a character, it is a random number generator.
+   Which one is chosen is the roll; being consistent about it afterwards is what
+   makes it read as a mood. */
+const GRIEF = {
+  poke: 0.55,          // a prod
+  fling: 1.0,          // sent across the room
+  forgive: 40000,      // ms to shed one whole point
+  wait: [700, 1500],   // beat after he is upright before he says anything
+  gap: 4500,           // and never two lines closer than this
+  mood: 5,             // score at which he settles into a temperament
+};
+const grief = { n: 0, at: 0, mood: "", said: 0, last: "" };
+/* The count, as it stands right now rather than as it was banked. */
+function griefNow() {
+  if (!grief.n) return 0;
+  const gone = (performance.now() - grief.at) / GRIEF.forgive;
+  const n = Math.max(0, grief.n - gone);
+  /* The temperament decays with the count. It was only ever recomputed when he
+     was HIT, so once he had settled into sulking he stayed there through any
+     amount of quiet -- forgiving the tally while keeping the mood, which is the
+     grudge this is supposed not to hold. */
+  if (n < GRIEF.mood) grief.mood = "";
+  if (n <= 0) { grief.n = 0; grief.last = ""; }
+  return n;
+}
+function griefTake(kind) {
+  const n = griefNow() + (kind === "poke" ? GRIEF.poke : GRIEF.fling);
+  grief.n = n; grief.at = performance.now(); grief.last = kind;
+  if (n >= GRIEF.mood) {
+    if (!grief.mood) grief.mood = ["cross", "sulk", "hurt", "game"][(Math.random() * 4) | 0];
+  } else grief.mood = "";
+}
+/* First one, then a couple, then enough -- and past that, whichever way he has
+   decided to take it. Every line short: he has just got up off the floor. */
+const GRIEF_SAY = {
+  poke1: ["Ow.", "Oi.", "Did you just poke me?", "Rude."],
+  fling1: ["Oh, we're doing this.", "Right. Noted.", "Ow. Genuinely, ow.",
+           "That's a way to start."],
+  some: ["Come on, man.", "Alright, that's twice.", "Is this the whole thing now?",
+         "You're enjoying this more than I am.", "Again? Really?"],
+  cross: ["Okay, stop it.", "I'm not a toy, mate.", "Do that again and see.",
+          "Right, that's enough of that."],
+  sulk: ["Fine. Knock me over. Don't mind me.", "Cool. Great. Love it.",
+         "Don't worry about it. I'm fine.", "No, go on. I'll wait down here."],
+  hurt: ["That actually hurt, you know.", "What did I do to you?",
+         "You've been doing that a lot.", "I thought we were getting on."],
+  game: ["Is that it?", "You'll have to do better.", "Again. Go on.",
+         "I can do this all day, apparently."],
+};
+function griefSay() {
+  const now = performance.now();
+  if (now < grief.said || ttsPlaying || brain.busy) return;
+  const n = griefNow();
+  if (n < 0.5) return;
+  grief.said = now + GRIEF.gap;
+  const pool = grief.mood ? GRIEF_SAY[grief.mood]
+             : n >= 2.2 ? GRIEF_SAY.some
+             : grief.last === "poke" ? GRIEF_SAY.poke1 : GRIEF_SAY.fling1;
+  setTimeout(() => {
+    // still on his feet and still nobody talking, or it is not worth saying
+    if (!hit.on && !ttsPlaying && !brain.busy && world.on > 0.5) remark(pool);
+  }, GRIEF.wait[0] + Math.random() * (GRIEF.wait[1] - GRIEF.wait[0]));
+}
+/* And what the brain is told, which is the half that lasts. Deliberately not a
+   number to read out: a count invites him to quote it, and "you have shoved me
+   4.6 times" is not a thing a person says. */
+function griefState() {
+  const n = griefNow();
+  if (n < 0.5) return undefined;
+  return { level: n >= GRIEF.mood ? "a lot" : n >= 2.2 ? "several times" : "once",
+           mood: grief.mood || undefined,
+           last: grief.last === "poke" ? "poked" : "thrown across the room" };
+}
+
 function hitTake() {
   world.walking = 0; world.turning = 0; world.turnOnly = 0;
   world.seq = null; world.actUntil = 0;
@@ -8967,7 +9066,7 @@ function hitTake() {
 // a tap on him: struck where he stands, and the clip does the rest
 function hitPoke() {
   if (!world.on || rig.out || hit.on) return 0;
-  hitTake();
+  hitTake(); griefTake("poke");
   hit.vx = hit.vz = hit.vy = 0; hit.lift = 0;
   hitStage("fall");
   return 1;
@@ -8978,7 +9077,7 @@ function hitGo(dx, dy, speed) {
   if (!world.on || rig.out) return 0;
   const [ux, uz] = hitDir(dx, dy);
   const v = Math.min(HIT.cap, speed * HIT.push * 60) * figH1();
-  hitTake();
+  hitTake(); griefTake(speed < HIT.soft ? "poke" : "fling");
   hit.vx = ux * v; hit.vz = uz * v; hit.vy = 0; hit.lift = 0;
   if (speed < HIT.soft) {
     /* A shove he rides out. He should still give a little ground -- a man who
@@ -9028,6 +9127,7 @@ function hitStage(st) {
     playClip(pickIdle(), 0.4);
     world.idleAt = now + 2500;
     mindHold(HIT.hold);
+    griefSay();                  // upright again, and he has a view about it
   }
 }
 

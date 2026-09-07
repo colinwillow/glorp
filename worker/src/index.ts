@@ -406,6 +406,27 @@ function stateLine(v: unknown): string {
     + (typeof S.picture === "string" ? ": " + txt(S.picture, 40) : "") + ".");
   if (S.menu === true) bits.push("The menu is open.");
   if (S.mouthTest === true) bits.push("The mouth test is running.");
+  /* THIS ONE IS NOT SCENERY. Everything else in this block is context to answer
+     questions about; being knocked over is something that happened TO HIM, by
+     the person he is talking to, and it is supposed to change how he sounds.
+     Given as a level and a mood rather than a count, because a number invites
+     him to quote it and "you have shoved me four times" is not a thing anybody
+     says. */
+  const r = S.roughedUp as Record<string, unknown> | undefined;
+  if (r && typeof r === "object") {
+    const lvl = txt(r.level, 16), mood = txt(r.mood, 12), last = txt(r.last, 32);
+    const how: Record<string, string> = {
+      cross: "You have had enough of it and you are saying so.",
+      sulk: "You are being pointedly fine about it, which is worse.",
+      hurt: "It has actually got to you a bit and you are not hiding it well.",
+      game: "You have decided it is a game and you are up for it.",
+    };
+    bits.push("The person you are talking to has been knocking you about: "
+      + lvl + ", most recently " + (last || "shoved") + ". "
+      + (mood && how[mood] ? how[mood] + " " : "")
+      + "Let it colour how you answer -- shorter, spikier, less accommodating -- "
+      + "without making every reply about it, and never state a count.");
+  }
   if (!bits.length) return "";
   /* Told what it is FOR, or a model reads a status line as something to
      announce -- and nobody wants to be told what is on their own screen. */
