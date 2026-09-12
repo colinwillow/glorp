@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postbox</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%23f2c14e%27/%3E%3Crect x=%277%27 y=%2711%27 width=%2718%27 height=%2712%27 rx=%272%27 fill=%27%23111%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="drop" class="drop" hidden><div>Drop to add to the library</div></div>
+<header class="top">
+  <div class="brand">post<span>box</span></div>
+  <nav id="nav">
+    <button data-view="library" class="on">Library</button>
+    <button data-view="proposals">Proposals</button>
+    <button data-view="grid">Grid</button>
+    <button data-view="queue">Queue</button>
+    <button data-view="brain">Brain</button>
+  </nav>
+  <div id="status" class="status">…</div>
+</header>
+<main id="main"></main>
+<aside id="drawer" class="drawer" hidden></aside>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

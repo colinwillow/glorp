@@ -1,0 +1,54 @@
+{
+  "id": "cfc0a629",
+  "file": "peggy/title-logo-v2-cfc0a629.webp",
+  "originalName": "title-logo-v2.webp",
+  "originalPath": "peggy/title-logo-v2.webp",
+  "source": {
+    "repo": "peggy",
+    "path": "images/title-logo-v2.webp"
+  },
+  "addedAt": "2026-09-12T02:26:39.265Z",
+  "bytes": 116452,
+  "hash": "e52ab65f00df6a0758d2e25ffbdfc01b9a64fb0a32971726137f844fcc910c8e",
+  "mime": "image/webp",
+  "kind": "image",
+  "width": 1162,
+  "height": 706,
+  "aspect": "landscape",
+  "project": "peggy",
+  "palette": [
+    "#faf4e2",
+    "#161825",
+    "#c9c7bb",
+    "#868885",
+    "#d83c74"
+  ],
+  "tags": [
+    "peggy",
+    "image",
+    "title",
+    "logo"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#peggy"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Title Logo",
+  "description": "",
+  "mood": "",
+  "category": "branding",
+  "suitability": {
+    "instagram_feed": 0.5,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.9,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.6
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:58.011Z"
+}

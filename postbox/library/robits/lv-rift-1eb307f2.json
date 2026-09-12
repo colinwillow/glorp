@@ -1,0 +1,53 @@
+{
+  "id": "1eb307f2",
+  "file": "robits/lv-rift-1eb307f2.jpg",
+  "originalName": "lv_rift.jpg",
+  "originalPath": "robits/lv_rift.jpg",
+  "source": {
+    "repo": "robits",
+    "path": "thumbs/lv_rift.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.269Z",
+  "bytes": 37573,
+  "hash": "bddfa59b79f386d03520725776833e598fcaaaa45d693a38588ab1ac2d2d9d29",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 512,
+  "height": 512,
+  "aspect": "square",
+  "project": "robits",
+  "palette": [
+    "#58457b",
+    "#896979",
+    "#4a3446",
+    "#0d0c25",
+    "#745597"
+  ],
+  "tags": [
+    "robits",
+    "image",
+    "rift"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#robits"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Rift",
+  "description": "",
+  "mood": "",
+  "category": "game",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.429Z"
+}

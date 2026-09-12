@@ -1,0 +1,53 @@
+{
+  "id": "b1f1cc22",
+  "file": "robits/lv-foundry-b1f1cc22.jpg",
+  "originalName": "lv_foundry.jpg",
+  "originalPath": "robits/lv_foundry.jpg",
+  "source": {
+    "repo": "robits",
+    "path": "thumbs/lv_foundry.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.268Z",
+  "bytes": 92091,
+  "hash": "ee6f362ee14f8f5e3d317884da8f5f44bd296b17ef6e723d8cd02ea307283141",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 512,
+  "height": 512,
+  "aspect": "square",
+  "project": "robits",
+  "palette": [
+    "#091419",
+    "#3382aa",
+    "#282968",
+    "#394a97",
+    "#253439"
+  ],
+  "tags": [
+    "robits",
+    "image",
+    "foundry"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#robits"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Foundry",
+  "description": "",
+  "mood": "",
+  "category": "game",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.453Z"
+}

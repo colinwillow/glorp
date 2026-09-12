@@ -1,0 +1,53 @@
+{
+  "id": "638a5609",
+  "file": "robits/lv-cage-638a5609.jpg",
+  "originalName": "lv_cage.jpg",
+  "originalPath": "robits/lv_cage.jpg",
+  "source": {
+    "repo": "robits",
+    "path": "thumbs/lv_cage.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.267Z",
+  "bytes": 64731,
+  "hash": "34860d1d07791b7fc980f1c0552e5360fc13bb9406d139392576d3a85760bd51",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 512,
+  "height": 512,
+  "aspect": "square",
+  "project": "robits",
+  "palette": [
+    "#030409",
+    "#0a0b36",
+    "#071d67",
+    "#163c45",
+    "#256a78"
+  ],
+  "tags": [
+    "robits",
+    "image",
+    "cage"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#robits"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Cage",
+  "description": "",
+  "mood": "",
+  "category": "game",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.452Z"
+}

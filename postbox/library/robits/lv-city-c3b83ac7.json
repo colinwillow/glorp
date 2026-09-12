@@ -1,0 +1,53 @@
+{
+  "id": "c3b83ac7",
+  "file": "robits/lv-city-c3b83ac7.jpg",
+  "originalName": "lv_city.jpg",
+  "originalPath": "robits/lv_city.jpg",
+  "source": {
+    "repo": "robits",
+    "path": "thumbs/lv_city.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.267Z",
+  "bytes": 15657,
+  "hash": "9573d46bdec544dc57249915b15d17b69e4b533bfe82986b753bd5928383c5e4",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 224,
+  "height": 224,
+  "aspect": "square",
+  "project": "robits",
+  "palette": [
+    "#06161a",
+    "#272b36",
+    "#543149",
+    "#374a5b",
+    "#324b86"
+  ],
+  "tags": [
+    "robits",
+    "image",
+    "city"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#robits"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "City",
+  "description": "",
+  "mood": "",
+  "category": "game",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.445Z"
+}

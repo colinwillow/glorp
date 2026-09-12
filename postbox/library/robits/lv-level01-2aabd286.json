@@ -1,0 +1,53 @@
+{
+  "id": "2aabd286",
+  "file": "robits/lv-level01-2aabd286.jpg",
+  "originalName": "lv_level01.jpg",
+  "originalPath": "robits/lv_level01.jpg",
+  "source": {
+    "repo": "robits",
+    "path": "thumbs/lv_level01.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.268Z",
+  "bytes": 15319,
+  "hash": "559c526443aa1f2cd44ccfb2585d3884bcccaa3e8f949ddbac3f13d56402b201",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 224,
+  "height": 224,
+  "aspect": "square",
+  "project": "robits",
+  "palette": [
+    "#290907",
+    "#052617",
+    "#0a5738",
+    "#393618",
+    "#15a877"
+  ],
+  "tags": [
+    "robits",
+    "image",
+    "level01"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#robits"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Level01",
+  "description": "",
+  "mood": "",
+  "category": "game",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.448Z"
+}

@@ -1,0 +1,54 @@
+{
+  "id": "63c0a0fa",
+  "file": "peggy/logo-inked-source-63c0a0fa.jpg",
+  "originalName": "logo-inked-source.jpg",
+  "originalPath": "peggy/logo-inked-source.jpg",
+  "source": {
+    "repo": "peggy",
+    "path": "images/logo-inked-source.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.264Z",
+  "bytes": 109378,
+  "hash": "b7e903cf4eedee10917e4e47c5253b0ba304fa20a3a1d32d45a9ebd43e389ed8",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 1179,
+  "height": 851,
+  "aspect": "landscape",
+  "project": "peggy",
+  "palette": [
+    "#010000",
+    "#f9f3de",
+    "#f62578",
+    "#dbd5c4",
+    "#2a2926"
+  ],
+  "tags": [
+    "peggy",
+    "image",
+    "logo",
+    "inked"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#peggy"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Logo Inked",
+  "description": "",
+  "mood": "",
+  "category": "branding",
+  "suitability": {
+    "instagram_feed": 0.5,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.9,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.6
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.600Z"
+}

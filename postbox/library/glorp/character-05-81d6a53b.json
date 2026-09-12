@@ -1,0 +1,54 @@
+{
+  "id": "81d6a53b",
+  "file": "glorp/character-05-81d6a53b.jpg",
+  "originalName": "character_05.jpg",
+  "originalPath": "glorp/character_05.jpg",
+  "source": {
+    "repo": "glorp",
+    "path": "images/character_05.jpg"
+  },
+  "addedAt": "2026-09-12T02:26:39.260Z",
+  "bytes": 199905,
+  "hash": "a7310a5ff6a26a6ba6eb2c3fb60a873def4e1234f27a78b2d2ed284e451d2254",
+  "mime": "image/jpeg",
+  "kind": "image",
+  "width": 1080,
+  "height": 1080,
+  "aspect": "square",
+  "project": "glorp",
+  "palette": [
+    "#368332",
+    "#e7d5ba",
+    "#191914",
+    "#cbb696",
+    "#d67735"
+  ],
+  "tags": [
+    "glorp",
+    "image",
+    "character",
+    "05"
+  ],
+  "hashtags": [
+    "#indiedev",
+    "#madewiththree",
+    "#gamedev",
+    "#glorp"
+  ],
+  "rating": null,
+  "hidden": false,
+  "title": "Character 05",
+  "description": "",
+  "mood": "",
+  "category": "character",
+  "suitability": {
+    "instagram_feed": 0.9,
+    "instagram_reel": 0.2,
+    "tiktok": 0.2,
+    "x": 0.7,
+    "youtube_shorts": 0.1,
+    "linkedin": 0.3
+  },
+  "analyzedBy": "heuristic",
+  "updatedAt": "2026-09-12T02:27:57.770Z"
+}

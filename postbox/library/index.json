@@ -1,0 +1,804 @@
+{
+  "builtAt": "2026-09-12T02:27:58.013Z",
+  "assets": [
+    {
+      "id": "b2ea9d54",
+      "file": "robits/lv-void-b2ea9d54.jpg",
+      "originalName": "lv_void.jpg",
+      "originalPath": "robits/lv_void.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_void.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.270Z",
+      "bytes": 74922,
+      "hash": "13783b39b7971917b086f773f2bbcc4c75d39bb8f6508ec0baee0e0e74dc4c65",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 512,
+      "height": 512,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#fdfbfe",
+        "#0a1726",
+        "#fcc8fe",
+        "#fd86fe",
+        "#d6b9fe"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "void"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Void",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.455Z"
+    },
+    {
+      "id": "1eb307f2",
+      "file": "robits/lv-rift-1eb307f2.jpg",
+      "originalName": "lv_rift.jpg",
+      "originalPath": "robits/lv_rift.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_rift.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.269Z",
+      "bytes": 37573,
+      "hash": "bddfa59b79f386d03520725776833e598fcaaaa45d693a38588ab1ac2d2d9d29",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 512,
+      "height": 512,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#58457b",
+        "#896979",
+        "#4a3446",
+        "#0d0c25",
+        "#745597"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "rift"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Rift",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.429Z"
+    },
+    {
+      "id": "b1f1cc22",
+      "file": "robits/lv-foundry-b1f1cc22.jpg",
+      "originalName": "lv_foundry.jpg",
+      "originalPath": "robits/lv_foundry.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_foundry.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.268Z",
+      "bytes": 92091,
+      "hash": "ee6f362ee14f8f5e3d317884da8f5f44bd296b17ef6e723d8cd02ea307283141",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 512,
+      "height": 512,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#091419",
+        "#3382aa",
+        "#282968",
+        "#394a97",
+        "#253439"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "foundry"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Foundry",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.453Z"
+    },
+    {
+      "id": "2aabd286",
+      "file": "robits/lv-level01-2aabd286.jpg",
+      "originalName": "lv_level01.jpg",
+      "originalPath": "robits/lv_level01.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_level01.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.268Z",
+      "bytes": 15319,
+      "hash": "559c526443aa1f2cd44ccfb2585d3884bcccaa3e8f949ddbac3f13d56402b201",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 224,
+      "height": 224,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#290907",
+        "#052617",
+        "#0a5738",
+        "#393618",
+        "#15a877"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "level01"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Level01",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.448Z"
+    },
+    {
+      "id": "638a5609",
+      "file": "robits/lv-cage-638a5609.jpg",
+      "originalName": "lv_cage.jpg",
+      "originalPath": "robits/lv_cage.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_cage.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.267Z",
+      "bytes": 64731,
+      "hash": "34860d1d07791b7fc980f1c0552e5360fc13bb9406d139392576d3a85760bd51",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 512,
+      "height": 512,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#030409",
+        "#0a0b36",
+        "#071d67",
+        "#163c45",
+        "#256a78"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "cage"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Cage",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.452Z"
+    },
+    {
+      "id": "c3b83ac7",
+      "file": "robits/lv-city-c3b83ac7.jpg",
+      "originalName": "lv_city.jpg",
+      "originalPath": "robits/lv_city.jpg",
+      "source": {
+        "repo": "robits",
+        "path": "thumbs/lv_city.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.267Z",
+      "bytes": 15657,
+      "hash": "9573d46bdec544dc57249915b15d17b69e4b533bfe82986b753bd5928383c5e4",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 224,
+      "height": 224,
+      "aspect": "square",
+      "project": "robits",
+      "palette": [
+        "#06161a",
+        "#272b36",
+        "#543149",
+        "#374a5b",
+        "#324b86"
+      ],
+      "tags": [
+        "robits",
+        "image",
+        "city"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#robits"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "City",
+      "description": "",
+      "mood": "",
+      "category": "game",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.445Z"
+    },
+    {
+      "id": "cfc0a629",
+      "file": "peggy/title-logo-v2-cfc0a629.webp",
+      "originalName": "title-logo-v2.webp",
+      "originalPath": "peggy/title-logo-v2.webp",
+      "source": {
+        "repo": "peggy",
+        "path": "images/title-logo-v2.webp"
+      },
+      "addedAt": "2026-09-12T02:26:39.265Z",
+      "bytes": 116452,
+      "hash": "e52ab65f00df6a0758d2e25ffbdfc01b9a64fb0a32971726137f844fcc910c8e",
+      "mime": "image/webp",
+      "kind": "image",
+      "width": 1162,
+      "height": 706,
+      "aspect": "landscape",
+      "project": "peggy",
+      "palette": [
+        "#faf4e2",
+        "#161825",
+        "#c9c7bb",
+        "#868885",
+        "#d83c74"
+      ],
+      "tags": [
+        "peggy",
+        "image",
+        "title",
+        "logo"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#peggy"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Title Logo",
+      "description": "",
+      "mood": "",
+      "category": "branding",
+      "suitability": {
+        "instagram_feed": 0.5,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.9,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.6
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:58.011Z"
+    },
+    {
+      "id": "63c0a0fa",
+      "file": "peggy/logo-inked-source-63c0a0fa.jpg",
+      "originalName": "logo-inked-source.jpg",
+      "originalPath": "peggy/logo-inked-source.jpg",
+      "source": {
+        "repo": "peggy",
+        "path": "images/logo-inked-source.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.264Z",
+      "bytes": 109378,
+      "hash": "b7e903cf4eedee10917e4e47c5253b0ba304fa20a3a1d32d45a9ebd43e389ed8",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1179,
+      "height": 851,
+      "aspect": "landscape",
+      "project": "peggy",
+      "palette": [
+        "#010000",
+        "#f9f3de",
+        "#f62578",
+        "#dbd5c4",
+        "#2a2926"
+      ],
+      "tags": [
+        "peggy",
+        "image",
+        "logo",
+        "inked"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#peggy"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Logo Inked",
+      "description": "",
+      "mood": "",
+      "category": "branding",
+      "suitability": {
+        "instagram_feed": 0.5,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.9,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.6
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.600Z"
+    },
+    {
+      "id": "e9765608",
+      "file": "glorp/glorb-e9765608.png",
+      "originalName": "glorb.png",
+      "originalPath": "glorp/glorb.png",
+      "source": {
+        "repo": "glorp",
+        "path": "images/glorb.png"
+      },
+      "addedAt": "2026-09-12T02:26:39.263Z",
+      "bytes": 28923,
+      "hash": "c37350321ae8e8bc652395dcc18a7dd1f6e64c7a30d20f485ed8a7a20a41fa0e",
+      "mime": "image/png",
+      "kind": "image",
+      "width": 512,
+      "height": 512,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#000000"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "glorb"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Glorb",
+      "description": "",
+      "mood": "",
+      "category": "image",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.606Z"
+    },
+    {
+      "id": "70f90980",
+      "file": "glorp/character-06-70f90980.jpg",
+      "originalName": "character_06.jpg",
+      "originalPath": "glorp/character_06.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_06.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.262Z",
+      "bytes": 300541,
+      "hash": "e796305ab04c24045ce11928f10798dd0987ecd1f74d0ef69e51695beb636b35",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#bb120e",
+        "#39240a",
+        "#f9d9b6",
+        "#693917",
+        "#eb8847"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "06"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 06",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.941Z"
+    },
+    {
+      "id": "81d6a53b",
+      "file": "glorp/character-05-81d6a53b.jpg",
+      "originalName": "character_05.jpg",
+      "originalPath": "glorp/character_05.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_05.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.260Z",
+      "bytes": 199905,
+      "hash": "a7310a5ff6a26a6ba6eb2c3fb60a873def4e1234f27a78b2d2ed284e451d2254",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#368332",
+        "#e7d5ba",
+        "#191914",
+        "#cbb696",
+        "#d67735"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "05"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 05",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.770Z"
+    },
+    {
+      "id": "a2570127",
+      "file": "glorp/character-04-a2570127.jpg",
+      "originalName": "character_04.jpg",
+      "originalPath": "glorp/character_04.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_04.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.259Z",
+      "bytes": 251498,
+      "hash": "04adb5b9f4244e1953acfb1c52cfd9d0d890afb7397ae12f30e640f02f34ae13",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#0074cc",
+        "#16344a",
+        "#673509",
+        "#a85516",
+        "#eb8535"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "04"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 04",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.687Z"
+    },
+    {
+      "id": "e9a9a0fc",
+      "file": "glorp/character-03-e9a9a0fc.jpg",
+      "originalName": "character_03.jpg",
+      "originalPath": "glorp/character_03.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_03.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.257Z",
+      "bytes": 280085,
+      "hash": "78ca5f1b6eec2e0e41d21cbf0eaaca27d02d6c1d76b5f596cc61b86b4bbfdbad",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#dd5409",
+        "#855a99",
+        "#e67a38",
+        "#f79858",
+        "#aa3904"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "03"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 03",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.984Z"
+    },
+    {
+      "id": "237efc56",
+      "file": "glorp/character-02-237efc56.jpg",
+      "originalName": "character_02.jpg",
+      "originalPath": "glorp/character_02.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_02.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.255Z",
+      "bytes": 287229,
+      "hash": "090b4709d18bd887442b354cb0b93a18839827a34497dc275c14271ef2ee7df8",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#c4a284",
+        "#e4c6a8",
+        "#361b08",
+        "#643818",
+        "#947c64"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "02"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 02",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.841Z"
+    },
+    {
+      "id": "9ea31f54",
+      "file": "glorp/character-01-9ea31f54.jpg",
+      "originalName": "character_01.jpg",
+      "originalPath": "glorp/character_01.jpg",
+      "source": {
+        "repo": "glorp",
+        "path": "images/character_01.jpg"
+      },
+      "addedAt": "2026-09-12T02:26:39.247Z",
+      "bytes": 255634,
+      "hash": "1308ec9e13c6503fe0356583b68a1ae1e64a7bfa610d9d6143e8abc02b0acde9",
+      "mime": "image/jpeg",
+      "kind": "image",
+      "width": 1080,
+      "height": 1080,
+      "aspect": "square",
+      "project": "glorp",
+      "palette": [
+        "#fcc300",
+        "#373c36",
+        "#966427",
+        "#764516",
+        "#572605"
+      ],
+      "tags": [
+        "glorp",
+        "image",
+        "character",
+        "01"
+      ],
+      "hashtags": [
+        "#indiedev",
+        "#madewiththree",
+        "#gamedev",
+        "#glorp"
+      ],
+      "rating": null,
+      "hidden": false,
+      "title": "Character 01",
+      "description": "",
+      "mood": "",
+      "category": "character",
+      "suitability": {
+        "instagram_feed": 0.9,
+        "instagram_reel": 0.2,
+        "tiktok": 0.2,
+        "x": 0.7,
+        "youtube_shorts": 0.1,
+        "linkedin": 0.3
+      },
+      "analyzedBy": "heuristic",
+      "updatedAt": "2026-09-12T02:27:57.861Z"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+node_modules/
+.env
+inbox/*
+!inbox/.gitkeep
+outbox/*
+!outbox/.gitkeep
+library/**/*.tmp
+tests/shots/
+posts.json
+grid.json
