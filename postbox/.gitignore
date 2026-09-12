@@ -8,3 +8,5 @@ library/**/*.tmp
 tests/shots/
 posts.json
 grid.json
+chat.json
+auto-log.jsonl

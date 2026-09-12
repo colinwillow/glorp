@@ -111,3 +111,26 @@ main { padding: 16px; max-width: 1400px; }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; z-index: 60; }
 .empty { color: var(--dim); padding: 40px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
 @media (max-width: 900px) { .gridwrap { grid-template-columns: 1fr; } .slot { grid-template-columns: 110px 48px 1fr; } .slot .act { grid-column: 1 / -1; } }
+
+/* chat */
+.chat-toggle { margin-left: 8px; }
+.chat { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); background: var(--panel); border-left: 1px solid var(--line); z-index: 9; display: flex; flex-direction: column; box-shadow: -20px 0 40px rgba(0,0,0,.4); }
+.chat-head { display: flex; gap: 6px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.chat-log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 92%; padding: 8px 10px; border-radius: 10px; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+.msg.user { align-self: flex-end; background: var(--accent); color: #111; }
+.msg.bot { align-self: flex-start; background: var(--panel2); }
+.msg .calls { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.msg .calls span { font-family: var(--mono); font-size: 10px; background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 8px; }
+.chat-form { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--line); }
+.chat-form textarea { flex: 1; min-height: 44px; }
+body.chat-open main { margin-right: min(440px, 100vw); }
+/* compose */
+.compose { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.compose .preview { min-height: 120px; }
+.compose .opts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.compose .opts label { margin: 0; }
+/* auto */
+.auto .log { display: grid; gap: 6px; }
+.auto .entry { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; }
+.auto .entry small { color: var(--dim); font-family: var(--mono); }

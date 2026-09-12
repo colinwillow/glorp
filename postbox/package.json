@@ -9,11 +9,12 @@
     "ingest": "node server/ingest.js",
     "harvest": "node tools/harvest.mjs",
     "shoot": "node tools/screenshot.mjs",
-    "test": "node tests/run.mjs",
+    "test": "node tests/run.mjs && node tests/hands.mjs",
     "smoke": "node tests/drive.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "sharp": "^0.35.4",
     "zod": "^4.0.0"
   },
   "engines": {

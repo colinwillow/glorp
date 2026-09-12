@@ -16,12 +16,19 @@
     <button data-view="proposals">Proposals</button>
     <button data-view="grid">Grid</button>
     <button data-view="queue">Queue</button>
+    <button data-view="auto">Auto</button>
     <button data-view="brain">Brain</button>
   </nav>
+  <button id="chatToggle" class="chat-toggle" title="Talk to it">💬 Chat</button>
   <div id="status" class="status">…</div>
 </header>
 <main id="main"></main>
 <aside id="drawer" class="drawer" hidden></aside>
+<aside id="chat" class="chat" hidden>
+  <div class="chat-head"><b>Talk to it</b><span class="grow"></span><button class="small" id="chatClear">clear</button><button class="small" id="chatClose">✕</button></div>
+  <div id="chatLog" class="chat-log"></div>
+  <form id="chatForm" class="chat-form"><textarea id="chatText" rows="2" placeholder="e.g. put the three robits levels on the top row, then crop Foundry to 4:5 with the title on it"></textarea><button class="primary" type="submit">Send</button></form>
+</aside>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="app.js"></script>
 </body>

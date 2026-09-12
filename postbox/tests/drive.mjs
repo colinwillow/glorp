@@ -38,5 +38,16 @@ await page.click('button:has-text("Fill with 9 newest")'); await page.waitForTim
 await page.click('button:has-text("Auto-arrange")'); await page.waitForTimeout(800);
 await shot('5-grid');
 await nav('brain'); await page.waitForTimeout(500); await shot('6-brain');
+// compose panel in the drawer
+await nav('library'); await page.click('.tile'); await page.waitForTimeout(300);
+await page.fill('.compose input[placeholder]', 'Foundry'); await page.waitForTimeout(700); await shot('7-compose');
+await page.click('.compose button:has-text("Save as new asset")'); await page.waitForTimeout(1500);
+await page.click('#drawer button:has-text("back")');
+// chat panel: offline commands go through the tool registry
+await page.click('#chatToggle'); await page.waitForTimeout(300);
+await page.fill('#chatText', 'fill 6'); await page.press('#chatText', 'Enter'); await page.waitForTimeout(1200);
+await page.fill('#chatText', 'grid'); await page.press('#chatText', 'Enter'); await page.waitForTimeout(1200);
+await nav('grid'); await page.waitForTimeout(400); await shot('8-chat');
+await nav('auto'); await page.click('button:has-text("Run auto now")'); await page.waitForTimeout(3000); await shot('9-auto');
 console.log('errors:', errors);
 await b.close();

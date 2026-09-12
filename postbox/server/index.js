@@ -15,6 +15,10 @@ import { planQueue, WINDOWS, CADENCE } from './schedule.js';
 import { autoArrange, rowCohesion, gridScore } from './grid.js';
 import { publishPost, adapters } from './adapters/index.js';
 import { listGenerators } from './generators/index.js';
+import { chatTurn, loadChat, clearChat, runAuto, autoLog } from './chat.js';
+import { TOOLS, runTool } from './tools.js';
+import { deriveAsset, renderEdit, ASPECTS } from './edit.js';
+import { hasDiscord } from './discord.js';
 
 const PORT = Number(process.env.POSTBOX_PORT) || 8140;
 
@@ -43,7 +47,7 @@ const route = (method, pattern, fn, opts = {}) => routes.push({ method, pattern:
 
 // ---- status ----
 route('GET', '/api/status', () => ({
-  ai: hasClaude(), model: MODEL, platforms: PLATFORMS, generators: listGenerators(),
+  ai: hasClaude(), model: MODEL, discord: hasDiscord(), tools: TOOLS.map(t => ({ name: t.name, description: t.description })), aspects: Object.keys(ASPECTS), platforms: PLATFORMS, generators: listGenerators(),
   windows: WINDOWS, cadence: CADENCE, counts: { assets: loadAssets().length, posts: loadPosts().length },
 }));
 
@@ -136,6 +140,29 @@ route('POST', '/api/grid/arrange', (req, body) => {
 });
 function toRows(list, cols = 3) { const rows = []; for (let i = 0; i < list.length; i += cols) rows.push(list.slice(i, i + cols)); return rows; }
 
+// ---- chat / tools / auto ----
+route('GET', '/api/chat', () => ({ turns: loadChat().turns || [] }));
+route('DELETE', '/api/chat', () => { clearChat(); return { ok: true }; });
+route('POST', '/api/chat', async (req, body) => chatTurn(String(body.text || '')));
+route('POST', '/api/tools/:name', async (req, body, p) => ({ result: await runTool(p.name, body) }));
+route('POST', '/api/auto/run', async (req, body) => runAuto({ threshold: body.threshold, handoff: Boolean(body.handoff) }));
+route('GET', '/api/auto/log', () => ({ log: autoLog() }));
+
+// ---- image edits ----
+// Preview renders to the response without saving; commit files a derived asset.
+route('POST', '/api/assets/:id/preview', async (req, body, p, url, res) => {
+  const a = getAsset(p.id); if (!a) return [404, { error: 'no such asset' }];
+  const { buffer } = await renderEdit(assetPath(a), body);
+  res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }); res.end(buffer);
+  return null;
+});
+route('POST', '/api/assets/:id/edit', async (req, body, p) => {
+  const a = getAsset(p.id); if (!a) return [404, { error: 'no such asset' }];
+  const { label, ...ops } = body;
+  return { asset: await deriveAsset(a, ops, { label: label || ops.aspect || 'edit' }) };
+});
+route('POST', '/api/posts/:id/handoff', async (req, body, p) => ({ result: await runTool('hand_off', { id: p.id }) }));
+
 // ---- brain ----
 route('GET', '/api/brain', () => ({ text: readBrain() }));
 route('PUT', '/api/brain', (req, body) => { writeBrain(body.text || ''); return { ok: true }; });
@@ -150,7 +177,8 @@ const server = http.createServer(async (req, res) => {
       const m = r.pattern.exec(url.pathname);
       if (!m) continue;
       const body = r.raw ? await readBody(req) : (req.method === 'GET' ? {} : await readJSONBody(req));
-      const out = await r.fn(req, body, m.groups || {}, url);
+      const out = await r.fn(req, body, m.groups || {}, url, res);
+      if (out === null) return; // the handler wrote the response itself
       return Array.isArray(out) ? json(res, out[0], out[1]) : json(res, 200, out);
     }
     if (url.pathname.startsWith('/library/')) return serveFile(res, path.join(DIRS.library, decodeURIComponent(url.pathname.slice(9))));

@@ -73,7 +73,7 @@ async function paletteFor(a) {
 }
 
 // ---- views ------------------------------------------------------------------
-const views = { library, proposals, grid, queue, brain };
+const views = { library, proposals, grid, queue, auto, brain };
 function render() { const m = $('#main'); m.replaceChildren(views[state.view]()); for (const b of document.querySelectorAll('#nav button')) b.classList.toggle('on', b.dataset.view === state.view); }
 $('#nav').addEventListener('click', e => { if (e.target.dataset.view) { state.view = e.target.dataset.view; closeDrawer(); render(); } });
 
@@ -113,7 +113,7 @@ function openAsset(a) {
   const d = $('#drawer'); d.hidden = false;
   const field = (label, key, multi) => h('div', {}, h('label', {}, label), multi ? h('textarea', { value: a[key] || '', onchange: e => patch({ [key]: e.target.value }) }) : h('input', { value: Array.isArray(a[key]) ? a[key].join(', ') : (a[key] || ''), onchange: e => patch({ [key]: Array.isArray(a[key]) ? e.target.value.split(/[,\s]+/).filter(Boolean) : e.target.value }) }));
   const patch = async (p) => { Object.assign(a, (await api('PATCH', '/api/assets/' + a.id, p)).asset); render(); };
-  d.replaceChildren(
+  d.replaceChildren(...[
     h('div', { class: 'row' }, h('button', { onclick: closeDrawer }, '← back'), h('span', { class: 'grow' }), h('span', { class: 'mono muted' }, `${a.width}×${a.height} · ${a.aspect} · ${(a.bytes / 1024).toFixed(0)} KB · ${a.analyzedBy}`)),
     h('div', { class: 'preview' }, media(a)),
     h('div', { class: 'row' }, projectChip(a.project), h('span', { class: 'chip' }, a.category || a.kind), swatches(a.palette), h('span', { class: 'grow' }),
@@ -122,6 +122,7 @@ function openAsset(a) {
     a.postIdea ? h('p', { class: 'muted' }, '💡 ', a.postIdea) : null,
     a.source ? h('p', { class: 'mono muted' }, `from ${a.source.repo}/${a.source.path}`) : null,
     a.analyzeError ? h('p', { class: 'problems' }, a.analyzeError) : null,
+    a.kind === 'image' ? compose(a) : null,
     h('div', { class: 'row', style: 'margin-top:14px' },
       h('button', { class: 'primary', onclick: () => addToGrid(a.id) }, 'Add to grid'),
       h('button', { onclick: () => quickPost(a) }, 'Make a post'),
@@ -129,9 +130,34 @@ function openAsset(a) {
       h('button', { onclick: () => patch({ hidden: !a.hidden }) }, a.hidden ? 'Unhide' : 'Hide'),
       h('button', { class: 'danger', onclick: async () => { if (confirm('Delete this file from the library?')) { await api('DELETE', '/api/assets/' + a.id); closeDrawer(); load(); } } }, 'Delete'),
     ),
-  );
+  ].filter(Boolean));
 }
 function closeDrawer() { $('#drawer').hidden = true; }
+
+// Compose: crop to a platform shape, put a title on it, keep the original.
+function compose(a) {
+  const ops = { aspect: 'portrait', title: '', subtitle: '', position: 'bottom', align: 'left', color: projectColorHex(a.project), pad: false, bar: true, band: true, size: 0.07 };
+  const img = h('img', { alt: 'preview' });
+  let t;
+  const refresh = () => { clearTimeout(t); t = setTimeout(async () => { const r = await fetch(`/api/assets/${a.id}/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ops) }); img.src = URL.createObjectURL(await r.blob()); }, 250); };
+  const opt = (label, el) => h('label', {}, label, el);
+  const sel = (key, opts) => h('select', { onchange: e => { ops[key] = e.target.value; refresh(); } }, opts.map(o => h('option', { value: o, selected: ops[key] === o }, o)));
+  const txt = (key, ph) => h('input', { placeholder: ph, oninput: e => { ops[key] = e.target.value; refresh(); } });
+  const chk = (key) => h('input', { type: 'checkbox', checked: ops[key], onchange: e => { ops[key] = e.target.checked; refresh(); } });
+  refresh();
+  return h('div', { class: 'compose' },
+    h('div', { class: 'row' }, h('b', {}, 'Compose'), h('span', { class: 'muted' }, 'makes a new image; the original stays')),
+    h('div', { class: 'preview' }, img),
+    h('div', { class: 'opts' },
+      opt('Shape', sel('aspect', state.status.aspects)), opt('Bar colour', h('input', { type: 'color', value: ops.color, oninput: e => { ops.color = e.target.value; refresh(); } })),
+      opt('Title', txt('title', a.title)), opt('Subtitle', txt('subtitle', a.project)),
+      opt('Position', sel('position', ['bottom', 'center', 'top'])), opt('Align', sel('align', ['left', 'center', 'right'])),
+      opt('Fit whole image (logos)', chk('pad')), opt('Colour bar', chk('bar')),
+    ),
+    h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'primary', onclick: async () => { toast('Rendering…'); const r = await api('POST', `/api/assets/${a.id}/edit`, { ...ops, label: ops.title ? 'cover' : ops.aspect }); toast('Saved as ' + r.asset.title); await load(); openAsset(byId(r.asset.id)); } }, 'Save as new asset')),
+  );
+}
+function projectColorHex(p) { let x = 0; for (const c of String(p || '')) x = (x * 31 + c.charCodeAt(0)) >>> 0; const hh = x % 360, ss = .7, l = .62; const k = n => (n + hh / 30) % 12, aa = ss * Math.min(l, 1 - l), f = n => l - aa * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1))); return '#' + [f(0), f(8), f(4)].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join(''); }
 
 async function quickPost(a) {
   const post = { platform: state.platform, project: a.project, assets: [a.id], cover: a.id, title: a.title, caption: a.description || a.title, hashtags: a.hashtags || [], rationale: 'Made by hand from the library.', generatedBy: 'you' };
@@ -272,6 +298,43 @@ function brain() {
     h('div', { class: 'bar' }, h('button', { class: 'primary', onclick: async () => { await api('PUT', '/api/brain', { text: ta.value }); toast('Saved'); } }, 'Save BRAIN.md'), h('span', { class: 'muted' }, 'Every AI call reads this. Approvals, rejections and notes append to the log at the bottom.')),
     ta);
 }
+
+// ---- auto ------------------------------------------------------------------
+function auto() {
+  const box = h('div', { class: 'log' }, h('div', { class: 'muted' }, 'loading…'));
+  let threshold = 0.85, handoff = false;
+  api('GET', '/api/auto/log').then(r => box.replaceChildren(...(r.log.length ? r.log.reverse().map(e => h('div', { class: 'entry' }, h('small', {}, `${new Date(e.started).toLocaleString()} · ${e.ai ? 'agent' : 'pipeline'} · threshold ${e.threshold} · handoff ${e.handoff ? 'on' : 'off'} · ${e.calls} actions`), h('div', {}, e.report))) : [h('div', { class: 'empty' }, 'Auto mode has not run yet.')])));
+  return h('div', { class: 'auto' },
+    h('div', { class: 'bar' },
+      h('button', { class: 'primary', onclick: async () => { toast('Running auto…', 120000); try { const r = await api('POST', '/api/auto/run', { threshold, handoff }); toast('Done', 3000); await load(); state.view = 'auto'; render(); } catch (e) { toast(e.message); } } }, 'Run auto now'),
+      h('label', {}, 'approve at ≥ ', h('input', { type: 'number', step: '0.05', min: 0, max: 1, value: threshold, style: 'width:70px', onchange: e => threshold = Number(e.target.value) })),
+      h('label', {}, h('input', { type: 'checkbox', onchange: e => handoff = e.target.checked }), ' allow handoff to Discord'),
+      h('span', { class: 'grow' }),
+      h('span', { class: 'muted' }, state.status.ai ? 'Runs the assistant on the standing prompt from BRAIN.md ("## Auto mode"), with every tool.' : 'No key: runs the deterministic pipeline (ingest → propose → arrange → approve above threshold → plan).'),
+    ),
+    h('p', { class: 'muted' }, `Handoff target: ${state.status.discord ? 'Discord webhook configured' : 'no DISCORD_WEBHOOK_URL — handoff writes a dry run to outbox/'}. To run this on a timer: \`while true; do curl -s -XPOST localhost:8140/api/auto/run -d '{}' -H 'content-type: application/json'; sleep 3600; done\``),
+    box);
+}
+
+// ---- chat -------------------------------------------------------------------
+const chatEl = $('#chat'), chatLog = $('#chatLog');
+function renderChat(turns) {
+  chatLog.replaceChildren(...turns.flatMap(t => [h('div', { class: 'msg user' }, t.user), h('div', { class: 'msg bot' }, t.reply, t.calls?.length ? h('div', { class: 'calls' }, t.calls.map(c => h('span', { title: JSON.stringify(c.input) }, c.name))) : null)]).filter(Boolean));
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+async function openChat() { chatEl.hidden = false; document.body.classList.add('chat-open'); renderChat((await api('GET', '/api/chat')).turns); $('#chatText').focus(); }
+$('#chatToggle').onclick = () => chatEl.hidden ? openChat() : ($('#chatClose').click());
+$('#chatClose').onclick = () => { chatEl.hidden = true; document.body.classList.remove('chat-open'); };
+$('#chatClear').onclick = async () => { await api('DELETE', '/api/chat'); renderChat([]); };
+$('#chatForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const ta = $('#chatText'); const text = ta.value.trim(); if (!text) return; ta.value = '';
+  chatLog.append(h('div', { class: 'msg user' }, text), h('div', { class: 'msg bot muted', id: 'pending' }, '…')); chatLog.scrollTop = chatLog.scrollHeight;
+  try { await api('POST', '/api/chat', { text }); } catch (err) { toast(err.message, 5000); }
+  renderChat((await api('GET', '/api/chat')).turns);
+  load();
+};
+$('#chatText').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#chatForm').requestSubmit(); } });
 
 // ---- drag & drop upload anywhere -------------------------------------------
 let dragDepth = 0;
