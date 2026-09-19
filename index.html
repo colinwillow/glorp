@@ -2,7 +2,32 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- NO ZOOMING. A twin-stick game is two thumbs on glass, and every one of the
+     browser's own gestures is something a thumb does by accident: a double tap
+     while jabbing at a control, two fingers landing at once on the sticks.
+     THREE DIFFERENT MECHANISMS HAVE TO BE TURNED OFF AND ONLY ONE OF THEM IS
+     THE VIEWPORT META:
+
+       double-tap zoom  `touch-action` in the CSS. iOS Safari has IGNORED
+                        `user-scalable=no` since iOS 10 -- it is honoured on
+                        Android and nowhere else that matters, so the meta tag
+                        is not the fix and never was.
+       PINCH zoom       its own non-standard event family. `gesturestart` /
+                        `gesturechange` / `gestureend` fire for two fingers and
+                        zoom the page whatever the CSS says; `touch-action`
+                        does not cover them.
+       desktop          `dblclick`, belt and braces for a trackpad.
+
+     FIRST IN THE HEAD, with the crash trap, and deliberately not in a module:
+     a guard that only installs once the game has loaded is a guard that is
+     absent for the whole of the loading screen -- and missing entirely if the
+     module throws, which is exactly when somebody starts jabbing at it. -->
+<script>
+for (var i = 0, G = ['gesturestart', 'gesturechange', 'gestureend', 'dblclick']; i < G.length; i++)
+  addEventListener(G[i], function (e) { e.preventDefault(); }, { passive: false });
+</script>
+
 <title>Glorb</title>
 <meta name="theme-color" content="#0B0B0B">
 <meta name="description" content="Glorb: an audio-reactive orb you can talk to.">
@@ -20,7 +45,14 @@
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%;background:#0B0B0B;overflow:hidden;
+  /* `touch-action` ON THE ROOT, not only on the canvas. It is not inherited,
+     but the browser intersects the values from the hit element up through its
+     ancestors, so `none` here covers everything that does not override it --
+     including a double tap that lands on the HUD rather than the canvas, which
+     is the one that kept zooming. The sheet below sets `pan-y` and still
+     scrolls: it is its own scroll container, so the intersection stops there. */
+  html,body{height:100%;background:#0B0B0B;overflow:hidden;overscroll-behavior:none;
+    touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
     font-family:'DM Mono',ui-monospace,monospace;-webkit-tap-highlight-color:transparent}
   canvas{display:block;width:100%;height:100%;touch-action:none}
   /* LIGHT MODE, CHROME ONLY.
