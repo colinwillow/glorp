@@ -16,7 +16,7 @@ export interface Env {
   ELEVEN_STYLE?: string;
   ELEVEN_SPEAKER_BOOST?: string;
   ELEVEN_SPEED?: string;
-  /** e.g. https://colinwillow.github.io */
+  /** e.g. https://colinwillow.github.io -- or several, comma-separated */
   ALLOWED_ORIGIN?: string;
   /** Who the orb is. Set it in the dashboard to change the personality with
    *  no deploy and no computer; unset falls back to PERSONA below. */
@@ -1064,7 +1064,12 @@ async function chat(request: Request, env: Env, headers: Record<string, string>)
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const origin = env.ALLOWED_ORIGIN ?? "*";
+    /* ALLOWED_ORIGIN may be one origin or a comma-separated list (the portfolio is
+       served from colinwillow.github.io AND colinwillow.com). CORS takes exactly
+       one origin per response, so echo the caller's when it is on the list. */
+    const allowed = (env.ALLOWED_ORIGIN ?? "*").split(",").map((o) => o.trim()).filter(Boolean);
+    const from = request.headers.get("origin") ?? "";
+    const origin = allowed.includes("*") ? "*" : (allowed.includes(from) ? from : allowed[0]);
     const headers = cors(origin);
     const url = new URL(request.url);
     const path = url.pathname;
