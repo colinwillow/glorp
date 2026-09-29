@@ -4403,8 +4403,25 @@ const HUE_RIM = -1, HUE_CORE = 0.25;
 const LIGHT = (() => { const v = [-0.52, -0.50, -0.69];
   const L = Math.hypot(v[0], v[1], v[2]); return v.map((c) => c / L); })();
 
+/* An embedding page can hand him its own two colours (rim and core), so he sits
+   in its palette instead of his own. The SHAPE of the table is kept -- grey
+   where the size crosses zero, saturating either side at the rate the stock
+   ramp does -- and the audio hue still turns both ends, just more gently. */
+let embedPal = null;
 function buildLut(hueShift, flat) {
   const cl = (ch) => (ch < 0 ? 0 : ch > 255 ? 255 : ch);
+  if (embedPal) {
+    const { rim, core, mid } = embedPal;
+    for (let i = 0; i < LUT_N; i++) {
+      const size = LUT_LO + (i / (LUT_N - 1)) * (LUT_HI - LUT_LO);
+      const to = size < 0 ? rim : core, f = Math.min(1, Math.abs(size) / 17);
+      const e = f * f * (3 - 2 * f);
+      lut[i] = toRgb(cl(mid[0] + (to[0] - mid[0]) * e), cl(mid[1] + (to[1] - mid[1]) * e),
+                     cl(mid[2] + (to[2] - mid[2]) * e),
+                     0.45 * hueShift * (size < 0 ? HUE_RIM : HUE_CORE) + (flat || 0));
+    }
+    return;
+  }
   for (let i = 0; i < LUT_N; i++) {
     const size = LUT_LO + (i / (LUT_N - 1)) * (LUT_HI - LUT_LO);
     lut[i] = toRgb(cl(size * cfg.rK + cfg.base), cl(size * cfg.gK + cfg.base),
@@ -14426,8 +14443,105 @@ if (EMBED.has("embed")) {
     else if (Math.hypot(dx, dy) < 12 && took < 450) up({ glorb: "tap" });
   }, { passive: true, capture: true });
   addEventListener("pointercancel", () => { d0 = null; }, { capture: true });
+  /* THE GHOST SONG. He is a music visualiser at heart, and with no audio he
+     sits almost still -- which in a hero reads as broken, not as calm. So the
+     embed plays him a song nobody hears: a fake analyser that his real music
+     path reads exactly as it would read a record, and every tuned thing
+     downstream of it (the onsets, the tempo, the colour history) runs for real.
+     When the host IS playing something it sends the actual FFT instead, and
+     that wins while it keeps arriving. */
+  const SR = 48000, NB = 1024, NT = 2048, BPM = 94;
+  const ext = { f: new Uint8Array(NB), t: new Float32Array(NT), at: -1e9 };
+  let gLevel = EMBED.has("still") ? 0 : 1;
+  const hz = (i) => (i * SR) / (2 * NB);
+  const noise = (i, k) => { const v = Math.sin(i * 127.1 + k * 311.7) * 43758.5; return v - Math.floor(v); };
+  function groove(now) {
+    const t = now / 1000, beat = t * BPM / 60, ph = beat % 1, n = Math.floor(beat);
+    const phrase = 0.55 + 0.45 * Math.sin(t * 0.19) * Math.sin(t * 0.071 + 1);
+    const kick = (n % 4 === 3 && ph > 0.5 ? Math.exp(-(ph - 0.5) * 16) * 0.8 : 0) + Math.exp(-ph * 9);
+    const snare = n % 2 === 1 ? Math.exp(-ph * 11) : 0;
+    const p8 = (beat * 2) % 1, hat = Math.exp(-p8 * 18) * (0.5 + 0.5 * phrase);
+    const bassN = [0, 0, 3, 5][Math.floor(beat / 2) % 4], bassF = 55 * Math.pow(2, bassN / 12);
+    return { t, kick: kick * gLevel, snare: snare * gLevel * phrase, hat: hat * gLevel,
+             pad: (0.35 + 0.35 * phrase) * gLevel, bassF, beat };
+  }
+  const ghost = {
+    frequencyBinCount: NB, fftSize: NT,
+    getByteFrequencyData(out) {
+      const now = performance.now();
+      if (now - ext.at < 400) { out.set(ext.f); return; }
+      const G = groove(now), k = Math.floor(now / 16);
+      for (let i = 0; i < NB; i++) {
+        const f = Math.max(1, hz(i)), lf = Math.log2(f);
+        let v = 0;
+        v += 1.0 * G.kick * Math.exp(-Math.pow((lf - 5.9) / 0.5, 2));              // ~60 Hz thump
+        v += 0.7 * G.pad * Math.exp(-Math.pow((f - G.bassF * 2) / 18, 2));         // bass line
+        v += 0.55 * G.snare * Math.exp(-Math.pow((lf - 10.2) / 1.6, 2));           // snare body + air
+        v += 0.4 * G.hat * (f > 6000 ? Math.exp(-(f - 6000) / 7000) : 0);          // hats
+        v += 0.28 * G.pad * Math.exp(-Math.pow((lf - 9) / 1.4, 2)) *               // pad, breathing
+             (0.7 + 0.3 * Math.sin(G.t * 0.9 + lf * 1.7));
+        v *= 0.8 + 0.4 * noise(i, k);
+        out[i] = Math.max(0, Math.min(255, 255 * (1 + Math.log10(v + 1e-4) / 2.2)));
+      }
+    },
+    getFloatTimeDomainData(out) {
+      const now = performance.now();
+      if (now - ext.at < 400) { out.set(ext.t); return; }
+      const G = groove(now), k = Math.floor(now / 16);
+      for (let j = 0; j < NT; j++) {
+        const ts = G.t + j / SR;
+        out[j] = 0.34 * G.kick * Math.sin(ts * 2 * Math.PI * 58) +
+                 0.16 * G.pad * Math.sin(ts * 2 * Math.PI * G.bassF) +
+                 (0.2 * G.snare + 0.07 * G.hat) * (noise(j, k) * 2 - 1);
+      }
+    },
+  };
+  music.an = ghost; music.el = null; music.playing = true;
+  music.freq = new Uint8Array(NB); music.prev = new Float32Array(NB); music.time = new Float32Array(NT);
+
+  /* A palette from the host: {rim, core} as hex. mid is the grey his stock
+     ramp crosses zero at, pulled a little toward the host background so the
+     quiet particles belong to the page they sit on. */
+  const rgbOf = (h) => { const n = parseInt(String(h).replace("#", ""), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const setPal = (rim, core) => {
+    if (!rim || !core) { embedPal = null; lutGen++; return; }
+    const r = rgbOf(rim), c = rgbOf(core), b = rgbOf(THEME[theme].bg);
+    embedPal = { rim: r, core: c, mid: [0, 1, 2].map((k) => (r[k] + c[k]) * 0.3 + b[k] * 0.4) };
+    lutGen++;
+  };
+  if (EMBED.get("rim") && EMBED.get("core")) setPal("#" + EMBED.get("rim"), "#" + EMBED.get("core"));
+
   addEventListener("message", (e) => {
     const d = e.data || {};
+    if (d.glorb === "audio" && d.f && d.t) {
+      /* the host's real song. Its analyser may be a different size: resample
+         by frequency, which is what the band layout above is built on */
+      const f = d.f, tt = d.t;
+      for (let i = 0; i < NB; i++) ext.f[i] = f[Math.min(f.length - 1, Math.floor(i * f.length / NB))];
+      for (let j = 0; j < NT; j++) ext.t[j] = tt[j % tt.length];
+      ext.at = performance.now();
+      return;
+    }
+    if (d.glorb === "level") { gLevel = Math.max(0, Math.min(1.5, +d.level || 0)); return; }
+    if (d.glorb === "palette") { setPal(d.rim, d.core); return; }
+    if (d.glorb === "points" && d.points && d.points.length > 8) {
+      /* A shape, not a word. Points arrive as flat [x,y,z, x,y,z, ...] in any
+         frame; fitPoints puts them in his. Y is up in the host and down on
+         his canvas, so it is flipped here once. */
+      const P = d.points, pts = [];
+      for (let i = 0; i + 2 < P.length; i += 3) pts.push([P[i], -P[i + 1], P[i + 2]]);
+      /* flat: a silhouette inside the living ring, the way a word sits -- the
+         ring stays his and keeps dancing. Otherwise a solid that takes the
+         whole field, which is quieter. */
+      const fit = fitPoints(pts);
+      const spec = d.flat ? { points: fit.map((q) => [q[0], q[1]]), share: d.share != null ? d.share : 0.6 }
+                          : { points: fit };
+      if (d.spin != null) spec.spin = d.spin;
+      if (d.tilt != null) spec.tilt = d.tilt;
+      if (d.fs != null) spec.fs = d.fs;
+      setFormation(spec, d.seconds || 3600);
+      return;
+    }
     if (d.glorb === "text") {
       const t = String(d.text || "").toUpperCase().slice(0, 14);
       const spec = { text: t, share: d.share != null ? d.share : 0.6 };
