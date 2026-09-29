@@ -246,6 +246,11 @@ for (var i = 0, G = ['gesturestart', 'gesturechange', 'gestureend', 'dblclick'];
   #cap b{display:block;color:#C8F49A;font-weight:400;margin-bottom:3px}
   #cap i{display:block;font-style:normal;color:#3E4A38;font-size:10px;
     letter-spacing:.08em;margin-top:5px}
+  /* ?embed: Glorb as a component inside another page (the portfolio's hero).
+     Every readout, button and caption goes; what is left is him. */
+  body.embed #hud,body.embed #meter,body.embed #bareBtn,body.embed #tr,body.embed #err,
+  body.embed #mic,body.embed #cap,body.embed #fig,body.embed #panel,body.embed #mus,
+  body.embed #visWrap{display:none!important}
 </style>
 </head>
 <body>
@@ -14378,6 +14383,54 @@ syncStateBtns();
 caption("", (standalone ? "home screen app · " : "") + (brain.url
   ? "I\u2019m Glorb. tap enable mic and talk to me \u2014 or say \u201cmenu\u201d"
   : "no brain endpoint set \u2014 open tune and paste the worker url"));
+/* EMBED MODE. `?embed` makes Glorb a component another page can drive: the
+   chrome goes, and the host talks to him with postMessage --
+     {glorb:"text", text, seconds, share}   spell a word
+     {glorb:"home"}                         back to the ring
+     {glorb:"theme", theme}                 "light" | "dark"
+   and he reports the gestures that are the host's business rather than his:
+     {glorb:"swipe", dir: 1|-1}  a horizontal flick (1 = next, i.e. leftwards)
+     {glorb:"tap"}               a short touch that did not travel
+   The flee is untouched -- his own pointer handlers still run -- so the thing the
+   host gets is the tuned Glorb, not a copy of him.
+   `?theme=` picks the theme and `?bg=RRGGBB` repaints its background so he sits
+   on the host's own colour. Nothing here is persisted: an embed must not write
+   the standalone app's remembered theme. */
+const EMBED = new URLSearchParams(location.search);
+if (EMBED.has("embed")) {
+  document.body.classList.add("embed");
+  barsWant = showBars = false;          // the level bars are a readout, and readouts go
+  const th = EMBED.get("theme");
+  if (th === "light" || th === "dark") theme = th;
+  const bg = (EMBED.get("bg") || "").replace(/[^0-9a-f]/gi, "");
+  if (bg.length === 6) {
+    const n = parseInt(bg, 16), rgb = [n >> 16 & 255, n >> 8 & 255, n & 255].join(",");
+    for (const k of ["dark", "light"]) Object.assign(THEME[k], { bg: "#" + bg, rgb, fog: n });
+    document.documentElement.style.background = document.body.style.background = "#" + bg;
+  }
+  const up = (m) => { try { parent.postMessage(m, "*"); } catch (e) {} };
+  let d0 = null;
+  addEventListener("pointerdown", (e) => { d0 = { x: e.clientX, y: e.clientY, t: performance.now() }; },
+                   { passive: true, capture: true });
+  addEventListener("pointerup", (e) => {
+    if (!d0) return;
+    const dx = e.clientX - d0.x, dy = e.clientY - d0.y, took = performance.now() - d0.t;
+    d0 = null;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.2 && took < 900) up({ glorb: "swipe", dir: dx < 0 ? 1 : -1 });
+    else if (Math.hypot(dx, dy) < 12 && took < 450) up({ glorb: "tap" });
+  }, { passive: true, capture: true });
+  addEventListener("pointercancel", () => { d0 = null; }, { capture: true });
+  addEventListener("message", (e) => {
+    const d = e.data || {};
+    if (d.glorb === "text") {
+      const t = String(d.text || "").toUpperCase().slice(0, 14);
+      if (t) setFormation({ text: t, share: d.share != null ? d.share : 0.6 }, d.seconds || 3600);
+      else goHome("");
+    } else if (d.glorb === "home") goHome("");
+    else if (d.glorb === "theme" && (d.theme === "light" || d.theme === "dark")) { theme = d.theme; themeApply(); }
+  });
+  up({ glorb: "ready" });
+}
 syncBare();
 /* And the remembered theme, which until now was written down and never read
    back: a reload came up dark whatever the last choice was. */
