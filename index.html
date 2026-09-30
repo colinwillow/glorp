@@ -14496,8 +14496,73 @@ if (EMBED.has("embed")) {
       }
     },
   };
-  music.an = ghost; music.el = null; music.playing = true;
-  music.freq = new Uint8Array(NB); music.prev = new Float32Array(NB); music.time = new Float32Array(NT);
+  /* THE GHOST ROOM -- and the ghost song above is NOT the default any more.
+     The song put him in his music visualiser, which is a different instrument:
+     kick-driven, snapping in and out, "two magnets trying to touch". What he
+     looks like at rest in his own app is the mic open in a quiet room: the
+     muses cycle (they only run with a live mic), and the room's own small
+     swells and knocks come through the real analyse() -- its floor tracking,
+     its gate, its attack and release. So that is what the embed fakes: a
+     microphone in a room, not a record. ?groove brings the song back. */
+  const room = { db: -52, walk: 0, ev: 0, evT: 0, evF: 900, next: 0, t: new Float32Array(NT) };
+  const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) * 1.15;
+  function roomStep(now) {
+    if (now === room.at) return; room.at = now;
+    // the air: a slow random walk of a few dB, never quite still
+    room.walk += (gauss() * 0.9 - room.walk * 0.04);
+    room.walk = Math.max(-4, Math.min(4, room.walk));
+    // and now and then something in it -- a voice next door, a chair, a car
+    if (now > room.next) {
+      room.next = now + 1400 + Math.random() * 4600;
+      room.ev = 2 + Math.random() * 7 * Math.random(); room.evT = 180 + Math.random() * 900; room.evAt = now;
+      room.evF = 250 + Math.random() * 2600;
+    }
+    const age = now - (room.evAt || -1e9);
+    const env = age < room.evT ? Math.sin(Math.PI * age / room.evT) * (0.7 + 0.3 * Math.random()) : 0;
+    room.lvl = room.db + room.walk + room.ev * env;
+    room.env = env;
+  }
+  const ghostMic = {
+    ac: { state: "running", resume: () => Promise.resolve() },
+    stream: { getAudioTracks: () => [{ muted: false, readyState: "live" }], getTracks: () => [] },
+    an: {
+      frequencyBinCount: NB, fftSize: NT,
+      getByteFrequencyData(out) {
+        const now = performance.now(); roomStep(now);
+        for (let i = 0; i < NB; i++) {
+          const f = Math.max(20, hz(i));
+          let db = room.lvl - 30 - 9 * Math.log2(f / 150 < 1 ? 1 : f / 150) + gauss() * 5;
+          db += room.ev * room.env * Math.exp(-Math.pow(Math.log2(f / room.evF) / 0.9, 2)) * 1.4;
+          out[i] = Math.max(0, Math.min(255, (db + 100) / 70 * 255));
+        }
+      },
+      getFloatTimeDomainData(out) {
+        const now = performance.now(); roomStep(now);
+        const a = Math.pow(10, room.lvl / 20) * 1.73;
+        for (let j = 0; j < NT; j++) out[j] = a * (Math.random() * 2 - 1);
+      },
+    },
+    freq: new Uint8Array(NB), prev: new Float32Array(NB), time: new Float32Array(NT),
+    floorDb: -55, db: -99, hist: new Float32Array(240), histAt: 0, histN: 0, histTick: 0,
+    grabAt: performance.now(), deadAt: 0,
+  };
+  if (EMBED.has("groove")) {
+    music.an = ghost; music.el = null; music.playing = true;
+    music.freq = new Uint8Array(NB); music.prev = new Float32Array(NB); music.time = new Float32Array(NT);
+  } else if (!A) {
+    A = ghostMic; micState = "live"; analyse();
+  }
+  /* The host's real song, when there is one, goes to the MUSIC path, which is
+     the right instrument for a record -- and hands back to the room after. */
+  const extAn = { frequencyBinCount: NB, fftSize: NT,
+    getByteFrequencyData(o) { o.set(ext.f); }, getFloatTimeDomainData(o) { o.set(ext.t); } };
+  setInterval(() => {
+    const live = performance.now() - ext.at < 500;
+    if (live && music.an !== extAn && !EMBED.has("groove")) {
+      music.an = extAn; music.el = null; music.playing = true;
+      music.freq = new Uint8Array(NB); music.prev = new Float32Array(NB); music.time = new Float32Array(NT);
+    } else if (!live && music.an === extAn) { music.playing = false; music.an = null; }
+  }, 250);
 
   /* A palette from the host: {rim, core} as hex. mid is the grey his stock
      ramp crosses zero at, pulled a little toward the host background so the
